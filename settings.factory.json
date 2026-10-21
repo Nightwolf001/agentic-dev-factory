@@ -1,0 +1,65 @@
+{
+	"sandbox": {
+		"enabled": true,
+		"autoAllowBashIfSandboxed": true,
+		"excludedCommands": ["docker *", "xcrun *", "maestro *", "pod *", "yarn *", "git *", "gh *"],
+		"filesystem": {
+			"denyRead": ["~/.ssh", "~/.aws", "~/.config/gh"]
+		},
+		"network": {
+			"allowedDomains": [
+				"github.com",
+				"api.github.com",
+				"*.githubusercontent.com",
+				"registry.npmjs.org",
+				"registry.yarnpkg.com",
+				"api.anthropic.com",
+				"*.olarm.local",
+				"olarmtech.atlassian.net",
+				"mcp.atlassian.com",
+				"mcp.sentry.dev",
+				"sentry.io",
+				"*.sentry.io",
+				"mcp.axiom.co",
+				"api.axiom.co",
+				"21st.dev",
+				"mcp.context7.com",
+				"context7.com"
+			]
+		}
+	},
+	"permissions": {
+		"deny": ["Read(./.env)", "Read(./.env.*)", "Read(./dev-factory/.env.local)", "Read(**/*.pem)", "Read(./certs/**/*.key)"],
+		"allow": [
+			"Read",
+			"Edit",
+			"Write",
+			"Glob",
+			"Grep",
+			"Bash",
+			"Agent",
+			"mcp__plugin_dev-factory_playwright",
+			"mcp__plugin_dev-factory_maestro",
+			"mcp__plugin_dev-factory_atlassian",
+			"Skill",
+			"mcp__plugin_dev-factory_context7",
+			"mcp__plugin_dev-factory_21st",
+			"mcp__plugin_dev-factory_sequential-thinking",
+			"mcp__plugin_dev-factory_sentry",
+			"mcp__plugin_dev-factory_axiom"
+		]
+	},
+	"extraKnownMarketplaces": {
+		"claude-plugins-official": {
+			"source": {
+				"source": "github",
+				"repo": "anthropics/claude-plugins-official"
+			}
+		}
+	},
+	"enabledPlugins": {
+		"superpowers@claude-plugins-official": true,
+		"frontend-design@claude-plugins-official": true,
+		"playwright@claude-plugins-official": false
+	}
+}

@@ -1,0 +1,48 @@
+{
+	"hooks": {
+		"PreToolUse": [
+			{
+				"matcher": "Bash",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/guard-bash.sh\"",
+						"timeout": 15
+					}
+				]
+			},
+			{
+				"matcher": "Edit|Write|MultiEdit|NotebookEdit",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/edit-guard.sh\"",
+						"timeout": 15
+					}
+				]
+			},
+			{
+				"matcher": "mcp__plugin_dev-factory_sentry__.*|mcp__plugin_dev-factory_axiom__.*",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/mcp-guard.sh\"",
+						"timeout": 15
+					}
+				]
+			}
+		],
+		"SubagentStop": [
+			{
+				"matcher": "dev-factory:factory-builder|factory-builder|dev-factory:factory-reviewer|factory-reviewer|dev-factory:factory-debugger|factory-debugger|dev-factory:factory-researcher|factory-researcher|dev-factory:factory-improver|factory-improver|dev-factory:factory-promoter|factory-promoter",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/stop-gate.sh\"",
+						"timeout": 15
+					}
+				]
+			}
+		]
+	}
+}

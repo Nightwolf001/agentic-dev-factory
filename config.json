@@ -1,0 +1,174 @@
+{
+	"jira": {
+		"cloudId": "78aaada0-6def-4622-9de6-8b4ecd0fcb2d",
+		"site": "olarmtech.atlassian.net",
+		"projects": ["OAPP", "PLAT", "ONE", "MAX", "ML"],
+		"label": "dev-factory",
+		"blockedLabel": "factory-blocked",
+		"statuses": {
+			"readyForDev": "Ready for Dev",
+			"todo": "To Do",
+			"inProgress": "In Progress",
+			"peerReview": "Peer review",
+			"afterReview": "Ready for QA",
+			"impeded": "Impeded"
+		},
+		"fixComment": "/dev-factory fix",
+		"doneStatuses": ["UAT", "Ready for Release", "Done"],
+		"bugTypes": ["Bug", "Bug - Subtask", "Bug - Production", "Production - Bug"]
+	},
+	"git": {
+		"baseBranch": "develop",
+		"branchTypes": {
+			"Bug": "fix",
+			"Bug - Subtask": "fix",
+			"Bug - Production": "fix",
+			"Production - Bug": "fix",
+			"Story": "feature",
+			"Epic": "feature",
+			"Support - New Feature": "feature",
+			"Task": "task",
+			"Sub-task": "task",
+			"Spike": "task",
+			"Support - Request": "task",
+			"Risk": "task",
+			"Improvement": "improvement"
+		}
+	},
+	"pr": {
+		"sizeLabels": {
+			"smol": 100,
+			"mid": 500,
+			"beeg": null
+		},
+		"areaLabels": [
+			{
+				"path": "services/api",
+				"label": "apis"
+			},
+			{
+				"path": "services/mqtt",
+				"label": "mqtt"
+			},
+			{
+				"path": "services/worker",
+				"label": "worker"
+			},
+			{
+				"path": "clients/mobile",
+				"label": "mobile-app"
+			},
+			{
+				"path": "clients/",
+				"label": "frontends"
+			},
+			{
+				"path": "tf/",
+				"label": "infrastructure"
+			}
+		],
+		"categoryByBranchType": {
+			"feature": "feature",
+			"fix": "bugfix",
+			"task": "improvement",
+			"improvement": "improvement",
+			"hotfix": "hotfix",
+			"ai-tooling": "ai-tooling"
+		}
+	},
+	"caps": {
+		"maxOpenPrs": 3,
+		"maxConcurrent": 1,
+		"breakerThreshold": 2,
+		"breakerWindowHours": 6,
+		"stallMinutes": 90,
+		"maxFixRounds": 2,
+		"maxQaFixAttempts": 5,
+		"maxBudgetUsd": 40,
+		"maxResumes": 2,
+		"frontierRepeatHours": 6
+	},
+	"models": {
+		"orchestrator": "sonnet",
+		"builder": "sonnet",
+		"reviewer": "sonnet",
+		"debugger": "sonnet",
+		"researcher": "haiku",
+		"improver": "sonnet",
+		"effort": "high",
+		"efforts": {
+			"debugger": "high",
+			"researcher": "low",
+			"improver": "high"
+		}
+	},
+	"mobile": {
+		"hints": ["clients/mobile", "mobile app", "iOS", "Android"],
+		"metroPort": 8081
+	},
+	"environments": {
+		"dev": {
+			"source": "local",
+			"sentry": null,
+			"axiomDatasets": []
+		},
+		"staging": {
+			"sentry": {
+				"org": "olarm-gd",
+				"environment": "staging",
+				"projects": ["olarm-app-react-native", "lighthouse"]
+			},
+			"axiomDatasets": ["api-stage-af-south-1", "lighthouse-2-stage-af-south-1", "system-stage-af-south-1", "signals-proxy-staging"]
+		},
+		"preprod": {
+			"sentry": {
+				"org": "olarm-gd",
+				"environment": "preprod",
+				"projects": ["olarm-app-react-native", "lighthouse"]
+			},
+			"axiomDatasets": [
+				"api-preprod-af-south-1",
+				"lighthouse-2-preprod-af-south-1",
+				"system-preprod-af-south-1",
+				"mqtt-preprod-af-south-1",
+				"signals-proxy-preprod"
+			]
+		},
+		"prod": {
+			"sentry": {
+				"org": "olarm-gd",
+				"environment": "production",
+				"projects": ["olarm-app-react-native", "lighthouse"]
+			},
+			"axiomDatasets": ["api-prod-af-south-1", "lighthouse-2-prod-af-south-1", "system-prod-af-south-1", "signals-proxy-prod"]
+		}
+	},
+	"telemetry": {
+		"maxRows": 200,
+		"maxWindowDays": 14,
+		"scrubPatterns": []
+	},
+	"debug": {
+		"maxDebugRounds": 2,
+		"debugMinutes": 20
+	},
+	"validation": {
+		"minHoursAfterMerge": 24
+	},
+	"improvement": {
+		"jiraProject": "OAPP",
+		"label": "dev-factory-improvement",
+		"maxTicketsPerScan": 5,
+		"maxPrsPerScan": 2,
+		"minEvidence": 2,
+		"maxPromotionsPerScan": 3,
+		"agentsRuleCap": 15
+	},
+	"review": {
+		"specialistAxes": {
+			"data": ["prisma/**", "**/migrations/**"],
+			"infra": [".github/workflows/**", "tf/**", "ecosystem.config.js", "docker-compose*.yml", ".devcontainer/**"],
+			"security": ["services/api*/**/auth*", "**/*secret*", "**/*token*"]
+		}
+	}
+}

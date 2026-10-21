@@ -1,0 +1,21 @@
+# QA profiles. uiGlobs decide whether a diff touches a surface that needs a walk; nonUiGlobs carve documentation out of them.
+web:
+  runner: playwright
+  baseUrl: https://login.olarm.local
+  uiGlobs:
+    - "clients/web-*/src/**"
+    - "clients/web-ui/**"
+    - "clients/web-*/index.html"
+  nonUiGlobs:
+    - "**/*.md"
+  expectedProcesses: []
+mobile:
+  runner: maestro
+  platform: ios
+  deviceProfile: iPhone 16
+  uiGlobs:
+    - "clients/mobile/src/**"
+    - "clients/mobile/ios/**"
+    - "clients/mobile/android/**"
+  nonUiGlobs:
+    - "**/*.md"

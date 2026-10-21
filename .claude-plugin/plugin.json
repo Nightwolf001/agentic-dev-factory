@@ -1,0 +1,8 @@
+{
+	"name": "dev-factory",
+	"description": "Picks up labelled Jira tickets, builds them in an isolated worktree against a verified e2e environment, validates with MCP-driven QA, and opens a draft PR.",
+	"version": "0.1.0",
+	"author": {
+		"name": "Olarm"
+	}
+}

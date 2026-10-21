@@ -1,0 +1,24 @@
+{
+	"marketplaces": {
+		"claude-plugins-official": { "source": "github", "repo": "anthropics/claude-plugins-official" }
+	},
+	"plugins": [
+		{
+			"id": "superpowers@claude-plugins-official",
+			"required": true,
+			"why": "test-driven-development, systematic-debugging and verification-before-completion skills the builder follows"
+		},
+		{
+			"id": "frontend-design@claude-plugins-official",
+			"required": false,
+			"why": "design guidance for UI tickets, used together with the 21st MCP and the repo brand rules"
+		},
+		{ "id": "code-simplifier@claude-plugins-official", "required": false, "why": "optional clean-up pass before QA" }
+	],
+	"disabled": [
+		{
+			"id": "playwright@claude-plugins-official",
+			"why": "its browser is not isolated per session; the factory ships its own isolated Playwright server"
+		}
+	]
+}
