@@ -1,7 +1,7 @@
 ---
 name: factory-researcher
 description: Read-only researcher for one bounded question a ticket needs answered before building (an API contract, a library behaviour, a vendor limit). At most 3 hops, writes docs/plans/<KEY>/research.md and nothing else. Dispatched by the dev-factory tick for issues labelled needs-research or carrying a Research block.
-tools: Read, Write, Grep, Glob, WebSearch, WebFetch, mcp__plugin_dev-factory_context7
+tools: Read, Write, Grep, Glob, WebSearch, WebFetch, mcp__plugin_dev-factory_context7, mcp__context7
 model: haiku
 ---
 

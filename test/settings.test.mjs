@@ -9,7 +9,7 @@ import { enablePlugin } from '../scripts/enable-plugin.mjs';
 const SCRIPT = new URL('../scripts/enable-plugin.mjs', import.meta.url).pathname;
 const SHARED = new URL('../../.claude/settings.json', import.meta.url).pathname;
 
-test('the committed settings do not turn the plugin on for every session in the checkout', () => {
+test('the committed settings do not turn the plugin on for every session in the checkout', { skip: !fs.existsSync(SHARED) }, () => {
 	const shared = JSON.parse(fs.readFileSync(SHARED, 'utf8'));
 	assert.equal(shared.enabledPlugins?.['dev-factory@dev-factory'], undefined);
 	assert.equal(shared.extraKnownMarketplaces?.['dev-factory'], undefined);

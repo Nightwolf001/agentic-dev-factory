@@ -1,6 +1,12 @@
 {
 	"name": "dev-factory",
-	"description": "Olarm dev-factory: builds labelled Jira tickets into draft PRs.",
-	"owner": { "name": "Olarm" },
-	"plugins": [{ "name": "dev-factory", "source": "./", "description": "Ticket-to-draft-PR factory" }]
+	"description": "dev-factory: builds labelled tasks from GitHub Issues, Notion, Jira or local files into draft PRs.",
+	"owner": { "name": "dev-factory contributors" },
+	"plugins": [
+		{
+			"name": "dev-factory",
+			"source": "./",
+			"description": "Ticket-to-draft-PR factory"
+		}
+	]
 }

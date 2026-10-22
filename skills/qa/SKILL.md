@@ -16,7 +16,7 @@ Run `node dev-factory/bin/qa.mjs mark-na --key KEY --profile web|mobile --reason
 For each UI-facing acceptance criterion write one case under `dev-factory/qa/cases/<KEY>/`:
 
 -   web: `<slug>.spec.ts` (Playwright steps with the assertion each step checks)
--   mobile: `<slug>.yaml` (Maestro flow; use `qa-*` testIDs per `.cursor/rules/mobile-test-id-conventions.mdc`)
+-   mobile: `<slug>.yaml` (Maestro flow; use the repository's own testID conventions, and add stable testIDs to the screens you touch)
 
 Each case names its assertions up front (a testID, a text, an element). The walk checks those, not an impression. Commit the cases, then start.
 

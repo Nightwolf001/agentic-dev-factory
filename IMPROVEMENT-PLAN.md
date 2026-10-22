@@ -4,6 +4,6 @@ Proposals for changing the factory itself, written by `/dev-factory:improve` fro
 
 The weekly scan keeps this table current. A finding needs at least `improvement.minEvidence` occurrences across different tickets.
 
-| Priority | Symptom                                                                                                         | Evidence | Proposed change | Jira | PR  | Status |
+| Priority | Symptom                                                                                                         | Evidence | Proposed change | Task | PR  | Status |
 | -------- | --------------------------------------------------------------------------------------------------------------- | -------- | --------------- | ---- | --- | ------ |
 | -        | No findings yet. The first scan runs after the factory has recorded passes in `~/.dev-factory/runs/runs.jsonl`. | 0        | -               | -    | -   | open   |

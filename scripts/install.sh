@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Per-machine setup. Dry run by default; --apply writes files; --load also loads the scheduler.
-# The plugin itself, its MCP servers and hooks are committed in dev-factory/; step 'enable the plugin' below turns them on for
+# The plugin itself and its hooks are committed in dev-factory/; step 'enable the plugin' below turns them on for
 # this machine only, in an uncommitted settings file, so no other developer's session loads them.
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")/.." && pwd)"; REPO="$(cd "$DIR/.." && pwd)"
@@ -36,22 +36,21 @@ node -e '
 done
 
 for job in tick improve; do
-  PLIST="$HOME/Library/LaunchAgents/com.olarm.dev-factory.$job.plist"
+  PLIST="$HOME/Library/LaunchAgents/com.dev-factory.$job.plist"
   if [ "$job" = tick ]; then say "render $PLIST (every 15 minutes, runs scripts/tick.sh)"; else say "render $PLIST (weekly, Monday 07:00, runs scripts/improve.sh)"; fi
   if [ $APPLY = 1 ]; then
     mkdir -p "$(dirname "$PLIST")"
-    sed -e "s#__REPO__#$REPO#g" -e "s#__HOME__#$HOME#g" -e "s#__PATH__#$PATH#g" "$DIR/launchd/com.olarm.dev-factory.$job.plist.template" > "$PLIST"
+    sed -e "s#__REPO__#$REPO#g" -e "s#__HOME__#$HOME#g" -e "s#__PATH__#$PATH#g" "$DIR/launchd/com.dev-factory.$job.plist.template" > "$PLIST"
     plutil -lint "$PLIST"
   fi
   if [ $LOAD = 1 ]; then launchctl bootstrap "gui/$(id -u)" "$PLIST"; say "loaded $PLIST"
-  else echo "to load: launchctl bootstrap gui/\$(id -u) $PLIST   (unload: launchctl bootout gui/\$(id -u)/com.olarm.dev-factory.$job)"; fi
+  else echo "to load: launchctl bootstrap gui/\$(id -u) $PLIST   (unload: launchctl bootout gui/\$(id -u)/com.dev-factory.$job)"; fi
 done
 
 cat <<TXT
 manual steps:
-  1. unattended login: run 'claude setup-token', put the value in dev-factory/.env.local as CLAUDE_CODE_OAUTH_TOKEN
-  2. Jira login: open 'claude --plugin-dir ./dev-factory', run /mcp, authenticate the atlassian server once;
-     then run one unattended pass by hand (bash dev-factory/scripts/tick.sh) and confirm the Jira tools still work.
-     If the login does not survive, set JIRA_API_TOKEN and JIRA_EMAIL and swap the server in .mcp.json for an API-token one
-  3. ask a Jira admin for: label 'factory-blocked' filter allowed, and (optional) the GitHub for Jira merge automation
+  1. choose the task source: dev-factory.config.json at the repository root, or /dev-factory:setup inside claude (local needs nothing, github needs 'gh auth login')
+  2. optional MCP servers: node dev-factory/scripts/mcp.mjs list, then enable the ones you want (a tracker's OAuth login is done once: run /mcp in claude)
+  3. unattended runs only: run 'claude setup-token', put the value in dev-factory/.env.local as CLAUDE_CODE_OAUTH_TOKEN,
+     and for jira or notion also the API token the scheduler's preflight uses (see .env.example)
 TXT

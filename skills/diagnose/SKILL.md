@@ -5,9 +5,9 @@ description: Root cause before any fix, with a red-capable feedback loop and the
 
 # Diagnose
 
-Builds on `ol-systematic-debugging` and `superpowers:systematic-debugging`; read them, do not restate them. What this adds:
+Builds on `superpowers:systematic-debugging`; read it, do not restate it. What this adds:
 
-1. No fix and no fix plan before a feedback loop that can go red: a failing test in the devcontainer, a curl against the ticket's stack, a replay of a captured Sentry event or Axiom log sample, a bisect over `git log`.
+1. No fix and no fix plan before a feedback loop that can go red: a failing test in the ticket's environment, a curl against its stack, a replay of a captured Sentry event or Axiom log sample, a bisect over `git log`.
 2. Run the loop through `node dev-factory/bin/qa.mjs debug run --id N -- <command>`. The record stores the command and the exit code observed there; a loop you did not run through it does not count.
 3. One hypothesis, one change or check, one rerun. Write the hypothesis down before testing it.
 4. Three failed hypotheses is an architecture signal, not a reason to try a fourth: `qa.mjs debug block --reason "<what was tried>"`.
