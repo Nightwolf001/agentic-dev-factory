@@ -1,72 +1,88 @@
 {
-	"jira": {
-		"cloudId": "78aaada0-6def-4622-9de6-8b4ecd0fcb2d",
-		"site": "olarmtech.atlassian.net",
-		"projects": ["OAPP", "PLAT", "ONE", "MAX", "ML"],
+	"tasks": {
+		"source": "local",
 		"label": "dev-factory",
 		"blockedLabel": "factory-blocked",
-		"statuses": {
-			"readyForDev": "Ready for Dev",
-			"todo": "To Do",
-			"inProgress": "In Progress",
-			"peerReview": "Peer review",
-			"afterReview": "Ready for QA",
-			"impeded": "Impeded"
-		},
 		"fixComment": "/dev-factory fix",
-		"doneStatuses": ["UAT", "Ready for Release", "Done"],
-		"bugTypes": ["Bug", "Bug - Subtask", "Bug - Production", "Production - Bug"]
+		"placeholderKey": "TASK-000",
+		"bugTypes": ["bug"]
+	},
+	"sources": {
+		"local": {
+			"dir": ".factory/tasks",
+			"keyPrefix": "TASK",
+			"states": {
+				"ready": ["ready"],
+				"inProgress": "in-progress",
+				"inReview": "in-review",
+				"reviewed": "reviewed",
+				"done": ["done"]
+			}
+		},
+		"github": {
+			"repo": null,
+			"assignee": null,
+			"keyPrefix": "GH",
+			"states": {
+				"ready": ["ready"],
+				"inProgress": "df:in-progress",
+				"inReview": "df:in-review",
+				"reviewed": "df:reviewed",
+				"done": ["closed"]
+			}
+		},
+		"notion": {
+			"databaseId": null,
+			"properties": {
+				"title": "Name",
+				"status": "Status",
+				"labels": "Tags",
+				"type": "Type",
+				"id": "ID"
+			},
+			"states": {
+				"ready": ["Ready"],
+				"inProgress": "In progress",
+				"inReview": "In review",
+				"reviewed": "Reviewed",
+				"done": ["Done"]
+			}
+		},
+		"jira": {
+			"site": null,
+			"cloudId": null,
+			"projects": [],
+			"requireSprint": false,
+			"states": {
+				"ready": ["Ready for Dev", "To Do"],
+				"inProgress": "In Progress",
+				"inReview": "Peer review",
+				"reviewed": "Ready for QA",
+				"done": ["Done"]
+			}
+		}
 	},
 	"git": {
-		"baseBranch": "develop",
+		"baseBranch": null,
 		"branchTypes": {
-			"Bug": "fix",
-			"Bug - Subtask": "fix",
-			"Bug - Production": "fix",
-			"Production - Bug": "fix",
-			"Story": "feature",
-			"Epic": "feature",
-			"Support - New Feature": "feature",
-			"Task": "task",
-			"Sub-task": "task",
-			"Spike": "task",
-			"Support - Request": "task",
-			"Risk": "task",
-			"Improvement": "improvement"
+			"bug": "fix",
+			"story": "feature",
+			"epic": "feature",
+			"feature": "feature",
+			"task": "task",
+			"sub-task": "task",
+			"spike": "task",
+			"chore": "task",
+			"improvement": "improvement"
 		}
 	},
 	"pr": {
 		"sizeLabels": {
-			"smol": 100,
-			"mid": 500,
-			"beeg": null
+			"small": 100,
+			"medium": 500,
+			"large": null
 		},
-		"areaLabels": [
-			{
-				"path": "services/api",
-				"label": "apis"
-			},
-			{
-				"path": "services/mqtt",
-				"label": "mqtt"
-			},
-			{
-				"path": "services/worker",
-				"label": "worker"
-			},
-			{
-				"path": "clients/mobile",
-				"label": "mobile-app"
-			},
-			{
-				"path": "clients/",
-				"label": "frontends"
-			},
-			{
-				"path": "tf/",
-				"label": "infrastructure"
-			}
-		],
+		"areaLabels": [],
 		"categoryByBranchType": {
 			"feature": "feature",
 			"fix": "bugfix",
@@ -102,45 +118,33 @@
 			"improver": "high"
 		}
 	},
+	"environment": {
+		"type": "none",
+		"composeFile": ".devcontainer/docker-compose.yml",
+		"service": "app",
+		"user": null,
+		"setup": [],
+		"processCheck": null,
+		"pingUrl": null,
+		"webBaseUrl": null,
+		"submodules": []
+	},
 	"mobile": {
-		"hints": ["clients/mobile", "mobile app", "iOS", "Android"],
-		"metroPort": 8081
+		"appDir": null,
+		"hints": ["mobile app", "iOS", "Android"],
+		"metroPort": 8081,
+		"prepare": null,
+		"install": "yarn install --frozen-lockfile",
+		"pods": "yarn pods",
+		"start": "yarn start --port {port}",
+		"build": "yarn ios --udid {udid} --port {port}",
+		"nativeInputs": ["ios/Podfile.lock", "ios/*.xcodeproj/project.pbxproj"]
 	},
 	"environments": {
 		"dev": {
 			"source": "local",
 			"sentry": null,
 			"axiomDatasets": []
-		},
-		"staging": {
-			"sentry": {
-				"org": "olarm-gd",
-				"environment": "staging",
-				"projects": ["olarm-app-react-native", "lighthouse"]
-			},
-			"axiomDatasets": ["api-stage-af-south-1", "lighthouse-2-stage-af-south-1", "system-stage-af-south-1", "signals-proxy-staging"]
-		},
-		"preprod": {
-			"sentry": {
-				"org": "olarm-gd",
-				"environment": "preprod",
-				"projects": ["olarm-app-react-native", "lighthouse"]
-			},
-			"axiomDatasets": [
-				"api-preprod-af-south-1",
-				"lighthouse-2-preprod-af-south-1",
-				"system-preprod-af-south-1",
-				"mqtt-preprod-af-south-1",
-				"signals-proxy-preprod"
-			]
-		},
-		"prod": {
-			"sentry": {
-				"org": "olarm-gd",
-				"environment": "production",
-				"projects": ["olarm-app-react-native", "lighthouse"]
-			},
-			"axiomDatasets": ["api-prod-af-south-1", "lighthouse-2-prod-af-south-1", "system-prod-af-south-1", "signals-proxy-prod"]
 		}
 	},
 	"telemetry": {
@@ -156,7 +160,7 @@
 		"minHoursAfterMerge": 24
 	},
 	"improvement": {
-		"jiraProject": "OAPP",
+		"project": null,
 		"label": "dev-factory-improvement",
 		"maxTicketsPerScan": 5,
 		"maxPrsPerScan": 2,
@@ -166,9 +170,12 @@
 	},
 	"review": {
 		"specialistAxes": {
-			"data": ["prisma/**", "**/migrations/**"],
-			"infra": [".github/workflows/**", "tf/**", "ecosystem.config.js", "docker-compose*.yml", ".devcontainer/**"],
-			"security": ["services/api*/**/auth*", "**/*secret*", "**/*token*"]
+			"data": ["**/migrations/**", "**/schema.prisma"],
+			"infra": [".github/workflows/**", "Dockerfile*", "docker-compose*.yml", ".devcontainer/**", "**/*.tf"],
+			"security": ["**/auth*/**", "**/*secret*", "**/*token*"]
 		}
+	},
+	"sandbox": {
+		"extraDomains": []
 	}
 }

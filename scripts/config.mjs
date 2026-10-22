@@ -1,21 +1,30 @@
-// Reads dev-factory/config.json. Environment variables override scalar settings so one machine
-// can differ without editing the committed file.
+// Reads dev-factory/config.json (the defaults, shipped with the plugin) and merges the repository's own
+// dev-factory.config.json over it, so a team's tracker, branches and environments live in its repository and the
+// plugin carries no organisation. Environment variables override scalar settings so one machine can differ without
+// editing a committed file.
 //   config.mjs get <dotted.path>     print one value (JSON for objects and arrays)
 //   config.mjs validate              exit 1 and list problems if required keys are missing
+// A path that starts with `source.` reads from the active task source: `source.states.inProgress` is
+// `sources.<tasks.source>.states.inProgress`.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isMain } from './is-main.mjs';
 
 const FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'config.json');
+export const REPO_CONFIG = 'dev-factory.config.json';
+export const SOURCES = ['local', 'github', 'notion', 'jira'];
 
 export const ENV_OVERRIDES = {
 	'caps.maxOpenPrs': 'DF_MAX_OPEN_PRS',
 	'caps.maxConcurrent': 'DF_MAX_CONCURRENT',
 	'caps.maxBudgetUsd': 'DF_MAX_BUDGET_USD',
-	'jira.label': 'DF_JIRA_LABEL',
-	'jira.cloudId': 'DF_JIRA_CLOUD_ID',
-	'jira.projects': 'DF_JIRA_PROJECTS',
+	'tasks.source': 'DF_TASK_SOURCE',
+	'tasks.label': 'DF_TASK_LABEL',
+	'sources.github.repo': 'DF_GITHUB_REPO',
+	'sources.notion.databaseId': 'DF_NOTION_DATABASE_ID',
+	'sources.jira.cloudId': 'DF_JIRA_CLOUD_ID',
+	'sources.jira.projects': 'DF_JIRA_PROJECTS',
 	'models.orchestrator': 'DF_MODEL',
 	'models.builder': 'DF_BUILDER_MODEL',
 	'models.reviewer': 'DF_REVIEWER_MODEL',
@@ -26,19 +35,13 @@ export const ENV_OVERRIDES = {
 	'caps.frontierRepeatHours': 'DF_FRONTIER_REPEAT_HOURS',
 };
 
+// Keys every source needs; the active source's own keys are added by requiredFor().
 const REQUIRED = [
-	'jira.cloudId',
-	'jira.projects',
-	'jira.label',
-	'jira.blockedLabel',
-	'jira.statuses.readyForDev',
-	'jira.statuses.todo',
-	'jira.statuses.inProgress',
-	'jira.statuses.peerReview',
-	'jira.statuses.afterReview',
-	'jira.doneStatuses',
-	'jira.bugTypes',
-	'git.baseBranch',
+	'tasks.source',
+	'tasks.label',
+	'tasks.blockedLabel',
+	'tasks.placeholderKey',
+	'tasks.bugTypes',
 	'git.branchTypes',
 	'pr.sizeLabels',
 	'pr.areaLabels',
@@ -57,13 +60,13 @@ const REQUIRED = [
 	'caps.stallMinutes',
 	'models.effort',
 	'models.efforts.improver',
-	'environments',
+	'environment.type',
+	'environments.dev',
 	'telemetry.maxRows',
 	'telemetry.maxWindowDays',
 	'debug.maxDebugRounds',
 	'debug.debugMinutes',
 	'validation.minHoursAfterMerge',
-	'improvement.jiraProject',
 	'improvement.label',
 	'improvement.maxTicketsPerScan',
 	'improvement.maxPrsPerScan',
@@ -72,6 +75,15 @@ const REQUIRED = [
 	'improvement.agentsRuleCap',
 	'review.specialistAxes',
 ];
+
+// What a source needs before it can run, beyond the states every source maps.
+const SOURCE_NEEDS = {
+	local: ['dir'],
+	github: [],
+	notion: ['databaseId', 'properties.title', 'properties.status'],
+	jira: ['site', 'cloudId', 'projects'],
+};
+const STATE_KEYS = ['ready', 'inProgress', 'inReview', 'reviewed', 'done'];
 
 const AXES = ['data', 'infra', 'security'];
 const NUMERIC = [
@@ -90,13 +102,44 @@ const NUMERIC = [
 	'improvement.agentsRuleCap',
 ];
 
-export function load(file = FILE) {
-	return JSON.parse(fs.readFileSync(file, 'utf8'));
+const isObject = (v) => v && typeof v === 'object' && !Array.isArray(v);
+
+// Objects merge key by key; arrays and scalars in the override replace the default.
+export function merge(base, over) {
+	if (!isObject(base) || !isObject(over)) return over === undefined ? base : over;
+	const out = { ...base };
+	for (const [k, v] of Object.entries(over)) out[k] = k in base ? merge(base[k], v) : v;
+	return out;
+}
+
+// DF_CONFIG names the file; otherwise the nearest dev-factory.config.json at or above `from`.
+export function findRepoConfig(from = process.cwd(), env = process.env) {
+	if (env.DF_CONFIG) return fs.existsSync(env.DF_CONFIG) ? env.DF_CONFIG : null;
+	for (let dir = path.resolve(from); ; dir = path.dirname(dir)) {
+		const candidate = path.join(dir, REPO_CONFIG);
+		if (fs.existsSync(candidate)) return candidate;
+		if (path.dirname(dir) === dir) return null;
+	}
+}
+
+// An explicit file is read as it is (tests, tools); no argument gives the defaults plus the repository's file.
+export function load(file) {
+	if (file) return JSON.parse(fs.readFileSync(file, 'utf8'));
+	const defaults = JSON.parse(fs.readFileSync(FILE, 'utf8'));
+	const repo = findRepoConfig();
+	return repo ? merge(defaults, JSON.parse(fs.readFileSync(repo, 'utf8'))) : defaults;
 }
 
 const dig = (obj, dotted) => dotted.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj);
 
+// `source.x` is shorthand for the active source's `sources.<name>.x`.
+export function resolvePath(dotted, config, env = process.env) {
+	if (!dotted.startsWith('source.')) return dotted;
+	return `sources.${env.DF_TASK_SOURCE || dig(config, 'tasks.source')}.${dotted.slice('source.'.length)}`;
+}
+
 export function get(dotted, { config = load(), env = process.env } = {}) {
+	dotted = resolvePath(dotted, config, env);
 	const name = ENV_OVERRIDES[dotted];
 	if (name && env[name] !== undefined && env[name] !== '') {
 		const raw = env[name];
@@ -111,18 +154,50 @@ export function get(dotted, { config = load(), env = process.env } = {}) {
 	return dig(config, dotted);
 }
 
+export function requiredFor(config) {
+	const source = dig(config, 'tasks.source');
+	if (!SOURCES.includes(source)) return REQUIRED;
+	return [...REQUIRED, ...SOURCE_NEEDS[source].map((k) => `sources.${source}.${k}`), ...STATE_KEYS.map((k) => `sources.${source}.states.${k}`)];
+}
+
+const nonEmptyNames = (v) => Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === 'string' && x);
+
 export function validate(config = load()) {
-	const problems = REQUIRED.filter((k) => dig(config, k) === undefined).map((k) => `missing ${k}`);
-	const projects = dig(config, 'jira.projects');
-	if (Array.isArray(projects) && !projects.every((p) => /^[A-Z][A-Z0-9]+$/.test(p))) problems.push('jira.projects must be upper-case keys');
+	const source = dig(config, 'tasks.source');
+	const problems = [];
+	if (!SOURCES.includes(source)) problems.push(`tasks.source must be one of ${SOURCES.join(', ')}`);
+	for (const k of requiredFor(config)) {
+		const v = dig(config, k);
+		if (v === undefined || v === null || (Array.isArray(v) && v.length === 0 && k.endsWith('.projects'))) problems.push(`missing ${k}`);
+	}
+	if (SOURCES.includes(source)) {
+		const states = dig(config, `sources.${source}.states`) ?? {};
+		for (const k of ['ready', 'done']) {
+			if (states[k] !== undefined && !nonEmptyNames(states[k]))
+				problems.push(`sources.${source}.states.${k} must be a non-empty list of names`);
+		}
+	}
+	const projects = dig(config, 'sources.jira.projects');
+	if (source === 'jira' && Array.isArray(projects) && !projects.every((p) => /^[A-Z][A-Z0-9]+$/.test(p)))
+		problems.push('sources.jira.projects must be upper-case keys');
+	const repo = dig(config, 'sources.github.repo');
+	if (repo != null && !/^[\w.-]+\/[\w.-]+$/.test(repo)) problems.push('sources.github.repo must look like owner/name');
 	for (const k of NUMERIC) {
 		const v = dig(config, k);
 		if (v !== undefined && !(Number.isInteger(v) && v >= 0)) problems.push(`${k} must be a non-negative integer`);
 	}
-	for (const k of ['jira.doneStatuses', 'jira.bugTypes']) {
-		const v = dig(config, k);
-		if (v !== undefined && !(Array.isArray(v) && v.length && v.every((x) => typeof x === 'string' && x)))
-			problems.push(`${k} must be a non-empty list of names`);
+	if (dig(config, 'tasks.bugTypes') !== undefined && !nonEmptyNames(dig(config, 'tasks.bugTypes')))
+		problems.push('tasks.bugTypes must be a non-empty list of names');
+	if (!/^[A-Za-z][A-Za-z0-9]*-[0-9]+$/.test(dig(config, 'tasks.placeholderKey') ?? ''))
+		problems.push('tasks.placeholderKey must look like TASK-000');
+	const type = dig(config, 'environment.type');
+	if (type !== undefined && !['none', 'compose'].includes(type)) problems.push('environment.type must be none or compose');
+	if (type === 'compose') {
+		for (const k of ['composeFile', 'service'])
+			if (!dig(config, `environment.${k}`)) problems.push(`environment.${k} is required when environment.type is compose`);
+		const setup = dig(config, 'environment.setup');
+		if (setup !== undefined && !(Array.isArray(setup) && setup.every((c) => typeof c === 'string' && c)))
+			problems.push('environment.setup must be a list of commands');
 	}
 	const axes = dig(config, 'review.specialistAxes');
 	if (axes && typeof axes === 'object') {
@@ -134,7 +209,6 @@ export function validate(config = load()) {
 	}
 	const envs = dig(config, 'environments');
 	if (envs && typeof envs === 'object') {
-		for (const name of ['dev', 'staging', 'prod']) if (!envs[name]) problems.push(`missing environments.${name}`);
 		for (const [name, e] of Object.entries(envs)) {
 			if (e && e.axiomDatasets !== undefined && !Array.isArray(e.axiomDatasets))
 				problems.push(`environments.${name}.axiomDatasets must be a list`);
@@ -155,7 +229,7 @@ if (isMain(import.meta.url)) {
 	const [cmd, arg] = process.argv.slice(2);
 	if (cmd === 'get') {
 		const v = get(arg);
-		if (v === undefined) {
+		if (v === undefined || v === null) {
 			console.error(`config: no value for ${arg}`);
 			process.exit(1);
 		}
