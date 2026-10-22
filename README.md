@@ -33,7 +33,7 @@ The flow at a glance: [docs/dev-factory-flow.svg](docs/dev-factory-flow.svg).
 | **State**           | Where a task is in the loop: `ready`, `inProgress`, `inReview`, `reviewed`, `done`. Each source maps these onto its own statuses or labels.                                                |
 | **Factory label**   | `tasks.label` (default `dev-factory`). A task without it is invisible to the factory; adding it is how a person releases work.                                                             |
 | **Blocked**         | The label `factory-blocked` on a task the factory gave up on, with a comment saying what decision it needs. A person answers and removes the label.                                        |
-| **Worktree**        | A separate git checkout (`../.worktrees/<KEY>`) where one task is built, so your own checkout is never touched.                                                                            |
+| **Worktree**        | A separate git checkout (`<worktrees>/<KEY>`) where one task is built, so your own checkout is never touched.                                                                              |
 | **Environment**     | What the task is tested against: nothing special (`none`, tests run on the host) or an isolated docker compose project (`compose`).                                                        |
 | **QA evidence**     | A recorded walk of each UI-facing criterion, with a screenshot taken at the exact commit being shipped. Only `qa.mjs` can mark a case as passed.                                           |
 | **Two reviews**     | A **spec** reviewer (does it do what the task asks, nothing more) and a **standards** reviewer (rules, safety, tests), each in a fresh read-only session.                                  |
@@ -44,27 +44,32 @@ The flow at a glance: [docs/dev-factory-flow.svg](docs/dev-factory-flow.svg).
 
 ## Requirements
 
-| Needed                                                         | Why                                                            | Check                        |
-| -------------------------------------------------------------- | -------------------------------------------------------------- | ---------------------------- |
-| Claude Code                                                    | runs the commands and agents                                   | `claude --version`           |
-| git, and a GitHub remote                                       | worktrees, branches, PRs                                       | `git remote -v`              |
-| GitHub CLI signed in                                           | opens PRs, reads reviews, and is the `github` task source      | `gh auth status`             |
-| Node 20 or newer                                               | every script and the tests (`.nvmrc` is honoured when present) | `node -v`                    |
-| Docker (only for `environment.type: compose`)                  | an isolated stack per task                                     | `docker info`                |
-| Xcode simulator and Maestro (only when `mobile.appDir` is set) | the device lane                                                | `xcrun simctl list runtimes` |
-| macOS (only for the scheduler)                                 | `install.sh` renders launchd jobs                              | `uname`                      |
+| Needed                                                         | Why                                                              | Check                        |
+| -------------------------------------------------------------- | ---------------------------------------------------------------- | ---------------------------- |
+| Claude Code                                                    | runs the commands and agents                                     | `claude --version`           |
+| git, and a GitHub remote                                       | worktrees, branches, PRs                                         | `git remote -v`              |
+| GitHub CLI signed in                                           | opens PRs, reads reviews, and is the `github` task source        | `gh auth status`             |
+| Node 20 or newer                                               | every script and the tests (`.nvmrc` is honoured when present)   | `node -v`                    |
+| Docker (only for `environment.type: compose`)                  | an isolated stack per task                                       | `docker info`                |
+| Xcode simulator and Maestro (only when `mobile.appDir` is set) | the device lane                                                  | `xcrun simctl list runtimes` |
+| macOS (only for the launchd scheduler)                         | `dev-factory install` renders launchd jobs; the cloud needs none | `uname`                      |
 
-`bash dev-factory/scripts/doctor.sh` checks all of this against your actual config and prints the fix for each failure.
+`dev-factory doctor` checks all of this against your actual config and prints the fix for each failure.
 
 ## Quick start
 
-The plugin lives at `dev-factory/` in your repository (a copy, a submodule or a subtree). Everything below runs from the repository root.
+Everything below runs from the root of the repository you want the factory to work on. The plugin is installed once per machine from its marketplace; nothing is copied into your repository.
 
-**1. Start a session with the plugin loaded.**
+**1. Install the plugin.**
 
 ```bash
-claude --plugin-dir ./dev-factory
+claude plugin marketplace add Nightwolf001/agentic-dev-factory
+claude plugin install dev-factory@dev-factory
 ```
+
+(Inside a session: `/plugin marketplace add Nightwolf001/agentic-dev-factory`, then `/plugin install dev-factory@dev-factory`. On Claude Code 2.1.292 or newer one command does both: `claude plugin install dev-factory --marketplace Nightwolf001/agentic-dev-factory`.) The install pulls in the `superpowers` plugin it depends on. To try a clone without installing, start Claude with `claude --plugin-dir /path/to/agentic-dev-factory`.
+
+Start `claude` in your repository. While the plugin is enabled, `dev-factory` is on the PATH of Claude's shell, and every `/dev-factory:` command is available.
 
 **2. Set up once.** `/dev-factory:setup` looks at the repository, asks where tasks live, which MCP servers you want and whether tests need a container, and writes a small `dev-factory.config.json`. Every question has a working answer that needs no account. Prefer to do it by hand? Create the file yourself:
 
@@ -90,7 +95,7 @@ You see the worktree and branch being created, the test written first, the QA wa
 
 **5. Review the PR like any other.** Request changes and the next pass fixes them on the same branch; approve and merge when you are happy.
 
-**6. When you trust it, let it run.** `bash dev-factory/scripts/install.sh --apply --load` schedules `tick` every 15 minutes (see [Unattended passes](#set-up-for-unattended-passes)).
+**6. When you trust it, let it run.** On a Mac, `dev-factory install --apply --load` schedules `tick` every 15 minutes; in the cloud use GitHub Actions or a Claude Code routine (see [Unattended passes](#set-up-for-unattended-passes) and [Cloud and Claude environments](#cloud-and-claude-environments)).
 
 No tracker at all and just a small change? Skip steps 3 and 4:
 
@@ -115,7 +120,7 @@ Details, status mappings and the exact operations are in [`skills/task-source/`]
 
 ### Setting up each source
 
-Put the snippet in `dev-factory.config.json` at the repository root (or let `/dev-factory:setup` write it), then run `node dev-factory/scripts/config.mjs validate`.
+Put the snippet in `dev-factory.config.json` at the repository root (or let `/dev-factory:setup` write it), then run `dev-factory config validate`.
 
 **`local`** (the default): nothing to configure. Tasks are markdown files under `.factory/tasks/` (`sources.local.dir`), named `<KEY>-<slug>.md`, with a small frontmatter block (`key`, `title`, `state`, `type`, `labels`, `blockedBy`, `updated`) and the description below it. Commit the folder to share a plan, or leave it out of git for a private queue. A person can edit a file freely between passes: `state: ready` queues it, adding `factory-blocked` to `labels` parks it.
 
@@ -125,7 +130,7 @@ Put the snippet in `dev-factory.config.json` at the repository root (or let `/de
 { "tasks": { "source": "github" }, "sources": { "github": { "repo": "owner/name", "assignee": "@me" } } }
 ```
 
-Run `node dev-factory/scripts/tasks.mjs init` once to create the labels. An open issue with the `dev-factory` label is `ready`; progress is a label (`df:in-progress`, `df:in-review`, `df:reviewed`); a closed issue is `done`. `repo` defaults to the current repository and `assignee` is optional (leave it out and any labelled issue qualifies). Keys are `GH-<issue number>`.
+Run `dev-factory tasks init` once to create the labels. An open issue with the `dev-factory` label is `ready`; progress is a label (`df:in-progress`, `df:in-review`, `df:reviewed`); a closed issue is `done`. `repo` defaults to the current repository and `assignee` is optional (leave it out and any labelled issue qualifies). Keys are `GH-<issue number>`.
 
 **`notion`**: a database with a title (`Name`), a `Status` property (status or select) whose options include the five states, a `Tags` multi-select, an optional `Type` select, a unique-ID property so every page has a key like `TASK-12`, and optionally a `Blocked by` relation to the same database.
 
@@ -141,7 +146,7 @@ Run `node dev-factory/scripts/tasks.mjs init` once to create the labels. An open
 }
 ```
 
-Share the database with an internal integration and put its secret in `dev-factory/.env.local` as `NOTION_TOKEN` (the scheduler's cheap preflight uses it), then `node dev-factory/scripts/mcp.mjs enable notion` and log in once with `/mcp` (the session's reads and writes use the Notion MCP server).
+Share the database with an internal integration and put its secret in `~/.dev-factory/.env.local` as `NOTION_TOKEN` (the scheduler's cheap preflight uses it), then `dev-factory mcp enable notion` and log in once with `/mcp` (the session's reads and writes use the Notion MCP server).
 
 **`jira`**: set your site, cloud id, project keys and the status names of your workflow.
 
@@ -166,7 +171,7 @@ Share the database with an internal integration and put its secret in `dev-facto
 }
 ```
 
-Put `JIRA_EMAIL` and `JIRA_API_TOKEN` in `.env.local` for the preflight, enable the MCP server with `node dev-factory/scripts/mcp.mjs enable atlassian`, and log in once with `/mcp`. Transitions are chosen by target status, never by name, because workflows differ per issue type. Ask a Jira admin to allow the labels the factory adds (`factory-blocked`, `factory-validated`, `factory-regression`, `needs-research`).
+Put `JIRA_EMAIL` and `JIRA_API_TOKEN` in `.env.local` for the preflight, enable the MCP server with `dev-factory mcp enable atlassian`, and log in once with `/mcp`. Transitions are chosen by target status, never by name, because workflows differ per issue type. Ask a Jira admin to allow the labels the factory adds (`factory-blocked`, `factory-validated`, `factory-regression`, `needs-research`).
 
 Switching source later changes only `tasks.source`; existing tasks stay where they are.
 
@@ -221,18 +226,18 @@ Base branch: feature/reports-v2
 | `Research:`                     | optional                               | Questions for the researcher agent (also label the task `needs-research`).                                                                   |
 | `Telemetry:`                    | optional                               | Sentry issue ids or log queries, plus `env:<name>`, for bug triage.                                                                          |
 
-Check a draft yourself with `node dev-factory/bin/qa.mjs ticket lint --file draft.md` (add `--strict true` for the planning standard).
+Check a draft yourself with `dev-factory qa ticket lint --file draft.md` (add `--strict true` for the planning standard).
 
 ## Everything is optional
 
 The plugin registers **no MCP server**. `mcp/catalog.json` lists each one with what it is for and what you lose without it; a repository turns on the ones it wants.
 
 ```bash
-node dev-factory/scripts/mcp.mjs list            # what exists, what is on
-node dev-factory/scripts/mcp.mjs recommend       # suggestions for your task source
-node dev-factory/scripts/mcp.mjs enable playwright context7
-node dev-factory/scripts/mcp.mjs connect         # enable the recommended set, then show what still needs a login
-node dev-factory/scripts/mcp.mjs connect --all   # every server in the catalog
+dev-factory mcp list            # what exists, what is on
+dev-factory mcp recommend       # suggestions for your task source
+dev-factory mcp enable playwright context7
+dev-factory mcp connect         # enable the recommended set, then show what still needs a login
+dev-factory mcp connect --all   # every server in the catalog
 ```
 
 Servers are written to the repository's own `.mcp.json` (merged, never overwriting yours). The scheduled pass builds its sandbox and permission settings from what is enabled, so a server that is off opens no network access.
@@ -282,7 +287,7 @@ Defaults ship in `config.json` and name no organisation, site or project. A repo
 }
 ```
 
-`/dev-factory:setup` writes this for you. `node dev-factory/scripts/config.mjs validate` checks it; `get source.states.inProgress` reads from the active source.
+`/dev-factory:setup` writes this for you. `dev-factory config validate` checks it; `get source.states.inProgress` reads from the active source.
 
 | Key                                                         | Meaning                                                                                                                                                                                  |
 | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -290,6 +295,8 @@ Defaults ship in `config.json` and name no organisation, site or project. A repo
 | `tasks.bugTypes`, `tasks.placeholderKey`                    | Task types that count as bugs; the key used for `/dev-factory:quick` branches and PR titles (set it to one your CI accepts)                                                              |
 | `sources.<name>.*`                                          | Per-tracker settings and the mapping from `ready`, `inProgress`, `inReview`, `reviewed`, `done` to its own status names                                                                  |
 | `git.agentAttribution`                                      | `false` (default): every commit and PR is the person's own; the guard refuses `Co-Authored-By`, `--author` and "generated with" text, and `qa.mjs verify` refuses a branch that has them |
+| `runtime.mode`, `runtime.scheduler`                         | `auto` detects local or cloud; the scheduler is `auto`, `launchd`, `github-actions`, `routine` or `none`                                                                                 |
+| `git.worktreeRoot`                                          | Folder worktrees are created in (default `../.worktrees`)                                                                                                                                |
 | `git.baseBranch`, `git.branchTypes`                         | Branch to build on (`null` = the repository's default branch); task type to branch prefix, matched case-insensitively                                                                    |
 | `pr.sizeLabels`, `pr.areaLabels`, `pr.categoryByBranchType` | PR labels. Area labels are path prefix to label, none by default                                                                                                                         |
 | `environment.*`                                             | `type` `none` (tests run on the host, the default) or `compose`; see [Environments](#environments)                                                                                       |
@@ -299,37 +306,75 @@ Defaults ship in `config.json` and name no organisation, site or project. A repo
 | `telemetry.*`, `debug.*`, `validation.*`                    | Result caps and scrub patterns; debug budget; wait before post-merge validation                                                                                                          |
 | `improvement.*`                                             | Label, optional project, and per-scan caps for the self-improvement scan                                                                                                                 |
 | `review.specialistAxes`                                     | Globs that trigger the extra `data`, `infra` and `security` review steps                                                                                                                 |
-| `sandbox.extraDomains`                                      | Extra hosts the scheduled pass may reach                                                                                                                                                 |
+| `sandbox.enabled`, `sandbox.extraDomains`                   | `true`/`false` overrides the base sandbox switch of the scheduled pass (`null` keeps it); extra hosts it may reach                                                                       |
 
 QA surface rules (which paths need a browser or device walk) are in `qa/profiles.yaml`; a repository replaces them with its own `dev-factory.qa.yaml` of the same shape.
 
 ## Starting a session
 
-The `/dev-factory:...` commands exist only in a session that has the plugin loaded.
+The `/dev-factory:...` commands exist only in a session that has the plugin enabled.
 
-| Situation                                             | Do this                                                                                                        |
-| ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| Plugin enabled on this machine (`install.sh --apply`) | Run `claude` from the repository root.                                                                         |
-| One session only                                      | `claude --plugin-dir ./dev-factory`. The flag works only when Claude starts.                                   |
-| Already inside a running session                      | `! bash dev-factory/scripts/install.sh --apply`, then `/reload-plugins` (or `/exit` and start `claude` again). |
+| Situation                              | Do this                                                                                                                                                                          |
+| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Installed with `claude plugin install` | Run `claude` in any repository. It is on for every project of this user.                                                                                                         |
+| One project, shared with the team      | `claude plugin install dev-factory@dev-factory --scope project` (or `dev-factory cloud init`): committed to `.claude/settings.json`, so teammates and cloud sessions get it too. |
+| Trying a clone                         | `claude --plugin-dir /path/to/agentic-dev-factory`. The flag works only when Claude starts, and it wins over an installed copy.                                                  |
+| Already inside a running session       | `/reload-plugins` after installing, or `/exit` and start `claude` again.                                                                                                         |
 
-`install.sh --apply` writes the plugin into `.claude/settings.local.json`, which is not committed: it applies to this machine only and records the absolute path of your checkout. Start `claude` from the repository root of the main checkout, not from a worktree.
+Update with `claude plugin update dev-factory@dev-factory`; scheduled jobs find the newest installed version by themselves.
+
+`dev-factory` is on the PATH of Claude's own shell. To use it from your own terminal, run `/dev-factory:setup` once: it writes a small launcher to `~/.dev-factory/bin/dev-factory` that runs the newest installed copy (add that folder to your PATH).
 
 ## Set up for unattended passes
 
-Only needed for the scheduler. Everything else uses your normal login.
+Only needed for scheduled passes. Everything else uses your normal login.
 
-1. `bash dev-factory/scripts/doctor.sh`: checks the machine and the config and says how to fix each failure. `doctor.sh --wizard` walks the manual steps.
-2. `bash dev-factory/scripts/install.sh` shows what it would do; `--apply` creates `dev-factory/.env.local`, enables the plugin for this checkout and installs the plugins in `plugins.json`; `--load` also loads the launchd jobs (`tick` every 15 minutes, `improve` weekly).
-3. **Unattended login**: in a normal terminal tab run `claude setup-token` and put the value in `dev-factory/.env.local` as `CLAUDE_CODE_OAUTH_TOKEN` (the file is gitignored, mode 600, read by `tick.sh` at run time, and the shell guard stops agents reading env files). Never paste the token into a chat or a task.
+1. `dev-factory doctor` checks the machine and the config and says how to fix each failure. `dev-factory doctor --wizard` walks the manual steps.
+2. `dev-factory install` shows what it would do; `--apply` writes the launcher, creates `~/.dev-factory/.env.local` (mode 600, outside every repository) and installs the plugins in `plugins.json`; `--load` also loads the scheduler.
+3. **Unattended login**: in a normal terminal tab run `claude setup-token` and put the value in `~/.dev-factory/.env.local` as `CLAUDE_CODE_OAUTH_TOKEN`. The shell guard stops factory agents reading env files, and the file is read by `tick.sh` at run time.
 4. **Task source tokens**, only for `jira` (`JIRA_EMAIL`, `JIRA_API_TOKEN`) and `notion` (`NOTION_TOKEN`). They let the scheduler's preflight check for work without starting a paid session. `local` and `github` need none.
 
+Choose where the schedule runs with `runtime.scheduler` (default `auto`):
+
+| Scheduler        | Runs on                     | Set up with                                                                                                              |
+| ---------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `launchd`        | your Mac (auto on macOS)    | `dev-factory install --apply --load`; one job pair per repository, labelled `com.dev-factory.<repo>.tick` and `.improve` |
+| `github-actions` | GitHub-hosted runners       | `dev-factory cloud init --github-actions`                                                                                |
+| `routine`        | Claude's cloud              | `dev-factory cloud init --routine` prints the `/schedule` request to make                                                |
+| `none`           | nowhere; you run it by hand | `dev-factory tick`                                                                                                       |
+
 ```bash
-bash dev-factory/scripts/tick.sh                                # one unattended pass by hand
-launchctl bootout gui/$(id -u)/com.dev-factory.tick             # stop the scheduler
+dev-factory tick                                                # one pass by hand, in the current repository
+launchctl bootout gui/$(id -u)/com.dev-factory.<repo>.tick      # stop a launchd job
 ```
 
 A pass builds one task at a time by default, keeps at most `caps.maxOpenPrs` factory PRs open, and stops a session at `caps.maxBudgetUsd`.
+
+## Cloud and Claude environments
+
+The factory runs where there is no developer machine: Claude Code on the web, a GitHub Actions schedule, or a Claude Code routine. The runtime is detected (`CLAUDE_CODE_REMOTE` or `GITHUB_ACTIONS` means cloud); force it with `DF_RUNTIME` or `runtime.mode`.
+
+```bash
+dev-factory cloud init                    # commit the marketplace and enabled plugins into .claude/settings.json
+dev-factory cloud init --github-actions   # also write .github/workflows/dev-factory-tick.yml
+dev-factory cloud init --routine          # also print how to schedule /dev-factory:tick as a routine
+```
+
+`cloud init` merges into `.claude/settings.json` (your other settings are kept), so a fresh cloud session installs dev-factory and `superpowers` on start. Commit that file. What differs from a local run:
+
+| Concern         | Local                                        | Cloud                                                                                                                                 |
+| --------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Login           | your login, or `CLAUDE_CODE_OAUTH_TOKEN`     | supplied by Claude Code on the web; a repository secret in GitHub Actions                                                             |
+| Commit identity | your git identity                            | Claude Code on the web uses your account; in Actions set the repository variables `DF_GIT_NAME` and `DF_GIT_EMAIL`                    |
+| GitHub access   | `gh auth login`                              | `GH_TOKEN`; in Actions a `DF_GH_TOKEN` secret of the person who should own the PRs (the default token cannot trigger other workflows) |
+| Machine state   | `~/.dev-factory`                             | `DF_STATE_DIR` (a cached folder in Actions); logs go to `<state>/logs` instead of the macOS log folder                                |
+| Worktrees       | `../.worktrees` beside the repository        | set `git.worktreeRoot` to a writable folder if the checkout's parent is read-only                                                     |
+| Environment     | `none` or a docker compose project           | `none` unless the runner has Docker; there is no simulator, so no mobile lane                                                         |
+| Sandbox         | `settings.factory.json` sandbox on           | set `sandbox.enabled` to `false` if the platform already sandboxes the session                                                        |
+| Task source     | any                                          | `github`, `notion` or `jira`; `local` works only for task files that are committed and pushed                                         |
+| MCP servers     | `dev-factory mcp connect`, then `/mcp` login | commit `.mcp.json`; OAuth servers need a login the cloud session cannot do, so prefer API-token or no-MCP sources                     |
+
+The GitHub Actions workflow runs one pass every 15 minutes under a `concurrency` group so two passes never overlap, restores the factory's state between runs from the Actions cache, sets the commit identity from the repository variables, installs the plugin from the marketplace, and runs `dev-factory tick`. Its header lists the secrets it needs.
 
 ## Using the factory
 
@@ -343,7 +388,7 @@ A pass builds one task at a time by default, keeps at most `caps.maxOpenPrs` fac
 | See what is going on              | `/dev-factory:status`                                                                                     |
 | Check the machine and config      | `/dev-factory:doctor`                                                                                     |
 | Check a fix after the merge       | `/dev-factory:validate TASK-12` (needs a telemetry MCP server)                                            |
-| Run one scheduled pass            | `bash dev-factory/scripts/tick.sh` or `/dev-factory:tick`                                                 |
+| Run one scheduled pass            | `dev-factory tick` or `/dev-factory:tick`                                                                 |
 | Ask for changes                   | Submit a **Request changes** review on the PR, or comment `/dev-factory fix <what to change>` on the task |
 | Unblock                           | Answer the factory's comment, then remove the `factory-blocked` label                                     |
 | Keep a task out of the queue      | Remove `tasks.label` or add `factory-blocked`                                                             |
@@ -352,7 +397,7 @@ A pass builds one task at a time by default, keeps at most `caps.maxOpenPrs` fac
 
 |             | Tick (unattended)                                                                                            | Inline (your session)                                 |
 | ----------- | ------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------- |
-| Started by  | a scheduler every 15 minutes, or `bash dev-factory/scripts/tick.sh`                                          | you typing a command                                  |
+| Started by  | a scheduler every 15 minutes, or `dev-factory tick`                                                          | you typing a command                                  |
 | Which tasks | every `ready` task in queue order, up to the caps                                                            | the one you name (`build`), or none (`quick`)         |
 | Permissions | `settings.factory.json` plus what you enabled; sandboxed, no prompts, a budget cap                           | your own                                              |
 | Login       | `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`                                                          | your normal login                                     |
@@ -395,7 +440,7 @@ Isolated mode (`--ports none`) publishes no host ports so several worktrees can 
 
 ## QA evidence
 
-`node dev-factory/bin/qa.mjs` is the only thing that can mark a case as passed.
+`dev-factory qa` is the only thing that can mark a case as passed.
 
 | Command                                                                             | Purpose                                                    |
 | ----------------------------------------------------------------------------------- | ---------------------------------------------------------- |
@@ -408,7 +453,7 @@ Isolated mode (`--ports none`) publishes no host ports so several worktrees can 
 | `verify --head SHA --run N [--require-review true]` (or `--key KEY`)                | Confirm a passing result for exactly this commit           |
 | `ticket lint\|base\|blocked-by --file F`                                            | Check a task description, read its base branch or blockers |
 
-Cases live under `qa/cases/<KEY>/` (`.spec.ts` for Playwright, `.yaml` for Maestro). Which paths count as UI is `uiGlobs` in the QA profiles; `nonUiGlobs` carves documentation and tests out, so a diff that only touches Markdown is "no UI surface" and `mark-na` accepts it, while a code file beside it needs a walk. A pass needs a fresh screenshot of this run at this commit with an assertion that describes this walk.
+Cases are committed with the change, in your repository under `.factory/qa/cases/<KEY>/` (`.spec.ts` for Playwright, `.yaml` for Maestro). Which paths count as UI is `uiGlobs` in the QA profiles; `nonUiGlobs` carves documentation and tests out, so a diff that only touches Markdown is "no UI surface" and `mark-na` accepts it, while a code file beside it needs a walk. A pass needs a fresh screenshot of this run at this commit with an assertion that describes this walk.
 
 ## Rules and their reasons
 
@@ -417,8 +462,9 @@ Cases live under `qa/cases/<KEY>/` (`.spec.ts` for Playwright, `.yaml` for Maest
 -   Commits and PRs are always the person's own. While `git.agentAttribution` is `false` (the default) the shell guard refuses `Co-Authored-By`, `--author`, identity set through `git config` or `GIT_AUTHOR_*`, and "generated with" text in a commit or PR; `qa.mjs verify` refuses a branch with an agent as author, committer or co-author; the scheduled pass runs with Claude Code's own commit and PR attribution switched off. In your own interactive sessions set `"attribution": {"commit": "", "pr": ""}` in your Claude Code settings so Claude Code adds none either.
 -   Only the task's own branch may be pushed, never forced. The shell guard reads git past global options, wrappers and `sh -c` or `$(...)` payloads, and treats `gh api` with a body field as a write.
 -   When the environment is a container, dependencies are installed and tests run inside it, never on the host.
--   Inside a run, the factory's own files (`dev-factory/`, `.claude/`, `.github/`), run state, and QA and review records cannot be edited by a task, by tool or by shell. Review records can only be written by `qa.mjs review record`, which refuses anyone whose `run.json` role is not that axis's reviewer; debug rounds likewise need the debugger role.
--   Edits under `dev-factory/` are always checked against the vocabulary lint.
+-   Inside a run, the installed plugin (and a vendored `dev-factory/`), `.claude/`, `.github/`, the local task files in `.factory/tasks/`, other tasks' QA cases, run state, and QA and review records cannot be edited by a task, by tool or by shell. Review records can only be written by `qa.mjs review record`, which refuses anyone whose `run.json` role is not that axis's reviewer; debug rounds likewise need the debugger role.
+-   The factory agents cannot write the task tracker (`gh issue` writes and `tasks.mjs` writes are refused to them); only the scheduler pass and your own commands do.
+-   Edits under a vendored `dev-factory/` are always checked against the vocabulary lint.
 -   Nothing is retried on its own after a block. A person decides.
 
 ## Telemetry (read-only)
@@ -451,7 +497,9 @@ Sentry and Axiom are optional and reachable only by the debugger role. Rules are
 | `config.json`                  | Defaults; the repository's `dev-factory.config.json` merges over them                                 |
 | `settings.factory.json`        | Base sandbox and permission settings for scheduled runs                                               |
 | `launchd/`                     | Scheduler templates rendered by `install.sh`                                                          |
-| `test/`                        | `node --test dev-factory/test/*.test.mjs`                                                             |
+| `test/`                        | `node --test test/*.test.mjs` (from the plugin repository root)                                       |
+
+Developing the plugin: `claude --plugin-dir .` from this repository, `node --test test/*.test.mjs`, `claude plugin validate .`, `npx prettier@3.2.5 --check "**/*.{md,json,mjs}"`, `bash scripts/lint-vocabulary.sh`. Release by bumping `version` in `.claude-plugin/plugin.json` and the marketplace entry together (a test checks they agree); installed copies update with `claude plugin update`.
 
 Adding a tracker: a new file under `scripts/sources/` that answers `list({ states, staleMinutes })` (and the write methods if scripts can drive it), a case in `scripts/sources/index.mjs`, a block under `sources` in `config.json` with its `states`, and `skills/task-source/<name>.md`. Adding an MCP server: an entry in `mcp/catalog.json`.
 
@@ -460,13 +508,17 @@ Adding a tracker: a new file under `scripts/sources/` that answers `list({ state
 | Symptom                                             | What to do                                                                                                                                                                                                                   |
 | --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `config: missing sources.jira.site`                 | `tasks.source` is `jira` but the Jira block is not filled in your `dev-factory.config.json`. Run `/dev-factory:setup`.                                                                                                       |
+| `dev-factory: command not found`                    | It is on PATH only inside Claude's shell. In your terminal run `/dev-factory:setup` once and add `~/.dev-factory/bin` to PATH, or call the launcher by its full path.                                                        |
+| `dev-factory plugin not found` from the launcher    | The plugin is not installed on this machine: `claude plugin install dev-factory@dev-factory`, or set `DF_PLUGIN_DIR` to a clone.                                                                                             |
+| A scheduled job stopped after a plugin update       | It will not: jobs run the launcher, which picks the newest installed version. Check `~/.dev-factory/logs` or the macOS log and `dev-factory doctor`.                                                                         |
+| `git worktree add` fails in the cloud               | The checkout's parent folder is read-only. Set `git.worktreeRoot` to a writable folder.                                                                                                                                      |
 | Pass exits 75 immediately                           | Another pass holds `~/.dev-factory/tick.lock`. If none is running, delete the directory.                                                                                                                                     |
-| `environment busy, retrying next pass`              | The device lock or the stack cap is held. `bash dev-factory/scripts/e2e-env.sh sweep` clears stale owners.                                                                                                                   |
+| `environment busy, retrying next pass`              | The device lock or the stack cap is held. `dev-factory env sweep` clears stale owners.                                                                                                                                       |
 | `verify FAILED`                                     | A service or check did not pass. Read the message, then `docker compose -p df-<key> logs`.                                                                                                                                   |
 | Port held by another process                        | Something else is running the dev server. Stop it yourself; the factory never kills a process it did not start.                                                                                                              |
 | Builder says a tool is not allowed                  | MCP tools are named `mcp__<server>__*` when your `.mcp.json` started them and `mcp__plugin_dev-factory_<server>__*` when the plugin did. Check the `system/init` event of `claude -p --output-format stream-json --verbose`. |
 | Jira or Notion tools fail in unattended passes only | The OAuth login did not survive. Set the API token in `.env.local` and use an API-token MCP server in `.mcp.json`.                                                                                                           |
-| A UI change is blocked for lack of a browser        | Enable the `playwright` server: `node dev-factory/scripts/mcp.mjs enable playwright`.                                                                                                                                        |
+| A UI change is blocked for lack of a browser        | Enable the `playwright` server: `dev-factory mcp enable playwright`.                                                                                                                                                         |
 | Guard blocks a command                              | It is working as designed. Read its message; the allowed route is almost always a container exec or a PR comment.                                                                                                            |
 | Login expired                                       | Run `claude setup-token` again and update `CLAUDE_CODE_OAUTH_TOKEN`.                                                                                                                                                         |
 | `/dev-factory:...` commands are missing             | The session has no plugin loaded. See [Starting a session](#starting-a-session).                                                                                                                                             |
@@ -474,8 +526,10 @@ Adding a tracker: a new file under `scripts/sources/` that answers `list({ state
 
 ## Known limits
 
--   `qa.mjs` reads its default QA profiles from the plugin (or the repository's `dev-factory.qa.yaml`), so a worktree whose base has no `dev-factory/` folder still works. QA cases you author go under `dev-factory/qa/cases/<KEY>/` in the worktree and are committed with the change. The `.dev-factory/` run state is kept out of git by `worktree.mjs`.
--   The plugin is expected at `dev-factory/` in the repository (commands and hooks refer to it by that path).
+-   `qa.mjs` reads its default QA profiles from the plugin (or the repository's `dev-factory.qa.yaml`). QA cases you author go under `.factory/qa/cases/<KEY>/` in the worktree and are committed with the change. The `.dev-factory/` run state is kept out of git by `worktree.mjs`.
+-   The plugin is installed from its marketplace and lives in Claude's plugin cache, outside your repository. Only what belongs to your project is written into it: `dev-factory.config.json`, optional `dev-factory.qa.yaml`, `.factory/` (local tasks, QA cases) and `.mcp.json`. The factory's own files are never in your repository, so its self-improvement PRs (`/dev-factory:improve`) apply only when you vendor the plugin at `dev-factory/`; otherwise that scan files improvement tasks and still promotes learnings into `AGENTS.md`.
+-   The launchd scheduler is macOS only; elsewhere use GitHub Actions, a routine, or run `dev-factory tick` yourself.
+-   In the cloud there is no simulator and usually no Docker, so the mobile lane and compose environments need your own runner.
 -   Web QA needs canonical ports, so only one task builds with a browser walk at a time; concurrent builds have isolated stacks a host browser cannot reach. Dispatch into one worktree at a time.
 -   Review is two steps by separate fresh-context sessions with a read-only shell, but the same model family as the builder: a second look, not an independent one.
 -   The shell guard reads command strings. It stops mistakes and the ordinary ways round a rule, not an agent that writes and runs its own program. The separation that holds is that the builder has no tracker or GitHub tools, the scheduler holds the credentials, drafts are never merged by the factory, and a person reads the diff before merging.
