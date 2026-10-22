@@ -5,7 +5,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { load, merge } from '../scripts/config.mjs';
 import { build } from '../scripts/factory-settings.mjs';
-import { allowRules, catalog, disable, enable, recommend, status } from '../scripts/mcp.mjs';
+import { allowRules, catalog, connectReport, disable, enable, recommend, status } from '../scripts/mcp.mjs';
 import { evaluateMcp } from '../scripts/mcp-guard-lib.mjs';
 
 const tmp = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'df-mcp-')), '.mcp.json');
@@ -74,4 +74,23 @@ test('the read-only telemetry guard covers a server started by the plugin and on
 		assert.equal(evaluateMcp({ toolName: `${prefix}update_issue`, toolInput: {}, config: load() }).deny, true, prefix);
 		assert.equal(evaluateMcp({ toolName: `${prefix}search_issues`, toolInput: { limit: 10 }, config: load() }).deny, false, prefix);
 	}
+});
+
+test('connect reports which enabled servers are connected, need a login, or have not started', () => {
+	const file = tmp();
+	enable(['playwright', 'sentry', 'notion', 'context7'], file);
+	const listing = [
+		'playwright: npx -y @playwright/mcp - ✓ Connected',
+		'sentry: https://mcp.sentry.dev/mcp (HTTP) - ! Needs authentication',
+		'plugin:dev-factory:notion: https://x (HTTP) - ✗ Failed to connect',
+	].join('\n');
+	const byId = Object.fromEntries(connectReport(file, listing).map((r) => [r.id, r]));
+	assert.equal(byId.playwright.state, 'connected');
+	assert.deepEqual([byId.sentry.state, byId.sentry.login], ['needs login', true]);
+	assert.equal(byId.notion.state, 'failed');
+	assert.deepEqual([byId.context7.state, byId.context7.login], ['not started', false]);
+	assert.ok(
+		connectReport(file, '').every((r) => r.state === 'not started'),
+		'no answer from claude is not a claim of success',
+	);
 });

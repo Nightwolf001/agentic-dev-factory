@@ -7,7 +7,9 @@
 //   mcp.mjs enable ID [ID...]     add the servers to .mcp.json
 //   mcp.mjs disable ID [ID...]    remove them again
 //   mcp.mjs recommend             the ids worth enabling for tasks.source and this repository
+//   mcp.mjs connect [--all]       enable the recommended servers (or all), then show which still need a login
 //   mcp.mjs allow                 the permission rules for the enabled servers (used by the scheduler's settings)
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -65,6 +67,24 @@ export function status(file, cat = catalog()) {
 	}));
 }
 
+// Where each enabled server stands, from the text of `claude mcp list`: connected, needs a login (run /mcp), or not
+// started yet (restart claude so it reads .mcp.json).
+export function connectReport(file, listOutput = '', cat = catalog()) {
+	const lines = String(listOutput).split('\n');
+	return Object.keys(readProject(file).mcpServers ?? {}).map((id) => {
+		const line = lines.find((l) => l.startsWith(`${id}:`) || l.startsWith(`plugin:dev-factory:${id}:`)) ?? '';
+		const state =
+			/connected/i.test(line) && !/needs auth|failed/i.test(line)
+				? 'connected'
+				: /needs auth/i.test(line)
+					? 'needs login'
+					: /failed/i.test(line)
+						? 'failed'
+						: 'not started';
+		return { id, state, login: Boolean(cat[id]?.requires?.some((r) => /oauth/i.test(r))) };
+	});
+}
+
 // Permission rules: both spellings of every enabled server, since the plugin names its own servers plugin_dev-factory_<id>.
 export function allowRules(file) {
 	return Object.keys(readProject(file).mcpServers ?? {}).flatMap((id) => [`mcp__${id}`, `mcp__plugin_dev-factory_${id}`]);
@@ -78,10 +98,26 @@ if (isMain(import.meta.url)) {
 			for (const s of status(file)) console.log(`${s.enabled ? 'on ' : 'off'}  ${s.id.padEnd(20)} ${s.purpose}\n     without it: ${s.without}`);
 		else if (cmd === 'enable') console.log(JSON.stringify({ added: enable(ids, file) }));
 		else if (cmd === 'disable') console.log(JSON.stringify({ removed: disable(ids, file) }));
-		else if (cmd === 'recommend') console.log(recommend(load()).join(' '));
+		else if (cmd === 'connect') {
+			const all = ids.includes('--all');
+			const chosen = all ? Object.keys(catalog()) : recommend(load());
+			const added = enable(chosen, file);
+			let listing = '';
+			try {
+				listing = execFileSync('claude', ['mcp', 'list'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 60000 });
+			} catch {
+				/* claude not on PATH, or no answer: report what is enabled */
+			}
+			if (added.length) console.log(`enabled: ${added.join(', ')}`);
+			for (const r of connectReport(file, listing)) {
+				const next =
+					r.state === 'connected' ? '' : r.login ? '  -> in claude run /mcp and log in' : '  -> restart claude so it reads .mcp.json';
+				console.log(`${r.state === 'connected' ? 'ok  ' : 'todo'}  ${r.id.padEnd(20)} ${r.state}${next}`);
+			}
+		} else if (cmd === 'recommend') console.log(recommend(load()).join(' '));
 		else if (cmd === 'allow') console.log(JSON.stringify(allowRules(file)));
 		else {
-			console.error('usage: mcp.mjs list | enable ID... | disable ID... | recommend | allow');
+			console.error('usage: mcp.mjs list | enable ID... | disable ID... | recommend | connect [--all] | allow');
 			process.exit(3);
 		}
 	} catch (e) {

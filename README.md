@@ -66,6 +66,8 @@ The plugin registers **no MCP server**. `mcp/catalog.json` lists each one with w
 node dev-factory/scripts/mcp.mjs list            # what exists, what is on
 node dev-factory/scripts/mcp.mjs recommend       # suggestions for your task source
 node dev-factory/scripts/mcp.mjs enable playwright context7
+node dev-factory/scripts/mcp.mjs connect         # enable the recommended set, then show what still needs a login
+node dev-factory/scripts/mcp.mjs connect --all   # every server in the catalog
 ```
 
 Servers are written to the repository's own `.mcp.json` (merged, never overwriting yours). The scheduled pass builds its sandbox and permission settings from what is enabled, so a server that is off opens no network access.
@@ -80,7 +82,7 @@ Servers are written to the repository's own `.mcp.json` (merged, never overwriti
 | `notion`, `atlassian` | read and write Notion or Jira tasks           | choose another `tasks.source`                                        |
 | `sentry`, `axiom`     | read-only telemetry for bug triage/validation | triage works from the task and a reproduction; validation is skipped |
 
-OAuth servers need one login: start `claude` and run `/mcp`. `doctor.sh` reports which enabled servers are connected.
+OAuth servers need one login that no script can do for you: start `claude` and run `/mcp`. `connect` tells you which servers are waiting for it. `doctor.sh` reports which enabled servers are connected.
 
 ## How a task flows
 
