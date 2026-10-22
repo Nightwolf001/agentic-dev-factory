@@ -8,6 +8,7 @@
 //   dev-factory tick | improve             run one scheduled pass now
 //   dev-factory cloud init [--github-actions]  set the repository up for Claude Code on the web or GitHub Actions
 //   dev-factory qa|worktree|env ...        the QA recorder, worktree helper and environment script
+//   dev-factory target                     where an improvement to the factory itself can be made from here
 //   dev-factory path                       print the plugin directory
 //
 // `dev-factory` is bin/dev-factory (on PATH while the plugin is enabled in a Claude Code session) and the launcher that
@@ -26,6 +27,7 @@ export const COMMANDS = {
 	tick: ['bash', 'scripts/tick.sh'],
 	improve: ['bash', 'scripts/improve.sh'],
 	cloud: ['node', 'scripts/cloud.mjs'],
+	target: ['node', 'scripts/factory-target.mjs'],
 	qa: ['node', 'bin/qa.mjs'],
 	worktree: ['node', 'scripts/worktree.mjs'],
 	env: ['bash', 'scripts/e2e-env.sh'],

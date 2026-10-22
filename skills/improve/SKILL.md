@@ -17,12 +17,12 @@ Method:
 2. A finding needs at least `improvement.minEvidence` occurrences across different tickets. One-off failures are not findings. A symptom with no evidence is not a finding.
 3. Deduplicate: LIST the tasks labelled `improvement.label` that are not `done` (in Jira: `project = <improvement.project> AND labels = "<improvement.label>" AND statusCategory != Done`). A match is commented on with the new evidence count instead of filed again.
 4. File at most `improvement.maxTicketsPerScan` new issues, highest evidence first. Each states the recurring symptom, the evidence (run ids, fingerprints, ticket keys and counts, scrubbed), and the proposed change to a skill, agent, hook, config or script. Labels: `dev-factory-improvement` only, never `dev-factory`, so the factory does not build changes to itself unattended.
-5. A finding becomes a draft PR only when the plugin is vendored in this repository (`dev-factory/.claude-plugin/plugin.json` exists; an installed plugin lives outside the repository, so there is nothing here to change), its change is confined to `dev-factory/`, and it avoids the enforcement files (`factory-improver`'s rules), and at most `improvement.maxPrsPerScan` per scan. Anything touching enforcement stays an improvement task for a person.
-6. Keep `dev-factory/IMPROVEMENT-PLAN.md` current: one row per finding with symptom, evidence count, proposed change, task key, PR URL and status.
+5. A finding becomes a draft PR only when `factory-target.mjs` found a checkout of the factory's own source (`self`: this repository is the plugin; `clone`: `improvement.factoryRepo` names one; `vendored`: copied in at `dev-factory/`; an installed plugin lives in the plugin cache, so with `none` there is nothing to change), its change is confined to the factory folder, and it avoids the enforcement files (`factory-improver`'s rules), and at most `improvement.maxPrsPerScan` per scan. Anything touching enforcement stays an improvement task for a person.
+6. Keep the factory repository's `IMPROVEMENT-PLAN.md` (`<prefix>IMPROVEMENT-PLAN.md`) current: one row per finding with symptom, evidence count, proposed change, task key, PR URL and status.
 7. Run `node "${CLAUDE_PLUGIN_ROOT}/bin/qa.mjs" scrub --file` on every issue body, PR body and comment before posting.
 
 Promotion of learnings into `AGENTS.md`:
 
 -   A learning is promoted when it recurred on at least `improvement.minEvidence` different tickets, or a person put `/dev-factory promote` on its PR. Everything else stays in the PR body and the preload index.
 -   The target is the closest `AGENTS.md` to the learning's `scope`, in its `## Learned rules` section: one rule line of at most 200 characters ending with its evidence ticket keys, at most `improvement.agentsRuleCap` per section (merge or retire before adding). `factory-promoter` does it and `qa.mjs promote check` proves only that section changed.
--   Never `CLAUDE.md`, editor rule files or `dev-factory/AGENTS.md`. A person merges the draft PR.
+-   Never `CLAUDE.md`, editor rule files or the factory's own `AGENTS.md`. A person merges the draft PR.

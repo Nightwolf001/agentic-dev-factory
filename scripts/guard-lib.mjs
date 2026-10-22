@@ -3,6 +3,7 @@
 // and against ordinary bypasses (wrappers, global options, substitutions, inline interpreters), not a
 // sandbox: an agent that writes and runs its own program is stopped by the real separation, which is that
 // the builder has no task-tracker or GitHub tools, the scheduler holds the credentials, and a person merges.
+import path from 'node:path';
 import { PLUGIN_ROOT } from './plugin-root.mjs';
 
 // `node <plugin>/bin/qa.mjs <rest>`: the real script of this plugin (its own directory, quoted or not), or one vendored at
@@ -406,7 +407,7 @@ const normalize = (p, root) => {
 export function evaluateEdit({ filePath, text = '', root, active = false, run = null }) {
 	if (typeof filePath !== 'string' || !filePath) return { deny: false };
 	const rel = normalize(filePath, root);
-	if (/^dev-factory\//.test(rel) && FORBIDDEN.test(text)) {
+	if ((/^dev-factory\//.test(rel) || (run?.role === 'improver' && run.factoryPrefix === '')) && FORBIDDEN.test(text)) {
 		return { deny: true, reason: 'dev-factory guard: this vocabulary is not allowed under dev-factory/ (see scripts/lint-vocabulary.sh)' };
 	}
 	if (!active) return { deny: false };
@@ -424,15 +425,19 @@ export function evaluateEdit({ filePath, text = '', root, active = false, run = 
 	}
 	if (run?.role === 'improver') {
 		// An improver may change the factory, except the files that enforce its own limits.
-		const enforcement =
-			/^dev-factory\/(scripts\/(guard-lib|guard-bash|edit-guard|stop-gate|stop-gate-lib|mcp-guard|mcp-guard-lib|scrub-lib|debug-lib)\.|bin\/qa\.mjs|hooks\/|settings\.factory\.json|config\.json|plugins\.json)/;
+		// the factory is a folder of this repository (`dev-factory/`, the default) or the repository itself (factoryPrefix '')
+		const prefix = run.factoryPrefix ?? 'dev-factory/';
+		const enforcement = new RegExp(
+			`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(scripts/(guard-lib|guard-bash|edit-guard|stop-gate|stop-gate-lib|mcp-guard|mcp-guard-lib|scrub-lib|debug-lib|plugin-root)\\.|bin/qa\\.mjs|hooks/|settings\\.factory\\.json|config\\.json|plugins\\.json)`,
+		);
 		if (enforcement.test(rel))
 			return {
 				deny: true,
 				reason: `dev-factory guard: ${rel} enforces the factory's own limits; changes to it are made by a person, file a task instead`,
 			};
-		if (rel.startsWith('dev-factory/') && !rel.includes('..')) return { deny: false };
-		return { deny: true, reason: `dev-factory guard: an improver changes only dev-factory/ (got ${rel})` };
+		const inside = prefix === '' ? !/^(\.git|\.github|\.claude|\.dev-factory)(\/|$)/.test(rel) : rel.startsWith(prefix);
+		if (inside && !rel.includes('..') && !path.isAbsolute(rel)) return { deny: false };
+		return { deny: true, reason: `dev-factory guard: an improver changes only the factory${prefix ? ` under ${prefix}` : ''} (got ${rel})` };
 	}
 	const ownCase = run?.key && (rel.startsWith(`.factory/qa/cases/${run.key}/`) || rel.startsWith(`dev-factory/qa/cases/${run.key}/`));
 	// the installed plugin is outside the worktree, in the plugin cache: no ticket edits it by absolute path

@@ -7,13 +7,14 @@ You are the improvement pass of the factory. You hold the task-source and GitHub
 
 `<worktrees>` below is the folder worktrees live in: the output of `node "${CLAUDE_PLUGIN_ROOT}/scripts/worktree.mjs" root` (`git.worktreeRoot`, by default a `.worktrees` folder beside the repository; point it at a writable folder in a cloud environment).
 
+0. Find where the factory can be changed from here: `node "${CLAUDE_PLUGIN_ROOT}/scripts/factory-target.mjs"` prints `{"mode","repo","prefix","reason"}`. `self` (this repository is the plugin's own), `clone` (`improvement.factoryRepo` or `DF_FACTORY_REPO` names a local checkout of it) and `vendored` (copied into this repository at `dev-factory/`) allow improvement PRs, made in `repo` with the folder `prefix`; `none` (an installed plugin lives in Claude's plugin cache) allows none and the findings stay improvement tasks, so say the `reason` in your report.
 1. Gather the inputs of the skill and cluster them. With `--dry-run`, print the findings and what you would file, and stop.
 2. Deduplicate against open tasks labelled `improvement.label` and CREATE the new ones (project or database `improvement.project` when the source needs one, type Improvement, state `ready` but without `tasks.label`, so the factory does not build its own changes, label `improvement.label` only). Scrub every body first.
-3. For each new finding that qualifies for a PR (capped by `improvement.maxPrsPerScan`; none when the plugin is not vendored in this repository, see `skills/improve`; the findings stay improvement tasks):
+3. For each new finding that qualifies for a PR (capped by `improvement.maxPrsPerScan`; none when step 0 said `none`):
 
-    1. `git worktree add <worktrees>/<KEY> -b ai-tooling/<KEY>-<slug> origin/<base>` (slug: at most 6 lowercase words).
-    2. Write `<worktree>/.dev-factory/run.json`: `{"key","branch","startedAt","mode":"scheduled","runId":"<unix-seconds>","role":"improver","kind":"improvement"}`, then `node "${CLAUDE_PLUGIN_ROOT}/scripts/run-context.mjs" set --worktree <absolute worktree path>` so the hooks find it.
-    3. Dispatch `factory-improver` with the key, worktree, branch, symptom, evidence and proposed change. Wait with a foreground loop (never end your turn to wait):
+    1. In the factory repository from step 0: `git -C <repo> fetch origin`, then `git -C <repo> worktree add <worktrees>/<KEY> -b ai-tooling/<KEY>-<slug> origin/<base>`, where `<base>` is `node "${CLAUDE_PLUGIN_ROOT}/scripts/worktree.mjs" default-branch --repo <repo>` (slug: at most 6 lowercase words). A pull request opened from that worktree goes to the factory's own repository.
+    2. Write `<worktree>/.dev-factory/run.json`: `{"key","branch","startedAt","mode":"scheduled","runId":"<unix-seconds>","role":"improver","kind":"improvement","factoryPrefix":"<prefix>"}` (`factoryPrefix` from step 0: the guards confine the improver to that folder, or to the whole repository when it is empty), then `node "${CLAUDE_PLUGIN_ROOT}/scripts/run-context.mjs" set --worktree <absolute worktree path>` so the hooks find it.
+    3. Dispatch `factory-improver` with the key, worktree, branch, `prefix`, symptom, evidence and proposed change. Wait with a foreground loop (never end your turn to wait):
 
         ```bash
         W=<worktree>/.dev-factory; end=$((SECONDS+540))

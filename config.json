@@ -167,6 +167,7 @@
 	},
 	"improvement": {
 		"project": null,
+		"factoryRepo": null,
 		"label": "dev-factory-improvement",
 		"maxTicketsPerScan": 5,
 		"maxPrsPerScan": 2,

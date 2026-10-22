@@ -34,6 +34,7 @@ export const ENV_OVERRIDES = {
 	'models.debugger': 'DF_DEBUGGER_MODEL',
 	'caps.maxResumes': 'DF_MAX_RESUMES',
 	'caps.frontierRepeatHours': 'DF_FRONTIER_REPEAT_HOURS',
+	'improvement.factoryRepo': 'DF_FACTORY_REPO',
 };
 
 // Keys every source needs; the active source's own keys are added by requiredFor().
@@ -197,6 +198,9 @@ export function validate(config = load()) {
 	if (sandbox != null && typeof sandbox !== 'boolean') problems.push('sandbox.enabled must be true, false or null');
 	const wt = dig(config, 'git.worktreeRoot');
 	if (wt !== undefined && (typeof wt !== 'string' || !wt)) problems.push('git.worktreeRoot must be a folder path');
+	const factoryRepo = dig(config, 'improvement.factoryRepo');
+	if (factoryRepo != null && (typeof factoryRepo !== 'string' || !factoryRepo))
+		problems.push('improvement.factoryRepo must be a folder path or null');
 	const attribution = dig(config, 'git.agentAttribution');
 	if (attribution !== undefined && typeof attribution !== 'boolean') problems.push('git.agentAttribution must be true or false');
 	const type = dig(config, 'environment.type');

@@ -20,7 +20,7 @@ export function decide({ run, has, head = '', debug = { rounds: 0, open: [], has
 	if (run.role === 'improver') {
 		return {
 			finished: has('blocked.json') || has('improve.done'),
-			next: 'Finish: run the tests, Prettier, the vocabulary lint and claude plugin validate, push the branch, open the draft PR, then write .dev-factory/improve.done containing the PR URL, or write .dev-factory/blocked.json {"reason","decision"}.',
+			next: 'Finish: run the tests, Prettier, the vocabulary lint (on the worktree) and claude plugin validate, push the branch, open the draft PR, then write .dev-factory/improve.done containing the PR URL, or write .dev-factory/blocked.json {"reason","decision"}.',
 		};
 	}
 	if (run.role === 'researcher') {

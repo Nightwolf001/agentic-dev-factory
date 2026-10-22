@@ -476,7 +476,29 @@ Sentry and Axiom are optional and reachable only by the debugger role. Rules are
 -   Every pass appends a record to `~/.dev-factory/runs/runs.jsonl` and a counts-only comment on the task.
 -   Learnings live in the PR body, never as repository files: at most 3 per task, each with a `scope:` path, mandatory after a debug round or a Critical or High finding (`qa.mjs learnings check`). Before a build the pass gives the builder up to five recent learnings that match the task's paths.
 -   Promotion: a learning that recurred on two tasks, or that you confirm with `/dev-factory promote` on its PR, becomes one rule line in the `## Learned rules` section of the closest `AGENTS.md` through a draft PR. `CLAUDE.md` and editor rule files stay human-edited.
--   `/dev-factory:improve` (weekly through `improve.sh`, or by hand) clusters recurring causes, files at most `improvement.maxTicketsPerScan` improvement tasks, and opens at most `improvement.maxPrsPerScan` draft PRs for findings confined to `dev-factory/`. `IMPROVEMENT-PLAN.md` is the prioritised list. Nothing is merged without you.
+-   `/dev-factory:improve` (weekly through `improve.sh`, or by hand) clusters recurring causes, files at most `improvement.maxTicketsPerScan` improvement tasks, and opens at most `improvement.maxPrsPerScan` draft PRs for findings through `factory-improver`, each reviewed by the two-step review first. `IMPROVEMENT-PLAN.md` is the prioritised list. Nothing is merged without you. Changing the factory needs a checkout of its source: see [Improving the factory itself](#improving-the-factory-itself).
+
+### Improving the factory itself
+
+This section is for the owner of the plugin. The factory is installed from the marketplace into Claude's plugin cache, which an improvement never touches, so improvement PRs are made in a checkout of the plugin's own repository. `dev-factory target` (`scripts/factory-target.mjs`, which `/dev-factory:improve` runs first) finds one:
+
+| Mode       | When                                                                                                                                    | Where the improver works                             |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| `self`     | you run `/dev-factory:improve` from inside the plugin's own repository (with `claude --plugin-dir .`)                                   | a worktree of that repository                        |
+| `clone`    | `improvement.factoryRepo` (or `DF_FACTORY_REPO`) names a local checkout of the plugin repository, and you run the scan from any project | a worktree of that checkout, PRs go to its `origin`  |
+| `vendored` | the plugin is copied into the repository at `dev-factory/`                                                                              | `dev-factory/` in a worktree of that repository      |
+| `none`     | the plugin is only installed and no checkout is named                                                                                   | no PRs: findings are filed as improvement tasks only |
+
+The evidence comes from the machine you run it on: every pass appends a record to `~/.dev-factory/runs/`, whichever repository it ran in, so a scan on your own machine sees patterns across all your projects. (Runs in GitHub Actions or a cloud session are not on your machine.) A typical owner setup:
+
+```bash
+git clone git@github.com:<you>/agentic-dev-factory.git ~/code/agentic-dev-factory
+export DF_FACTORY_REPO=~/code/agentic-dev-factory     # in your shell profile, or improvement.factoryRepo in a project's dev-factory.config.json
+```
+
+Then, from any project that uses the factory, run `/dev-factory:improve` (or let the weekly job run it). It clusters recurring causes, files improvement tasks in that project's task source, and for each finding that qualifies opens a worktree of your checkout, has the `factory-improver` agent write the failing test first and then the change, runs the tests, Prettier, the vocabulary lint and `claude plugin validate` on that worktree, runs the two reviews, and opens a **draft PR on the plugin's repository**. You review and merge it, bump `version` in `.claude-plugin/plugin.json` and the marketplace entry, and everyone gets it with `claude plugin update dev-factory@dev-factory`.
+
+The improver cannot edit what enforces the factory's own limits (the guards, the stop gate, `qa.mjs`, hooks, base settings, `config.json`, `plugins.json`) or `.github/` and `.claude/`; a finding there stays an improvement task for you. Someone who only installs the plugin gets mode `none` and can still file improvement tasks and promote learnings into their own `AGENTS.md`.
 
 ## Layout
 
@@ -527,7 +549,7 @@ Adding a tracker: a new file under `scripts/sources/` that answers `list({ state
 ## Known limits
 
 -   `qa.mjs` reads its default QA profiles from the plugin (or the repository's `dev-factory.qa.yaml`). QA cases you author go under `.factory/qa/cases/<KEY>/` in the worktree and are committed with the change. The `.dev-factory/` run state is kept out of git by `worktree.mjs`.
--   The plugin is installed from its marketplace and lives in Claude's plugin cache, outside your repository. Only what belongs to your project is written into it: `dev-factory.config.json`, optional `dev-factory.qa.yaml`, `.factory/` (local tasks, QA cases) and `.mcp.json`. The factory's own files are never in your repository, so its self-improvement PRs (`/dev-factory:improve`) apply only when you vendor the plugin at `dev-factory/`; otherwise that scan files improvement tasks and still promotes learnings into `AGENTS.md`.
+-   The plugin is installed from its marketplace and lives in Claude's plugin cache, outside your repository. Only what belongs to your project is written into it: `dev-factory.config.json`, optional `dev-factory.qa.yaml`, `.factory/` (local tasks, QA cases) and `.mcp.json`. The factory's own files are never in your repository, so improvement PRs against the factory need a checkout of its source (see [Improving the factory itself](#improving-the-factory-itself)); without one `/dev-factory:improve` files improvement tasks and still promotes learnings into `AGENTS.md`.
 -   The launchd scheduler is macOS only; elsewhere use GitHub Actions, a routine, or run `dev-factory tick` yourself.
 -   In the cloud there is no simulator and usually no Docker, so the mobile lane and compose environments need your own runner.
 -   Web QA needs canonical ports, so only one task builds with a browser walk at a time; concurrent builds have isolated stacks a host browser cannot reach. Dispatch into one worktree at a time.
