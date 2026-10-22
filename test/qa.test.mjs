@@ -16,10 +16,10 @@ function makeRepo() {
 	g(root, 'init', '-q', '-b', 'develop');
 	g(root, 'config', 'user.email', 't@example.com');
 	g(root, 'config', 'user.name', 't');
-	fs.mkdirSync(path.join(root, 'dev-factory/qa/cases/OAPP-1'), { recursive: true });
+	fs.mkdirSync(path.join(root, 'dev-factory/qa/cases/APP-1'), { recursive: true });
 	fs.copyFileSync(PROFILES, path.join(root, 'dev-factory/qa/profiles.yaml'));
-	fs.writeFileSync(path.join(root, 'dev-factory/qa/cases/OAPP-1/login.yaml'), 'appId: x\n');
-	fs.writeFileSync(path.join(root, 'dev-factory/qa/cases/OAPP-1/arm.yaml'), 'appId: x\n');
+	fs.writeFileSync(path.join(root, 'dev-factory/qa/cases/APP-1/login.yaml'), 'appId: x\n');
+	fs.writeFileSync(path.join(root, 'dev-factory/qa/cases/APP-1/arm.yaml'), 'appId: x\n');
 	fs.writeFileSync(path.join(root, '.gitignore'), '.dev-factory/\n');
 	g(root, 'add', '-A');
 	g(root, 'commit', '-qm', 'base');
@@ -41,17 +41,17 @@ const refused = (fn, re) => assert.throws(fn, (e) => e instanceof QaError && re.
 test('start refuses a dirty tree and a ticket with no authored case', () => {
 	const root = makeRepo();
 	fs.writeFileSync(path.join(root, 'stray.txt'), 'x');
-	refused(() => start({ root, key: 'OAPP-1', profile: 'web' }), /not clean/);
+	refused(() => start({ root, key: 'APP-1', profile: 'web' }), /not clean/);
 	fs.rmSync(path.join(root, 'stray.txt'));
 	assert.throws(
-		() => start({ root, key: 'OAPP-9', profile: 'web' }),
+		() => start({ root, key: 'APP-9', profile: 'web' }),
 		(e) => e.code === 2 && /needs_own_case/.test(e.message),
 	);
 });
 
 test('a full walk passes and verify accepts the recorded head', () => {
 	const root = makeRepo();
-	const m = start({ root, key: 'OAPP-1', profile: 'web' });
+	const m = start({ root, key: 'APP-1', profile: 'web' });
 	record({ root, run: m.run, caseSlug: 'login', status: 'pass', assertion: 'login screen shows the arm button', screenshot: png(root, 'a', 1) });
 	refused(() => done({ root, run: m.run }), /not recorded: arm/);
 	record({ root, run: m.run, caseSlug: 'arm', status: 'pass', assertion: 'armed banner visible after tap', screenshot: png(root, 'b', 2) });
@@ -62,7 +62,7 @@ test('a full walk passes and verify accepts the recorded head', () => {
 
 test('record refuses weak evidence', () => {
 	const root = makeRepo();
-	const m = start({ root, key: 'OAPP-1', profile: 'web' });
+	const m = start({ root, key: 'APP-1', profile: 'web' });
 	const base = { root, run: m.run, caseSlug: 'login', status: 'pass' };
 	refused(() => record({ ...base, assertion: 'ok', screenshot: png(root, 'a', 1) }), /at least 8/);
 	refused(() => record({ ...base, assertion: 'same as run #3 earlier', screenshot: png(root, 'a', 1) }), /another run/);
@@ -79,7 +79,7 @@ test('record refuses weak evidence', () => {
 
 test('duplicate screenshot bytes across cases are refused', () => {
 	const root = makeRepo();
-	const m = start({ root, key: 'OAPP-1', profile: 'web' });
+	const m = start({ root, key: 'APP-1', profile: 'web' });
 	record({ root, run: m.run, caseSlug: 'login', status: 'pass', assertion: 'login screen visible', screenshot: png(root, 'a', 5) });
 	refused(
 		() => record({ root, run: m.run, caseSlug: 'arm', status: 'pass', assertion: 'armed banner visible', screenshot: png(root, 'b', 5) }),
@@ -89,7 +89,7 @@ test('duplicate screenshot bytes across cases are refused', () => {
 
 test('a failed case yields a fail verdict that verify rejects', () => {
 	const root = makeRepo();
-	const m = start({ root, key: 'OAPP-1', profile: 'web' });
+	const m = start({ root, key: 'APP-1', profile: 'web' });
 	record({ root, run: m.run, caseSlug: 'login', status: 'fail', assertion: 'arm button missing on screen' });
 	record({ root, run: m.run, caseSlug: 'arm', status: 'pass', assertion: 'armed banner visible', screenshot: png(root, 'b', 2) });
 	assert.equal(done({ root, run: m.run }).verdict, 'fail');
@@ -98,7 +98,7 @@ test('a failed case yields a fail verdict that verify rejects', () => {
 
 test('HEAD moving invalidates the run and verify checks the PR head', () => {
 	const root = makeRepo();
-	const m = start({ root, key: 'OAPP-1', profile: 'web' });
+	const m = start({ root, key: 'APP-1', profile: 'web' });
 	record({ root, run: m.run, caseSlug: 'login', status: 'pass', assertion: 'login screen visible', screenshot: png(root, 'a', 1) });
 	fs.writeFileSync(path.join(root, 'late.txt'), 'x');
 	g(root, 'add', 'late.txt');
@@ -109,7 +109,7 @@ test('HEAD moving invalidates the run and verify checks the PR head', () => {
 
 test('verify detects tampered evidence', () => {
 	const root = makeRepo();
-	const m = start({ root, key: 'OAPP-1', profile: 'web' });
+	const m = start({ root, key: 'APP-1', profile: 'web' });
 	const r1 = record({ root, run: m.run, caseSlug: 'login', status: 'pass', assertion: 'login screen visible', screenshot: png(root, 'a', 1) });
 	record({ root, run: m.run, caseSlug: 'arm', status: 'pass', assertion: 'armed banner visible', screenshot: png(root, 'b', 2) });
 	done({ root, run: m.run });
@@ -128,8 +128,8 @@ test('mark-na refuses when the diff touches a UI glob and accepts otherwise', ()
 	const ok = markNa({ root, key: 'X-1', profile: 'web', reason: 'backend only change' });
 	assert.equal(ok.verdict, 'not_applicable');
 	assert.equal(verify({ root, head: g(root, 'rev-parse', 'HEAD'), key: 'X-1' }).ok, true);
-	fs.mkdirSync(path.join(root, 'clients/web-commandcentre/src'), { recursive: true });
-	fs.writeFileSync(path.join(root, 'clients/web-commandcentre/src/App.vue'), '1');
+	fs.mkdirSync(path.join(root, 'web/src'), { recursive: true });
+	fs.writeFileSync(path.join(root, 'web/src/App.vue'), '1');
 	g(root, 'add', '-A');
 	g(root, 'commit', '-qm', 'ui');
 	refused(() => markNa({ root, key: 'X-1', profile: 'web', reason: 'backend only change' }), /UI surface/);
@@ -139,26 +139,26 @@ test('markdown under a UI folder is documentation, not UI surface, but code besi
 	const root = makeRepo();
 	g(root, 'update-ref', 'refs/remotes/origin/develop', 'HEAD');
 	g(root, 'checkout', '-qb', 'task/X-2-docs');
-	fs.mkdirSync(path.join(root, 'clients/mobile/src/context'), { recursive: true });
-	fs.writeFileSync(path.join(root, 'clients/mobile/src/context/AGENTS.md'), '# notes');
-	fs.writeFileSync(path.join(root, 'clients/mobile/AGENTS.md'), '# notes');
+	fs.mkdirSync(path.join(root, 'app/ios/Sources'), { recursive: true });
+	fs.writeFileSync(path.join(root, 'app/ios/Sources/AGENTS.md'), '# notes');
+	fs.writeFileSync(path.join(root, 'app/ios/AGENTS.md'), '# notes');
 	g(root, 'add', '-A');
 	g(root, 'commit', '-qm', 'docs');
 	assert.equal(markNa({ root, key: 'X-2', profile: 'mobile', reason: 'documentation only' }).verdict, 'not_applicable');
-	fs.writeFileSync(path.join(root, 'clients/mobile/src/context/ctx.tsx'), '1');
+	fs.writeFileSync(path.join(root, 'app/ios/Sources/Screen.swift'), '1');
 	g(root, 'add', '-A');
 	g(root, 'commit', '-qm', 'code');
-	refused(() => markNa({ root, key: 'X-2', profile: 'mobile', reason: 'documentation only' }), /UI surface.*ctx\.tsx/);
+	refused(() => markNa({ root, key: 'X-2', profile: 'mobile', reason: 'documentation only' }), /UI surface.*Screen\.swift/);
 });
 
 test('profile globs parse and match', () => {
 	const root = makeRepo();
 	const globs = uiGlobsFor(root, 'mobile').map(globToRegExp);
-	assert.ok(globs.some((r) => r.test('clients/mobile/src/screens/Home.tsx')));
+	assert.ok(globs.some((r) => r.test('app/ios/Sources/Home.swift')));
 	assert.ok(!globs.some((r) => r.test('services/api/x.js')));
 	const docs = nonUiGlobsFor(root, 'mobile').map(globToRegExp);
-	assert.ok(docs.some((r) => r.test('clients/mobile/src/context/AGENTS.md')));
-	assert.ok(!docs.some((r) => r.test('clients/mobile/src/context/ctx.tsx')));
+	assert.ok(docs.some((r) => r.test('app/ios/Sources/AGENTS.md')));
+	assert.ok(!docs.some((r) => r.test('app/ios/Sources/Home.swift')));
 });
 
 // ---- two-step review ----
@@ -168,7 +168,7 @@ import { reviewRecord as recordReview, reviewStatus } from '../bin/qa.mjs';
 const reviewRecord = (o) => recordReview({ by: 'reviewer', ...o });
 
 const passedRun = (root) => {
-	const m = start({ root, key: 'OAPP-1', profile: 'web' });
+	const m = start({ root, key: 'APP-1', profile: 'web' });
 	record({ root, run: m.run, caseSlug: 'login', status: 'pass', assertion: 'login screen visible', screenshot: png(root, 'r1', 11) });
 	record({ root, run: m.run, caseSlug: 'arm', status: 'pass', assertion: 'armed banner visible', screenshot: png(root, 'r2', 12) });
 	done({ root, run: m.run });
@@ -296,15 +296,15 @@ test('verify passes once the triggered axis is clean', () => {
 test('verify by key finds the run made at the PR head, never a PR number', () => {
 	const root = makeRepo();
 	const head = g(root, 'rev-parse', 'HEAD');
-	refused(() => verify({ root, head, key: 'OAPP-1' }), /no QA run at/);
-	const m = start({ root, key: 'OAPP-1', profile: 'web' });
-	refused(() => verify({ root, head, key: 'OAPP-1' }), /no QA run at/);
+	refused(() => verify({ root, head, key: 'APP-1' }), /no QA run at/);
+	const m = start({ root, key: 'APP-1', profile: 'web' });
+	refused(() => verify({ root, head, key: 'APP-1' }), /no QA run at/);
 	record({ root, run: m.run, caseSlug: 'login', status: 'pass', assertion: 'login screen shows the arm button', screenshot: png(root, 'a', 1) });
 	record({ root, run: m.run, caseSlug: 'arm', status: 'pass', assertion: 'armed banner visible after tap', screenshot: png(root, 'b', 2) });
 	done({ root, run: m.run });
-	assert.equal(verify({ root, head, key: 'OAPP-1' }).ok, true);
-	assert.equal(verify({ root, head: head.slice(0, 9), key: 'OAPP-1' }).ok, true);
-	refused(() => verify({ root, head: 'f'.repeat(40), key: 'OAPP-1' }), /no QA run at/);
+	assert.equal(verify({ root, head, key: 'APP-1' }).ok, true);
+	assert.equal(verify({ root, head: head.slice(0, 9), key: 'APP-1' }).ok, true);
+	refused(() => verify({ root, head: 'f'.repeat(40), key: 'APP-1' }), /no QA run at/);
 	refused(() => verify({ root, head, key: 'OTHER-2' }), /no QA run at/);
 });
 
@@ -332,7 +332,7 @@ test('the CLI records a review only for the axis its run.json names, and only as
 		});
 	const runJson = (run) => {
 		fs.mkdirSync(path.join(root, '.dev-factory'), { recursive: true });
-		fs.writeFileSync(path.join(root, '.dev-factory', 'run.json'), JSON.stringify({ key: 'OAPP-1', ...run }));
+		fs.writeFileSync(path.join(root, '.dev-factory', 'run.json'), JSON.stringify({ key: 'APP-1', ...run }));
 	};
 	assert.notEqual(cli('spec').status, 0, 'no run.json');
 	runJson({ role: 'builder' });
@@ -358,9 +358,9 @@ test("the diff base is the run's base branch, with DF_BASE_REF overriding and or
 	try {
 		assert.equal(baseFor(root), 'origin/develop');
 		fs.mkdirSync(path.join(root, '.dev-factory'));
-		fs.writeFileSync(path.join(root, '.dev-factory', 'run.json'), JSON.stringify({ key: 'OAPP-1', base: 'feature/X-1-base' }));
+		fs.writeFileSync(path.join(root, '.dev-factory', 'run.json'), JSON.stringify({ key: 'APP-1', base: 'feature/X-1-base' }));
 		assert.equal(baseFor(root), 'origin/feature/X-1-base');
-		fs.writeFileSync(path.join(root, '.dev-factory', 'run.json'), JSON.stringify({ key: 'OAPP-1', base: '--upload-pack=x' }));
+		fs.writeFileSync(path.join(root, '.dev-factory', 'run.json'), JSON.stringify({ key: 'APP-1', base: '--upload-pack=x' }));
 		assert.equal(baseFor(root), 'origin/develop', 'an unusable name in run.json is ignored');
 		process.env.DF_BASE_REF = 'origin/other';
 		assert.equal(baseFor(root), 'origin/other');
@@ -379,4 +379,18 @@ test('ticket base prints the branch a ticket names and nothing when it names non
 	assert.equal(JSON.parse(named.stdout).base, 'feature/X-1-base');
 	fs.writeFileSync(f, 'Summary\n\nAcceptance criteria\n- a thing\n');
 	assert.equal(JSON.parse(spawnSync('node', [QA, 'ticket', 'base', '--file', f], { encoding: 'utf8' }).stdout).base, null);
+});
+
+test('a repository replaces the default QA profiles with its own dev-factory.qa.yaml', () => {
+	const root = makeRepo();
+	assert.ok(
+		uiGlobsFor(root, 'web').some((g) => g === '**/*.vue'),
+		'the plugin defaults apply without a file',
+	);
+	fs.writeFileSync(
+		path.join(root, 'dev-factory.qa.yaml'),
+		'web:\n  runner: playwright\n  uiGlobs:\n    - "site/**"\n  nonUiGlobs:\n    - "**/*.md"\n',
+	);
+	assert.deepEqual(uiGlobsFor(root, 'web'), ['site/**']);
+	assert.deepEqual(nonUiGlobsFor(root, 'web'), ['**/*.md']);
 });

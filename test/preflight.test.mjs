@@ -16,7 +16,7 @@ test('only exit 0 of the frontier check starts a session; every other code skips
 		assert.equal(r.status, 1, `exit ${code} must not start a session`);
 		assert.ok(r.stdout.trim().length > 0, `exit ${code} logs why`);
 	}
-	assert.match(gate(21).stdout, /JIRA_API_TOKEN/);
+	assert.match(gate(21).stdout, /token this machine lacks/);
 });
 
 test('tick.sh asks the gate before it can reach claude, and DF_PREFLIGHT=off is the only way around it', () => {

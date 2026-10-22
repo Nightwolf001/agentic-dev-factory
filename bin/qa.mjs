@@ -17,6 +17,7 @@
 //   qa.mjs debug status | debug block --reason TEXT
 //   qa.mjs ticket lint --file F [--strict true]   exit 1 and list what the issue description lacks
 //   qa.mjs ticket base --file F                   {"base": "<branch>"} from a "Base branch:" line, or null
+//   qa.mjs ticket blocked-by --file F             {"blockedBy": ["KEY", ...]} from a "Blocked by" line or section
 //   qa.mjs learnings check --key KEY [--body-file F]   require and validate .dev-factory/learnings.md (short, scoped; it goes into the PR body)
 //   qa.mjs promote check               only the Learned rules section of AGENTS.md files may differ from the base
 //   qa.mjs scrub --file F     fail when F holds emails, phone numbers, tokens or long identifiers
@@ -34,6 +35,7 @@ import { isMain } from '../scripts/is-main.mjs';
 import { learningRequired, lintLearnings, parseLearnings } from '../scripts/learnings-lib.mjs';
 import { checkPromotion } from '../scripts/promote-lib.mjs';
 import { lintTicket } from '../scripts/ticket-lib.mjs';
+import { normaliseRef, parseBlockedBy } from '../scripts/sources/common.mjs';
 import { parseBase, validName } from '../scripts/worktree.mjs';
 import { scrubFindings } from '../scripts/scrub-lib.mjs';
 import { workRoot } from '../scripts/run-context.mjs';
@@ -198,8 +200,14 @@ export function done({ root, run }) {
 }
 
 // Minimal reader for a glob list (uiGlobs, nonUiGlobs) in profiles.yaml (no YAML dependency).
-function globListFor(profile, key) {
-	const text = fs.readFileSync(fileURLToPath(new URL('../qa/profiles.yaml', import.meta.url)), 'utf8').split('\n');
+// A repository's own dev-factory.qa.yaml, when it has one, replaces the plugin's default profiles.
+function profilesFile(root) {
+	const own = root ? path.join(root, 'dev-factory.qa.yaml') : null;
+	return own && fs.existsSync(own) ? own : fileURLToPath(new URL('../qa/profiles.yaml', import.meta.url));
+}
+
+function globListFor(profile, key, root) {
+	const text = fs.readFileSync(profilesFile(root), 'utf8').split('\n');
 	const globs = [];
 	let inProfile = false;
 	let inGlobs = false;
@@ -223,9 +231,9 @@ function globListFor(profile, key) {
 	return globs;
 }
 
-export const uiGlobsFor = (root, profile) => globListFor(profile, 'uiGlobs');
+export const uiGlobsFor = (root, profile) => globListFor(profile, 'uiGlobs', root);
 // Files under a UI folder that are still not UI surface (documentation), so a docs-only diff does not need a walk.
-export const nonUiGlobsFor = (root, profile) => globListFor(profile, 'nonUiGlobs');
+export const nonUiGlobsFor = (root, profile) => globListFor(profile, 'nonUiGlobs', root);
 
 export function globToRegExp(glob) {
 	let re = '';
@@ -622,7 +630,16 @@ function main() {
 					result = { base: parseBase(fs.readFileSync(a.file, 'utf8')) };
 					break;
 				}
-				if (a._[0] !== 'lint' || !a.file) throw new QaError('usage: qa.mjs ticket lint --file F [--strict true] | ticket base --file F');
+				if (a._[0] === 'blocked-by' && a.file) {
+					result = {
+						blockedBy: parseBlockedBy(fs.readFileSync(a.file, 'utf8'))
+							.map((r) => normaliseRef(r))
+							.filter(Boolean),
+					};
+					break;
+				}
+				if (a._[0] !== 'lint' || !a.file)
+					throw new QaError('usage: qa.mjs ticket lint --file F [--strict true] | ticket base --file F | ticket blocked-by --file F');
 				const problems = lintTicket(fs.readFileSync(a.file, 'utf8'), { strict: a.strict === 'true' });
 				if (problems.length) throw new QaError(`ticket lint failed: ${problems.join('; ')}`);
 				result = { ok: true };

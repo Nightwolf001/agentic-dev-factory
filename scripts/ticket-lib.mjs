@@ -1,10 +1,6 @@
-// Readiness lint for a Jira issue description. Pure. A ticket the factory claims must say what done
+// Readiness lint for a task description, whichever tracker it lives in. Pure. A ticket the factory claims must say what done
 // looks like; one written by /dev-factory:plan (strict) also names scope limits and how to test.
-const SECTIONS = {
-	acceptance: /acceptance criteria|^ac$/i,
-	outOfScope: /out of scope/i,
-	testing: /testing decisions|test plan|testing/i,
-};
+const SECTIONS = { acceptance: /acceptance criteria|^ac$/i, outOfScope: /out of scope/i, testing: /testing decisions|test plan|testing/i };
 const HEADING = /^\s*(?:#{1,6}\s*|h[1-6]\.\s*|\*\*|__)?\s*([A-Za-z][A-Za-z \/-]{1,40}?)\s*(?:\*\*|__)?\s*:?\s*$/;
 
 export function parseSections(text) {
