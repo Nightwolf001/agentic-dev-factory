@@ -8,22 +8,97 @@ The loop is the same whatever the size of the work, and whatever you track it in
 
 It is kept in your repository. There is no database and no service: the task source holds task state, GitHub holds pull requests, git holds the code, and `.dev-factory/` inside each worktree holds run state. A person approves and merges every PR; the factory never does.
 
-## Quick start (no account needed)
+## Contents
 
-```text
-claude --plugin-dir ./dev-factory        # from the repository root
-/dev-factory:setup                       # picks a task source and optional MCP servers, writes dev-factory.config.json
-/dev-factory:plan "add CSV export to the reports page"
-/dev-factory:build TASK-1                # watch it build one task in your session
+[At a glance](#at-a-glance) · [Concepts](#concepts) · [Requirements](#requirements) · [Quick start](#quick-start) · [Where do tasks live?](#where-do-tasks-live) · [Writing a task](#writing-a-task-the-factory-can-build) · [Everything is optional](#everything-is-optional) · [How a task flows](#how-a-task-flows) · [Configuration](#configuration) · [Starting a session](#starting-a-session) · [Unattended passes](#set-up-for-unattended-passes) · [Using the factory](#using-the-factory) · [Environments](#environments) · [QA evidence](#qa-evidence) · [Rules](#rules-and-their-reasons) · [Layout](#layout) · [Troubleshooting](#troubleshooting) · [Known limits](#known-limits)
+
+The flow at a glance: [docs/dev-factory-flow.svg](docs/dev-factory-flow.svg).
+
+## At a glance
+
+|           |                                                                                                                                                                               |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **In**    | A task: an idea typed to `/dev-factory:quick`, a markdown file, a GitHub issue, a Notion page or a Jira issue, with acceptance criteria.                                      |
+| **Out**   | A draft pull request on its own branch, with the tests that drove it, QA screenshots tied to the exact commit, two independent reviews, and a root-cause note for bugs.       |
+| **Never** | Merges, approves, marks a PR ready, force-pushes, pushes any branch but the task's own, or writes to your task tracker from the builder. A person always decides what merges. |
+| **Needs** | Claude Code, git, the GitHub CLI and Node 20. Docker only if your tests need a container; a tracker and MCP servers only if you want them.                                    |
+| **Runs**  | In your own session (`/dev-factory:build`, `quick`, `plan`) or unattended every 15 minutes (`tick`), the same agents either way.                                              |
+
+## Concepts
+
+| Term                | Meaning                                                                                                                                                                                    |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Task**            | One demoable slice of work with acceptance criteria. Whatever your tracker calls it: a ticket, an issue, a page, a file. Its **key** looks like `TASK-3`, `GH-12` or `APP-123`.            |
+| **Task source**     | Where tasks live: `local`, `github`, `notion` or `jira` (`tasks.source`). The factory speaks to all of them through the same operations: list, get, set state, comment, block, create.     |
+| **State**           | Where a task is in the loop: `ready`, `inProgress`, `inReview`, `reviewed`, `done`. Each source maps these onto its own statuses or labels.                                                |
+| **Factory label**   | `tasks.label` (default `dev-factory`). A task without it is invisible to the factory; adding it is how a person releases work.                                                             |
+| **Blocked**         | The label `factory-blocked` on a task the factory gave up on, with a comment saying what decision it needs. A person answers and removes the label.                                        |
+| **Worktree**        | A separate git checkout (`../.worktrees/<KEY>`) where one task is built, so your own checkout is never touched.                                                                            |
+| **Environment**     | What the task is tested against: nothing special (`none`, tests run on the host) or an isolated docker compose project (`compose`).                                                        |
+| **QA evidence**     | A recorded walk of each UI-facing criterion, with a screenshot taken at the exact commit being shipped. Only `qa.mjs` can mark a case as passed.                                           |
+| **Two reviews**     | A **spec** reviewer (does it do what the task asks, nothing more) and a **standards** reviewer (rules, safety, tests), each in a fresh read-only session.                                  |
+| **Gate**            | A check that must pass before work moves on: the readiness lint at claim, the verify gate before a PR moves to review, the stop gate that stops an agent ending without its hand-off file. |
+| **Tick**            | One unattended pass: a scheduler runs `scripts/tick.sh`, which runs `claude -p /dev-factory:tick`. A cheap preflight decides whether a paid session starts at all.                         |
+| **Inline**          | You run a command yourself in an interactive Claude Code session. Same work, visible, using your own login and permissions.                                                                |
+| **Placeholder key** | `tasks.placeholderKey` (default `TASK-000`): the key `/dev-factory:quick` puts in branch names and PR titles when there is no task.                                                        |
+
+## Requirements
+
+| Needed                                                         | Why                                                            | Check                        |
+| -------------------------------------------------------------- | -------------------------------------------------------------- | ---------------------------- |
+| Claude Code                                                    | runs the commands and agents                                   | `claude --version`           |
+| git, and a GitHub remote                                       | worktrees, branches, PRs                                       | `git remote -v`              |
+| GitHub CLI signed in                                           | opens PRs, reads reviews, and is the `github` task source      | `gh auth status`             |
+| Node 20 or newer                                               | every script and the tests (`.nvmrc` is honoured when present) | `node -v`                    |
+| Docker (only for `environment.type: compose`)                  | an isolated stack per task                                     | `docker info`                |
+| Xcode simulator and Maestro (only when `mobile.appDir` is set) | the device lane                                                | `xcrun simctl list runtimes` |
+| macOS (only for the scheduler)                                 | `install.sh` renders launchd jobs                              | `uname`                      |
+
+`bash dev-factory/scripts/doctor.sh` checks all of this against your actual config and prints the fix for each failure.
+
+## Quick start
+
+The plugin lives at `dev-factory/` in your repository (a copy, a submodule or a subtree). Everything below runs from the repository root.
+
+**1. Start a session with the plugin loaded.**
+
+```bash
+claude --plugin-dir ./dev-factory
 ```
 
-Or skip the tracker entirely for a small change:
+**2. Set up once.** `/dev-factory:setup` looks at the repository, asks where tasks live, which MCP servers you want and whether tests need a container, and writes a small `dev-factory.config.json`. Every question has a working answer that needs no account. Prefer to do it by hand? Create the file yourself:
+
+```json
+{ "tasks": { "source": "github" } }
+```
+
+**3. Plan some work.**
+
+```text
+/dev-factory:plan "add CSV export to the reports page"
+```
+
+Claude interviews you one question at a time, sizes the work, drafts each task with acceptance criteria, shows you every description, and creates nothing until you approve. For `local` that writes files such as `.factory/tasks/TASK-1-add-csv-export.md`; for `github` it opens issues labelled `dev-factory`.
+
+**4. Watch it build one task.**
+
+```text
+/dev-factory:build TASK-1
+```
+
+You see the worktree and branch being created, the test written first, the QA walk, both reviews, and a draft PR at the end. The task moves `ready` → `inProgress` → `inReview` as it goes.
+
+**5. Review the PR like any other.** Request changes and the next pass fixes them on the same branch; approve and merge when you are happy.
+
+**6. When you trust it, let it run.** `bash dev-factory/scripts/install.sh --apply --load` schedules `tick` every 15 minutes (see [Unattended passes](#set-up-for-unattended-passes)).
+
+No tracker at all and just a small change? Skip steps 3 and 4:
 
 ```text
 /dev-factory:quick "make the arm banner text match the design"
 ```
 
-`/dev-factory:status` shows the queue, what is in flight, open factory PRs and environments, and is a safe first command.
+`/dev-factory:status` is a safe first command at any point: it only reads.
 
 ## Where do tasks live?
 
@@ -38,10 +113,62 @@ Or skip the tracker entirely for a small change:
 
 Details, status mappings and the exact operations are in [`skills/task-source/`](skills/task-source/SKILL.md). No tracker at all? `/dev-factory:quick` needs none.
 
--   **local**: markdown files under `.factory/tasks/` (`sources.local.dir`), one per task, with a small frontmatter block. Commit them to share a plan.
--   **github**: an issue with the `dev-factory` label is a task. State is a label (`df:in-progress`, `df:in-review`, `df:reviewed`), closed means done. Keys are `GH-<number>`. `node dev-factory/scripts/tasks.mjs init` creates the labels.
--   **notion**: a database with Name, Status, Tags, Type and a unique-ID property. The Status values and property names are configurable.
--   **jira**: your workflow's status names go in `sources.jira.states`; transitions are chosen by target status, never by name.
+### Setting up each source
+
+Put the snippet in `dev-factory.config.json` at the repository root (or let `/dev-factory:setup` write it), then run `node dev-factory/scripts/config.mjs validate`.
+
+**`local`** (the default): nothing to configure. Tasks are markdown files under `.factory/tasks/` (`sources.local.dir`), named `<KEY>-<slug>.md`, with a small frontmatter block (`key`, `title`, `state`, `type`, `labels`, `blockedBy`, `updated`) and the description below it. Commit the folder to share a plan, or leave it out of git for a private queue. A person can edit a file freely between passes: `state: ready` queues it, adding `factory-blocked` to `labels` parks it.
+
+**`github`**: no MCP server and no extra token, only `gh auth login`.
+
+```json
+{ "tasks": { "source": "github" }, "sources": { "github": { "repo": "owner/name", "assignee": "@me" } } }
+```
+
+Run `node dev-factory/scripts/tasks.mjs init` once to create the labels. An open issue with the `dev-factory` label is `ready`; progress is a label (`df:in-progress`, `df:in-review`, `df:reviewed`); a closed issue is `done`. `repo` defaults to the current repository and `assignee` is optional (leave it out and any labelled issue qualifies). Keys are `GH-<issue number>`.
+
+**`notion`**: a database with a title (`Name`), a `Status` property (status or select) whose options include the five states, a `Tags` multi-select, an optional `Type` select, a unique-ID property so every page has a key like `TASK-12`, and optionally a `Blocked by` relation to the same database.
+
+```json
+{
+	"tasks": { "source": "notion" },
+	"sources": {
+		"notion": {
+			"databaseId": "<database id>",
+			"states": { "ready": ["Ready"], "inProgress": "In progress", "inReview": "In review", "reviewed": "Reviewed", "done": ["Done"] }
+		}
+	}
+}
+```
+
+Share the database with an internal integration and put its secret in `dev-factory/.env.local` as `NOTION_TOKEN` (the scheduler's cheap preflight uses it), then `node dev-factory/scripts/mcp.mjs enable notion` and log in once with `/mcp` (the session's reads and writes use the Notion MCP server).
+
+**`jira`**: set your site, cloud id, project keys and the status names of your workflow.
+
+```json
+{
+	"tasks": { "source": "jira" },
+	"sources": {
+		"jira": {
+			"site": "yourteam.atlassian.net",
+			"cloudId": "<cloud id>",
+			"projects": ["APP"],
+			"requireSprint": true,
+			"states": {
+				"ready": ["Ready for Dev", "To Do"],
+				"inProgress": "In Progress",
+				"inReview": "Peer review",
+				"reviewed": "Ready for QA",
+				"done": ["UAT", "Done"]
+			}
+		}
+	}
+}
+```
+
+Put `JIRA_EMAIL` and `JIRA_API_TOKEN` in `.env.local` for the preflight, enable the MCP server with `node dev-factory/scripts/mcp.mjs enable atlassian`, and log in once with `/mcp`. Transitions are chosen by target status, never by name, because workflows differ per issue type. Ask a Jira admin to allow the labels the factory adds (`factory-blocked`, `factory-validated`, `factory-regression`, `needs-research`).
+
+Switching source later changes only `tasks.source`; existing tasks stay where they are.
 
 Dependencies are a `Blocked by: KEY, KEY` line in the description in every source (Jira and Notion also read native links), so a plan keeps its order everywhere.
 
@@ -57,6 +184,44 @@ Dependencies are a `Blocked by: KEY, KEY` line in the description in every sourc
 | Initiative   | several features or phases               | phase tasks; only the first phase is sliced |
 
 Each task carries Summary, Acceptance criteria, Out of scope, Testing decisions and `Blocked by:`, checked by `qa.mjs ticket lint` before anything is created. The tracking task for a feature never gets the factory label, so the factory builds the slices, not the whole.
+
+### Writing a task the factory can build
+
+The factory builds what the description says and nothing more, so the description is the contract. `/dev-factory:plan` writes it for you; if you write one by hand, use these sections:
+
+```markdown
+## Summary
+
+Reports can be exported as CSV from the reports page.
+
+## Acceptance criteria
+
+-   A "Download CSV" button appears above the reports table.
+-   The file has one row per visible report with the same columns, in the same order.
+-   An empty table downloads a file containing only the header row.
+
+## Out of scope
+
+-   Excel or PDF export.
+
+## Testing decisions
+
+The seam is `buildCsv(rows)` in `reports/export.ts`; the first red test asserts the header row for an empty list. Tests: `npm test`.
+
+Blocked by: TASK-2
+Base branch: feature/reports-v2
+```
+
+| Part                            | Required                               | What it does                                                                                                                                 |
+| ------------------------------- | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Acceptance criteria             | always                                 | Concrete, checkable bullets. Checked at claim: a task without them is blocked with `needs acceptance criteria` rather than built on guesses. |
+| Out of scope, Testing decisions | when planned with `plan` (strict lint) | Keeps the change small and names the first failing test.                                                                                     |
+| `Blocked by:`                   | optional                               | Task keys (`TASK-2`, `GH-12`, `#12`). The task waits until every one is `done`. A `Blocked by` heading with a list works too.                |
+| `Base branch:`                  | optional                               | Build on a pushed branch instead of the default; the PR targets it.                                                                          |
+| `Research:`                     | optional                               | Questions for the researcher agent (also label the task `needs-research`).                                                                   |
+| `Telemetry:`                    | optional                               | Sentry issue ids or log queries, plus `env:<name>`, for bug triage.                                                                          |
+
+Check a draft yourself with `node dev-factory/bin/qa.mjs ticket lint --file draft.md` (add `--strict true` for the planning standard).
 
 ## Everything is optional
 
@@ -181,6 +346,19 @@ A pass builds one task at a time by default, keeps at most `caps.maxOpenPrs` fac
 | Ask for changes                   | Submit a **Request changes** review on the PR, or comment `/dev-factory fix <what to change>` on the task |
 | Unblock                           | Answer the factory's comment, then remove the `factory-blocked` label                                     |
 | Keep a task out of the queue      | Remove `tasks.label` or add `factory-blocked`                                                             |
+
+### Tick or inline?
+
+|             | Tick (unattended)                                                                                            | Inline (your session)                                 |
+| ----------- | ------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------- |
+| Started by  | a scheduler every 15 minutes, or `bash dev-factory/scripts/tick.sh`                                          | you typing a command                                  |
+| Which tasks | every `ready` task in queue order, up to the caps                                                            | the one you name (`build`), or none (`quick`)         |
+| Permissions | `settings.factory.json` plus what you enabled; sandboxed, no prompts, a budget cap                           | your own                                              |
+| Login       | `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`                                                          | your normal login                                     |
+| Idle cost   | none: a script checks the task source first and starts nothing when there is no work                         | not applicable                                        |
+| Also does   | resumes orphaned tasks, advances `inReview` tasks after approval, validates merged bugs, weekly improve scan | fixes review feedback on a PR you name (`quick --pr`) |
+
+Both dispatch the same agents with the same guards.
 
 ### Choosing the base branch
 
