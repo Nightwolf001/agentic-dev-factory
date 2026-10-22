@@ -7,8 +7,8 @@ description: Turn the factory's own run records, learnings and blocked tasks int
 
 Inputs, all read-only:
 
--   `node dev-factory/scripts/run-record.mjs clusters --since <last scan> --min <improvement.minEvidence>` for recurring causes across different tickets (same debug fingerprint, same blocked reason, repeated review Critical or High, repeated QA retries).
--   The `## Learnings` sections of PR bodies merged since the last scan: `node dev-factory/scripts/learnings-scan.mjs candidates --since <watermark>` (nothing is committed to the repository for learnings).
+-   `node "${CLAUDE_PLUGIN_ROOT}/scripts/run-record.mjs" clusters --since <last scan> --min <improvement.minEvidence>` for recurring causes across different tickets (same debug fingerprint, same blocked reason, repeated review Critical or High, repeated QA retries).
+-   The `## Learnings` sections of PR bodies merged since the last scan: `node "${CLAUDE_PLUGIN_ROOT}/scripts/learnings-scan.mjs" candidates --since <watermark>` (nothing is committed to the repository for learnings).
 -   Comments of tasks labelled `tasks.blockedLabel` or `factory-regression` since the last scan.
 
 Method:
@@ -17,9 +17,9 @@ Method:
 2. A finding needs at least `improvement.minEvidence` occurrences across different tickets. One-off failures are not findings. A symptom with no evidence is not a finding.
 3. Deduplicate: LIST the tasks labelled `improvement.label` that are not `done` (in Jira: `project = <improvement.project> AND labels = "<improvement.label>" AND statusCategory != Done`). A match is commented on with the new evidence count instead of filed again.
 4. File at most `improvement.maxTicketsPerScan` new issues, highest evidence first. Each states the recurring symptom, the evidence (run ids, fingerprints, ticket keys and counts, scrubbed), and the proposed change to a skill, agent, hook, config or script. Labels: `dev-factory-improvement` only, never `dev-factory`, so the factory does not build changes to itself unattended.
-5. A finding becomes a draft PR only when its change is confined to `dev-factory/` and avoids the enforcement files (`factory-improver`'s rules), and at most `improvement.maxPrsPerScan` per scan. Anything touching enforcement stays an improvement task for a person.
+5. A finding becomes a draft PR only when the plugin is vendored in this repository (`dev-factory/.claude-plugin/plugin.json` exists; an installed plugin lives outside the repository, so there is nothing here to change), its change is confined to `dev-factory/`, and it avoids the enforcement files (`factory-improver`'s rules), and at most `improvement.maxPrsPerScan` per scan. Anything touching enforcement stays an improvement task for a person.
 6. Keep `dev-factory/IMPROVEMENT-PLAN.md` current: one row per finding with symptom, evidence count, proposed change, task key, PR URL and status.
-7. Run `node dev-factory/bin/qa.mjs scrub --file` on every issue body, PR body and comment before posting.
+7. Run `node "${CLAUDE_PLUGIN_ROOT}/bin/qa.mjs" scrub --file` on every issue body, PR body and comment before posting.
 
 Promotion of learnings into `AGENTS.md`:
 

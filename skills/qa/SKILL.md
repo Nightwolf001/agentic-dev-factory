@@ -9,11 +9,11 @@ Everything is committed before you start. `qa.mjs start` refuses a dirty tree an
 
 ## 1. Decide
 
-Run `node dev-factory/bin/qa.mjs mark-na --key KEY --profile web|mobile --reason "..."`. If the diff touches no UI surface the tool accepts and you skip to ship. If it refuses, the ticket needs a walk.
+Run `node "${CLAUDE_PLUGIN_ROOT}/bin/qa.mjs" mark-na --key KEY --profile web|mobile --reason "..."`. If the diff touches no UI surface the tool accepts and you skip to ship. If it refuses, the ticket needs a walk.
 
 ## 2. Author cases
 
-For each UI-facing acceptance criterion write one case under `dev-factory/qa/cases/<KEY>/`:
+For each UI-facing acceptance criterion write one case under `.factory/qa/cases/<KEY>/`:
 
 -   web: `<slug>.spec.ts` (Playwright steps with the assertion each step checks)
 -   mobile: `<slug>.yaml` (Maestro flow; use the repository's own testID conventions, and add stable testIDs to the screens you touch)
@@ -22,7 +22,7 @@ Each case names its assertions up front (a testID, a text, an element). The walk
 
 ## 3. Walk
 
-1. `node dev-factory/bin/qa.mjs start --key KEY --profile web` prints the run number and the case list.
+1. `node "${CLAUDE_PLUGIN_ROOT}/bin/qa.mjs" start --key KEY --profile web` prints the run number and the case list.
 2. Web: use the `playwright` MCP tools; the first call is `browser_navigate` to `webBaseUrl` from `.dev-factory/env.json` (the profile's `baseUrl` when absent) (a relative `goto` has nothing to resolve against). Mobile: use the `maestro` MCP tools with the device from `.dev-factory/env.json`.
 3. For each case, follow its declared steps and check its declared assertions. Take a screenshot of the state the case asserts (Playwright: `filename` under `.playwright-mcp/`; Maestro: `xcrun simctl io <udid> screenshot /tmp/<name>.png`). Screenshots live outside tracked paths.
 4. Record: `qa.mjs record --run N --case SLUG --status pass|fail --assertion "what you observed in this walk" --screenshot <file>`.

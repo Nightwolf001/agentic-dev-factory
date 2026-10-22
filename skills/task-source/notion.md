@@ -11,7 +11,7 @@ The task database is a Notion database with these properties (names are `sources
 | ID         | unique ID                | gives each page a stable key such as `TASK-12`                                |
 | Blocked by | relation (this database) | optional native dependencies; a `Blocked by:` line in the page body works too |
 
-Set `sources.notion.databaseId`. The description is the page body. The scheduler's preflight reads the database with `NOTION_TOKEN` (an internal integration shared with the database); the rest of a pass uses the Notion MCP server (`node dev-factory/scripts/mcp.mjs enable notion`, then `/mcp` to log in once).
+Set `sources.notion.databaseId`. The description is the page body. The scheduler's preflight reads the database with `NOTION_TOKEN` (an internal integration shared with the database); the rest of a pass uses the Notion MCP server (`node "${CLAUDE_PLUGIN_ROOT}/scripts/mcp.mjs" enable notion`, then `/mcp` to log in once).
 
 Operations through the MCP server:
 

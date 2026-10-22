@@ -3,6 +3,16 @@
 // and against ordinary bypasses (wrappers, global options, substitutions, inline interpreters), not a
 // sandbox: an agent that writes and runs its own program is stopped by the real separation, which is that
 // the builder has no task-tracker or GitHub tools, the scheduler holds the credentials, and a person merges.
+import { PLUGIN_ROOT } from './plugin-root.mjs';
+
+// `node <plugin>/bin/qa.mjs <rest>`: the real script of this plugin (its own directory, quoted or not), or one vendored at
+// dev-factory/. A file called qa.mjs that an agent wrote elsewhere is not it.
+const escapeRe = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+export function qaBin(rest = '') {
+	const own = `"?${escapeRe(PLUGIN_ROOT)}/bin/qa\\.mjs"?`;
+	return new RegExp(`^node\\s+(?:${own}|\\S*dev-factory/bin/qa\\.mjs)\\s${rest ? `+${rest}` : ''}`);
+}
+
 const PROTECTED = new Set(['develop', 'preprod', 'main', 'master']);
 const READ_ONLY_ROLES = new Set(['reviewer', 'debugger', 'researcher']);
 
@@ -236,8 +246,13 @@ function ghApiWrites(args) {
 	return false;
 }
 
+const FACTORY_ROLES = new Set(['builder', 'reviewer', 'debugger', 'researcher', 'improver', 'promoter']);
+const ISSUE_WRITES = ['create', 'edit', 'close', 'reopen', 'comment', 'delete', 'transfer', 'lock', 'unlock', 'pin', 'unpin', 'develop'];
+
 function denyGh(args, ctx = {}, seg = '') {
 	const p = ghPositionals(args);
+	if (FACTORY_ROLES.has(ctx.role) && p[0] === 'issue' && ISSUE_WRITES.includes(p[1]))
+		return 'issues are the task tracker: only the scheduler writes to it, a factory agent does not (gh issue ' + p[1] + ')';
 	if (ctx.noAttribution && p[0] === 'pr' && ['create', 'edit', 'comment'].includes(p[1]) && AGENT_MARK.test(seg))
 		return 'PR text carries no Co-Authored-By or generated-by line (git.agentAttribution is false)';
 	if (p[0] === 'pr' && ['merge', 'review', 'ready', 'close', 'reopen'].includes(p[1])) return `gh pr ${p[1]} is reserved for people`;
@@ -278,7 +293,7 @@ const REVIEWER_ALLOWED = [
 	// so a read-only role moves into the worktree inside the same command: `cd <worktree> && git diff ...`
 	/^cd\s+[\w./~-]+$/,
 	/^git\s+(diff|log|show|status|rev-parse|merge-base|ls-files|cat-file|blame|grep|rev-list|diff-tree)\b/,
-	/^node\s+\S*dev-factory\/bin\/qa\.mjs\s+(review|learnings)\b/,
+	qaBin('(review|learnings)\\b'),
 	/^(grep|rg|ls|cat|head|tail|wc|sort|uniq|jq|nl|pwd|echo|basename|dirname|stat|file)\b/,
 	// print-only sed: any other script (w, e) can write or run a command
 	/^sed\s+-n\s+(['"]?)\d+(,(\d+|\$))?p\1\s+[^\s;&|<>$`]+$/,
@@ -288,7 +303,7 @@ const REVIEWER_ALLOWED = [
 // A debugger also reads the ticket's own stack (compose ps and logs, pm2 logs and process list, curl against
 // localhost and *.local / *.test hosts) and records through qa.mjs debug and scrub. It still never edits, installs or pushes.
 const DEBUGGER_EXTRA = [
-	/^node\s+\S*dev-factory\/bin\/qa\.mjs\s+(debug|scrub)\b/,
+	qaBin('(debug|scrub)\\b'),
 	/^docker\s+compose\s+(-f\s+\S+\s+)?(-p\s+\S+\s+)?(ps|logs)\b/,
 	/^docker\s+compose\s+(-f\s+\S+\s+)?(-p\s+\S+\s+)?exec\s+-T\s+(-u\s+\S+\s+)?[A-Za-z][\w.-]*\s+pm2\s+(logs\s+--nostream|jlist|status|list)\b/,
 	// the red loop: a test runner or curl inside the ticket's own devcontainer
@@ -342,7 +357,7 @@ export function evaluate(command, ctx = {}) {
 			continue;
 		}
 		const touchesProtected = PROTECTED_BASH.test(seg);
-		if (touchesProtected && WRITE_LIKE.test(seg) && !/^node\s+\S*dev-factory\/bin\/qa\.mjs\s/.test(seg)) {
+		if (touchesProtected && WRITE_LIKE.test(seg) && !qaBin('').test(seg)) {
 			return deny('factory files and run state are changed only through qa.mjs and the scheduler');
 		}
 		if (ctx.role === 'promoter' && WRITE_LIKE.test(seg) && !/^(git|gh|node)\s/.test(seg) && !SENTINEL_SHELL.test(seg)) {
@@ -354,6 +369,8 @@ export function evaluate(command, ctx = {}) {
 		else if (cmd === 'gh') reason = denyGh(args, ctx, seg);
 		if (!reason && /\b(curl|wget|http|https)\b.*(atlassian\.net|api\.notion\.com|notion\.so)/.test(seg))
 			reason = 'direct task-tracker access is reserved for the scheduler';
+		if (!reason && FACTORY_ROLES.has(ctx.role) && /^node\s+\S*tasks\.mjs"?\s+(set-state|comment|label|block|create|init)\b/.test(seg))
+			reason = 'the task tracker is written only by the scheduler, not by a factory agent (tasks.mjs ' + seg.split(/\s+/)[2] + ')';
 		if (!reason && /^docker\s+(system|volume|image|builder|network|container)\s+prune/.test(body)) reason = 'docker prune is not allowed';
 		if (
 			!reason &&
@@ -371,7 +388,7 @@ export function evaluate(command, ctx = {}) {
 
 // Shell writes to the factory directory (its own QA cases aside), run state, evidence and review records, hook wiring and husky are refused.
 const PROTECTED_BASH =
-	/\.dev-factory\/(review|qa|evidence|debug)(\/|\s|$)|\.dev-factory\/(run|env)\.json|(^|[\s/'"])dev-factory\/(?!qa\/cases\/)|\.dev-factory\/compose\.override\.yml|\.claude\/|\.github\/workflows|\.husky\//;
+	/\.factory\/tasks\/|\.dev-factory\/(review|qa|evidence|debug)(\/|\s|$)|\.dev-factory\/(run|env)\.json|(^|[\s/'"])dev-factory\/(?!qa\/cases\/)|\.dev-factory\/compose\.override\.yml|\.claude\/|\.github\/workflows|\.husky\//;
 const WRITE_LIKE = /(^|[^2&0-9])>{1,2}\s*[^&\s]|\btee\b|\b(cp|mv|rm|ln|truncate|dd|install)\b|\bsed\s+-i|\bperl\s+-i/;
 
 const FORBIDDEN = new RegExp(['co[-_ ]?' + 'work', 'co[-_ ]?' + 'lab', 'night[-_ ]?' + 'shift', 'day[-_ ]?' + 'shift'].join('|'), 'i');
@@ -417,9 +434,12 @@ export function evaluateEdit({ filePath, text = '', root, active = false, run = 
 		if (rel.startsWith('dev-factory/') && !rel.includes('..')) return { deny: false };
 		return { deny: true, reason: `dev-factory guard: an improver changes only dev-factory/ (got ${rel})` };
 	}
-	const ownCase = run?.key && rel.startsWith(`dev-factory/qa/cases/${run.key}/`);
+	const ownCase = run?.key && (rel.startsWith(`.factory/qa/cases/${run.key}/`) || rel.startsWith(`dev-factory/qa/cases/${run.key}/`));
+	// the installed plugin is outside the worktree, in the plugin cache: no ticket edits it by absolute path
+	if (/(^|\/)\.claude\/plugins\//.test(filePath))
+		return { deny: true, reason: 'dev-factory guard: the installed plugin is not edited by a ticket' };
 	const protectedPath =
-		/^(dev-factory\/|\.claude\/|\.github\/|\.husky\/|\.dev-factory\/(review|qa|evidence|debug)\/|\.dev-factory\/(run|env)\.json|\.dev-factory\/compose\.override\.yml)/.test(
+		/^(\.factory\/(tasks|qa\/cases)\/|dev-factory\/|\.claude\/|\.github\/|\.husky\/|\.dev-factory\/(review|qa|evidence|debug)\/|\.dev-factory\/(run|env)\.json|\.dev-factory\/compose\.override\.yml)/.test(
 			rel,
 		);
 	if (protectedPath && !ownCase) {

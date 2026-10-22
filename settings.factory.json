@@ -18,7 +18,7 @@
 		}
 	},
 	"permissions": {
-		"deny": ["Read(./.env)", "Read(./.env.*)", "Read(./dev-factory/.env.local)", "Read(**/*.pem)"],
+		"deny": ["Read(./.env)", "Read(./.env.*)", "Read(~/.dev-factory/.env.local)", "Read(**/*.pem)"],
 		"allow": ["Read", "Edit", "Write", "Glob", "Grep", "Bash", "Agent", "Skill"]
 	},
 	"extraKnownMarketplaces": {

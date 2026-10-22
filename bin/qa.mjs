@@ -106,8 +106,11 @@ function loadRun(root, run) {
 	return readJson(file);
 }
 
+// QA cases are committed with the change they verify, in the repository under test, not in the plugin.
+export const CASES_DIR = path.join('.factory', 'qa', 'cases');
+
 export function listCases(root, key) {
-	const dir = path.join(root, 'dev-factory', 'qa', 'cases', key);
+	const dir = path.join(root, CASES_DIR, key);
 	if (!fs.existsSync(dir)) return [];
 	return fs
 		.readdirSync(dir)
@@ -121,7 +124,7 @@ export function start({ root, key, profile }) {
 	const dirty = dirtyFiles(root);
 	if (dirty.length) throw new QaError(`working tree is not clean (commit first): ${dirty.slice(0, 5).join(', ')}`);
 	const cases = listCases(root, key);
-	if (!cases.length) throw new QaError(`needs_own_case: no case authored under dev-factory/qa/cases/${key}/`, 2);
+	if (!cases.length) throw new QaError(`needs_own_case: no case authored under ${CASES_DIR}/${key}/`, 2);
 	const run = nextRun(root);
 	const envFile = path.join(root, '.dev-factory', 'env.json');
 	const manifest = {

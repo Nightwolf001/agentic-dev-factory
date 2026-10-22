@@ -104,14 +104,14 @@ test('inside a run, factory files and run state are protected; own code and own 
 		'.dev-factory/review/abc-spec.json',
 		'.dev-factory/qa/run-1.json',
 		'.dev-factory/run.json',
-		'dev-factory/qa/cases/APP-99/x.yaml',
+		'.factory/qa/cases/APP-99/x.yaml',
 	]) {
 		assert.equal(e(bad).deny, true, bad);
 	}
 	for (const ok of [
 		'services/api/routes/a.js',
 		'clients/mobile/src/App.tsx',
-		'dev-factory/qa/cases/APP-12/login.yaml',
+		'.factory/qa/cases/APP-12/login.yaml',
 		'.dev-factory/build.done',
 		'.dev-factory/blocked.json',
 	]) {
@@ -141,7 +141,7 @@ test('shell writes to run state, records and factory code are denied; qa.mjs and
 	a('ls .dev-factory/review');
 	a('touch .dev-factory/build.done');
 	a(`node dev-factory/bin/qa.mjs record --run 1 --case a --status pass --assertion "banner visible" --screenshot /tmp/a.png`);
-	a('cat > dev-factory/qa/cases/APP-12/login.yaml');
+	a('cat > .factory/qa/cases/APP-12/login.yaml');
 });
 
 test('a read-only role may cd into the worktree but cd gives it no write path', () => {
@@ -513,7 +513,7 @@ test('the whole factory directory, hook wiring and husky are protected from shel
 		assert.equal(evaluate(c, { role: 'reviewer' }).deny, true, `reviewer: ${c}`);
 	}
 	for (const c of [
-		'cat > dev-factory/qa/cases/APP-12/login.yaml',
+		'cat > .factory/qa/cases/APP-12/login.yaml',
 		'cat dev-factory/settings.factory.json',
 		'ls dev-factory/test && wc -l dev-factory/README.md',
 		'node --test dev-factory/test/guard.test.mjs',
@@ -585,4 +585,54 @@ test('commits and PRs carry no agent attribution while git.agentAttribution is f
 test('the attribution rules are off when a repository opts in, and for guards that were given no setting', () => {
 	assert.equal(own('git commit -m "x" -m "Co-Authored-By: Claude <noreply@anthropic.com>"', { noAttribution: false }).deny, false);
 	assert.equal(evaluate('git commit -m "x" -m "Co-Authored-By: Claude"', { branch: 'task/APP-12-fix-thing' }).deny, false);
+});
+
+// ---- running from the marketplace cache, with the tracker out of the agents' reach ----
+
+import { PLUGIN_ROOT } from '../scripts/plugin-root.mjs';
+
+test('the plugin qa.mjs is recognised by its own installed path, quoted or not, and no other file of that name is', () => {
+	const own = `node "${PLUGIN_ROOT}/bin/qa.mjs" scrub --file body.md`;
+	assert.equal(evaluate(own, { role: 'debugger', branch: 'task/APP-1-x' }).deny, false, own);
+	assert.equal(evaluate(`node ${PLUGIN_ROOT}/bin/qa.mjs debug status`, { role: 'debugger' }).deny, false);
+	assert.equal(
+		evaluate('node ./tools/bin/qa.mjs scrub --file body.md', { role: 'debugger' }).deny,
+		true,
+		'a script an agent wrote is not the plugin',
+	);
+	assert.equal(
+		evaluate(`node "${PLUGIN_ROOT}/bin/qa.mjs" record --run 1 --case a --status pass --assertion x --screenshot /tmp/a.png > .dev-factory/qa/x`, {
+			role: 'builder',
+		}).deny,
+		false,
+	);
+});
+
+test('a factory agent cannot write the task tracker, but the scheduler can', () => {
+	for (const role of ['builder', 'reviewer', 'debugger', 'researcher', 'improver', 'promoter']) {
+		for (const c of [
+			'gh issue comment 12 --body hi',
+			'gh issue close 12',
+			'gh issue edit 12 --add-label x',
+			'gh issue create --title t --body b',
+		]) {
+			assert.equal(evaluate(c, { role, branch: 'task/APP-1-x' }).deny, true, `${role}: ${c}`);
+		}
+	}
+	assert.equal(evaluate('gh issue view 12 --json body', { role: 'builder', branch: 'task/APP-1-x' }).deny, false, 'reading is fine');
+	assert.equal(evaluate('gh issue comment 12 --body hi', { branch: 'task/APP-1-x' }).deny, false, 'the scheduler has no agent role');
+	const tasks = (sub) => `node "${PLUGIN_ROOT}/scripts/tasks.mjs" ${sub}`;
+	assert.equal(evaluate(tasks('set-state TASK-1 done'), { role: 'builder', branch: 'task/APP-1-x' }).deny, true);
+	assert.equal(evaluate(tasks('comment TASK-1 --file c.txt'), { role: 'builder', branch: 'task/APP-1-x' }).deny, true);
+	assert.equal(evaluate(tasks('get TASK-1'), { role: 'builder', branch: 'task/APP-1-x' }).deny, false);
+	assert.equal(evaluate(tasks('set-state TASK-1 done'), { branch: 'task/APP-1-x' }).deny, false);
+});
+
+test('local task files and the installed plugin are not edited by a ticket', () => {
+	const e = (filePath) => evaluateEdit({ filePath, root: '/w', active: true, run: { role: 'builder', key: 'APP-1' } });
+	assert.equal(e('.factory/tasks/TASK-1-x.md').deny, true);
+	assert.equal(e('/Users/me/.claude/plugins/cache/dev-factory/dev-factory/0.2.0/scripts/guard-lib.mjs').deny, true);
+	assert.equal(e('.factory/qa/cases/APP-1/login.yaml').deny, false);
+	assert.equal(e('.factory/qa/cases/APP-2/login.yaml').deny, true, "another task's cases");
+	assert.equal(evaluate('echo x > .factory/tasks/TASK-1-x.md', { role: 'builder', branch: 'task/APP-1-x' }).deny, true);
 });

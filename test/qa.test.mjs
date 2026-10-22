@@ -16,10 +16,9 @@ function makeRepo() {
 	g(root, 'init', '-q', '-b', 'develop');
 	g(root, 'config', 'user.email', 't@example.com');
 	g(root, 'config', 'user.name', 't');
-	fs.mkdirSync(path.join(root, 'dev-factory/qa/cases/APP-1'), { recursive: true });
-	fs.copyFileSync(PROFILES, path.join(root, 'dev-factory/qa/profiles.yaml'));
-	fs.writeFileSync(path.join(root, 'dev-factory/qa/cases/APP-1/login.yaml'), 'appId: x\n');
-	fs.writeFileSync(path.join(root, 'dev-factory/qa/cases/APP-1/arm.yaml'), 'appId: x\n');
+	fs.mkdirSync(path.join(root, '.factory/qa/cases/APP-1'), { recursive: true });
+	fs.writeFileSync(path.join(root, '.factory/qa/cases/APP-1/login.yaml'), 'appId: x\n');
+	fs.writeFileSync(path.join(root, '.factory/qa/cases/APP-1/arm.yaml'), 'appId: x\n');
 	fs.writeFileSync(path.join(root, '.gitignore'), '.dev-factory/\n');
 	g(root, 'add', '-A');
 	g(root, 'commit', '-qm', 'base');

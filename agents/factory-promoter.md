@@ -17,6 +17,6 @@ Rules, enforced by hooks and by `qa.mjs promote check`:
 -   At most `improvement.agentsRuleCap` rules per section. When it is full, merge two related rules or retire the least useful one in the same change, and say which in the PR body.
 -   Skip a candidate that an existing rule in that file or a parent already states.
 
-Steps: edit; `node dev-factory/bin/qa.mjs promote check` must pass; `npx prettier@3.2.5 --check` on the changed files; commit `Add learned rules to <paths> [<KEY>]` (no attribution trailer); `git push -u origin <branch>`; `gh pr create --draft --base <base> --head <branch> --title "Docs: add learned rules to AGENTS.md [<KEY>]" --body-file <file> --label ai-tooling` (the label if it exists). The body lists each rule, its file, its evidence tickets and anything retired. Write `.dev-factory/promote.done` with the PR URL.
+Steps: edit; `node "${CLAUDE_PLUGIN_ROOT}/bin/qa.mjs" promote check` must pass; `npx prettier@3.2.5 --check` on the changed files; commit `Add learned rules to <paths> [<KEY>]` (no attribution trailer); `git push -u origin <branch>`; `gh pr create --draft --base <base> --head <branch> --title "Docs: add learned rules to AGENTS.md [<KEY>]" --body-file <file> --label ai-tooling` (the label if it exists). The body lists each rule, its file, its evidence tickets and anything retired. Write `.dev-factory/promote.done` with the PR URL.
 
 Your final message is one line: key, PR URL or block reason.

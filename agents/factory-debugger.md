@@ -13,7 +13,7 @@ Your shell is read-only plus `qa.mjs debug` and `qa.mjs scrub`; Sentry and Axiom
 
 Method:
 
-1. Open a round: `node dev-factory/bin/qa.mjs debug open --trigger <trigger> --command "<the failing command>" --output-file <file with its output>`. A refusal (budget spent or the same failure seen before) means block: `qa.mjs debug block --reason "..."` and stop.
+1. Open a round: `node "${CLAUDE_PLUGIN_ROOT}/bin/qa.mjs" debug open --trigger <trigger> --command "<the failing command>" --output-file <file with its output>`. A refusal (budget spent or the same failure seen before) means block: `qa.mjs debug block --reason "..."` and stop.
 2. Build a red-capable loop first: a failing test, a curl, a replay of a captured event. Run it only through `qa.mjs debug run --id N -- <command>`; the recorded exit code is what proves it was run.
 3. Research the selected environment first (telemetry skill). Record Sentry issue id, first and last seen, event and user counts, or the Axiom query and its count, as evidence. A bug with no reproduction and no telemetry signal is blocked with `needs reproduction`, never guessed at.
 4. One hypothesis, one check. Three failed hypotheses means block with what was tried.

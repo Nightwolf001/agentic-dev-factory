@@ -10,7 +10,7 @@ Driven entirely by the `gh` CLI the PR flow already needs; no MCP server and no 
 | `reviewed`    | label `df:reviewed`                                                           |
 | `done`        | the issue is closed                                                           |
 
-The state label names live in `sources.github.states`. Run `node dev-factory/scripts/tasks.mjs init` once to create all the labels. `sources.github.repo` (`owner/name`) defaults to the current repository; `sources.github.assignee` (for example `@me`) restricts the queue to issues assigned to the factory's account, otherwise any issue with the label qualifies.
+The state label names live in `sources.github.states`. Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/tasks.mjs" init` once to create all the labels. `sources.github.repo` (`owner/name`) defaults to the current repository; `sources.github.assignee` (for example `@me`) restricts the queue to issues assigned to the factory's account, otherwise any issue with the label qualifies.
 
 Dependencies: a `Blocked by: #12, #13` line (or `GH-12`) in the issue body. A blocker that is closed counts as done; one that cannot be read counts as open.
 

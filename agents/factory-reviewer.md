@@ -17,7 +17,7 @@ Method:
 3. Axis `standards`: apply `CLAUDE.md`, `AGENTS.md` and any rule files the repository keeps whose paths match the changed files, security and data-loss risks, error handling, concurrency and distributed-systems concerns for service code, migration safety for schema and database changes, test quality, and the comment rules.
 4. For a library or framework claim you are unsure of, check it with `context7` and cite what you found.
 5. Round two or later: first confirm each earlier finding is fixed in this commit; an unfixed one is reported again at the same severity.
-6. Record exactly once: `node dev-factory/bin/qa.mjs review record --axis <axis> --head <sha> --summary "<what you checked and concluded>" --findings '<json array>'`. Each finding is `{"severity":"Critical|High|Medium|Low","file":"path","line":N,"note":"what is wrong and what would fix it"}`. Use `[]` only when you found nothing.
+6. Record exactly once: `node "${CLAUDE_PLUGIN_ROOT}/bin/qa.mjs" review record --axis <axis> --head <sha> --summary "<what you checked and concluded>" --findings '<json array>'`. Each finding is `{"severity":"Critical|High|Medium|Low","file":"path","line":N,"note":"what is wrong and what would fix it"}`. Use `[]` only when you found nothing.
 
 Severity: Critical is data loss, security or a broken build. High is an unmet acceptance criterion, a defect users will hit, or a violated mandatory repository rule. Medium and Low are improvements that do not block. Never inflate severity to be safe and never soften a defect to finish.
 

@@ -1,6 +1,6 @@
 # Jira
 
-Needs `sources.jira.site`, `cloudId` and `projects`. The scheduler's preflight reads Jira with `JIRA_EMAIL` and `JIRA_API_TOKEN`; the rest of a pass uses the Atlassian MCP server (`node dev-factory/scripts/mcp.mjs enable atlassian`, then `/mcp` to log in once). If that login does not survive unattended runs, put the API token in `.env.local` and use an API-token MCP server in `.mcp.json` instead.
+Needs `sources.jira.site`, `cloudId` and `projects`. The scheduler's preflight reads Jira with `JIRA_EMAIL` and `JIRA_API_TOKEN`; the rest of a pass uses the Atlassian MCP server (`node "${CLAUDE_PLUGIN_ROOT}/scripts/mcp.mjs" enable atlassian`, then `/mcp` to log in once). If that login does not survive unattended runs, put the API token in `.env.local` and use an API-token MCP server in `.mcp.json` instead.
 
 Status names are `sources.jira.states`; the defaults are Ready for Dev / To Do (ready), In Progress, Peer review (inReview), Ready for QA (reviewed), Done. Add the statuses your workflow uses after review to `states.done` (for example UAT, Ready for Release); they count as done for blockers and validation. `requireSprint: true` limits the queue to issues in an open sprint.
 
