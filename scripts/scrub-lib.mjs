@@ -1,4 +1,4 @@
-// Detects raw telemetry or personal data that must never reach a file, a PR body or a Jira comment.
+// Detects raw telemetry or personal data that must never reach a file, a PR body or a task comment.
 // Pattern based: it reduces the chance of copying something sensitive, it does not remove the need
 // to keep outputs aggregate-only. Pure functions so they are unit-tested.
 const BUILTIN = [

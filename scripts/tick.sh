@@ -20,9 +20,9 @@ cd "$REPO" || exit 1
 STARTED="$(date -u +%FT%TZ)"
 echo "$STARTED pass start" >> "$LOG"
 bash "$DIR/scripts/doctor.sh" --ci >> "$LOG" 2>&1 || { echo "$(date -u +%FT%TZ) preflight failed" >> "$LOG"; exit 1; }
-git fetch origin develop --quiet >> "$LOG" 2>&1 || true
+git fetch origin "$(node "$DIR/scripts/worktree.mjs" default-branch)" --quiet >> "$LOG" 2>&1 || true
 
-# cheap preflight: a session starts only when the check says there is work, so a Jira or gh failure costs nothing
+# cheap preflight: a session starts only when the check says there is work, so a tracker or gh failure costs nothing
 . "$DIR/scripts/preflight.sh"
 if [ "${DF_PREFLIGHT:-on}" != off ]; then
   node "$DIR/scripts/frontier.mjs" check >> "$LOG" 2>&1
@@ -35,10 +35,14 @@ if [ "${DF_PREFLIGHT:-on}" != off ]; then
   fi
 fi
 
+# the settings this pass runs with: the base file plus the domains and MCP servers this repository enabled
+node "$DIR/scripts/factory-settings.mjs" "$STATE/settings.json" || { echo "$(date -u +%FT%TZ) could not build settings" >> "$LOG"; exit 1; }
+MCP_ARGS=(); [ -f "$REPO/.mcp.json" ] && MCP_ARGS=(--mcp-config "$REPO/.mcp.json")
+
 claude -p "/dev-factory:tick" \
   --plugin-dir "$DIR" \
-  --mcp-config "$DIR/.mcp.json" \
-  --settings "$DIR/settings.factory.json" \
+  ${MCP_ARGS[@]+"${MCP_ARGS[@]}"} \
+  --settings "$STATE/settings.json" \
   --permission-prompts none \
   --model "$(node "$DIR/scripts/config.mjs" get models.orchestrator)" \
   --effort "$(node "$DIR/scripts/config.mjs" get models.effort)" \

@@ -6,7 +6,8 @@ const VERBS =
 const SNAKE = new RegExp(`(^|[_-])(${VERBS})([_-]|$)`, 'i');
 const CAMEL = new RegExp(`(^(${VERBS})|[a-z](${VERBS.replace(/\b[a-z]/g, (c) => c.toUpperCase())}))([A-Z]|$)`);
 const isWrite = (tool) => SNAKE.test(tool) || CAMEL.test(tool);
-const PREFIX = /^mcp__plugin_dev-factory_(sentry|axiom)__(.+)$/;
+// The server is named plugin_dev-factory_<id> when the plugin starts it and <id> when the repository's .mcp.json does.
+const PREFIX = /^mcp__(?:plugin_dev-factory_)?(sentry|axiom)__(.+)$/;
 
 const daysOf = (v) => {
 	const m = /^(\d+)\s*([hdw])$/i.exec(String(v).trim());
