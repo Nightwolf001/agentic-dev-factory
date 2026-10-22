@@ -2,11 +2,12 @@
 # One scheduled pass. Safe to run by hand. Exit 0 on a normal pass (including an empty frontier),
 # 75 when another pass is still running, non-zero on a failed run.
 set -uo pipefail
-DIR="$(cd "$(dirname "$0")/.." && pwd)"; REPO="$(cd "$DIR/.." && pwd)"
-STATE="${DF_STATE_DIR:-$HOME/.dev-factory}"; LOG="${DF_LOG:-$HOME/Library/Logs/dev-factory-tick.log}"
+DIR="$(cd "$(dirname "$0")/.." && pwd)"
+. "$DIR/scripts/runtime.sh"
+REPO="$(df_repo)"; [ -n "$REPO" ] || { echo "dev-factory: run this from inside a git repository (or set DF_REPO)" >&2; exit 1; }
+STATE="$(df_state_dir)"; LOG="$(df_log_file tick)"
 mkdir -p "$STATE" "$(dirname "$LOG")"
-
-if [ -f "$DIR/.env.local" ]; then set -a; . "$DIR/.env.local"; set +a; fi
+df_load_env
 export DF_ACTIVE=1
 export DF_OWNER_PID=$$
 

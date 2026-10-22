@@ -1,0 +1,60 @@
+# One dev-factory pass, scheduled in GitHub Actions. Written by `dev-factory cloud init --github-actions`.
+# Needs repository secrets: CLAUDE_CODE_OAUTH_TOKEN (claude setup-token) or ANTHROPIC_API_KEY, and DF_GH_TOKEN, a token
+# of the person the commits and PRs should belong to (the default GITHUB_TOKEN cannot trigger other workflows).
+# Optional: NOTION_TOKEN, JIRA_EMAIL, JIRA_API_TOKEN for those task sources. Repository variables DF_GIT_NAME and
+# DF_GIT_EMAIL set the commit identity.
+name: dev-factory tick
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+concurrency:
+  group: dev-factory
+  cancel-in-progress: false
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      DF_RUNTIME: cloud
+      DF_REPO: ${{ github.workspace }}
+      DF_STATE_DIR: ${{ runner.temp }}/dev-factory
+      GH_TOKEN: ${{ secrets.DF_GH_TOKEN || github.token }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+      JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+      JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.DF_GH_TOKEN || github.token }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Restore factory state
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/dev-factory
+          key: dev-factory-state-${{ github.run_id }}
+          restore-keys: dev-factory-state-
+      - name: Commit identity
+        run: |
+          git config --global user.name "${{ vars.DF_GIT_NAME || github.actor }}"
+          git config --global user.email "${{ vars.DF_GIT_EMAIL || format('{0}+{1}@users.noreply.github.com', github.actor_id, github.actor) }}"
+      - name: Install Claude Code and the plugin
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          claude plugin marketplace add __MARKETPLACE__
+          claude plugin install dev-factory@dev-factory
+          claude plugin marketplace add anthropics/claude-plugins-official
+          claude plugin install superpowers@claude-plugins-official
+      - name: Run one pass
+        run: |
+          DIR="$(ls -d "$HOME"/.claude/plugins/cache/*/dev-factory/*/ | sed 's#/$##' | sort -V | tail -1)"
+          "$DIR/bin/dev-factory" tick

@@ -2,7 +2,9 @@
 # Machine preflight. Usage: doctor.sh [--ci] [--wizard]
 set -uo pipefail
 CI=0; [ "${1:-}" = "--ci" ] && CI=1
-DIR="$(cd "$(dirname "$0")/.." && pwd)"; REPO="$(cd "$DIR/.." && pwd)"
+DIR="$(cd "$(dirname "$0")/.." && pwd)"
+. "$DIR/scripts/runtime.sh"
+REPO="$(df_repo)"; REPO="${REPO:-$PWD}"; RUNTIME="$(df_runtime)"
 if [ "${1:-}" = "--wizard" ]; then exec bash "$DIR/scripts/wizard.sh"; fi
 fail=0
 ok()   { printf 'ok    %s\n' "$1"; }
@@ -11,6 +13,7 @@ warn() { printf 'warn  %s\n' "$1"; }
 
 cfg() { node "$DIR/scripts/config.mjs" get "$1" 2>/dev/null || true; }
 SOURCE="$(cfg tasks.source)"; ENV_TYPE="$(cfg environment.type)"
+ok "plugin at $DIR; repository $REPO; runtime $RUNTIME"
 
 if [ -f "$REPO/.nvmrc" ]; then
   want="$(tr -d ' v\n' < "$REPO/.nvmrc")"; have="$(node -v 2>/dev/null | sed 's/^v//;s/\..*//')"
@@ -49,25 +52,30 @@ if [ "$CI" = 0 ]; then
     command -v xcrun >/dev/null && xcrun simctl list runtimes 2>/dev/null | grep -q iOS && ok "iOS simulator runtime" || warn "no iOS simulator runtime (mobile lane disabled)"
     command -v maestro >/dev/null && ok "maestro $(maestro --version 2>/dev/null | head -1)" || warn "maestro missing (mobile lane disabled)"
   fi
-  [ -f "$DIR/.env.local" ] && ok ".env.local present" || warn ".env.local missing (copy .env.example; only needed for unattended runs and API tokens)"
-  git -C "$REPO" ls-files --error-unmatch "dev-factory/.env.local" >/dev/null 2>&1 && bad ".env.local is tracked by git"
+  ENVF="$(df_state_dir)/.env.local"
+  if [ -f "$ENVF" ]; then
+    ok "$ENVF present"
+    [ "$(stat -f %Lp "$ENVF" 2>/dev/null || stat -c %a "$ENVF" 2>/dev/null)" = 600 ] || warn "$ENVF should be mode 600 (chmod 600 $ENVF)"
+  else warn "$ENVF missing (only needed for unattended runs and tracker API tokens; copy .env.example from the plugin)"; fi
 else
-  [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}${ANTHROPIC_API_KEY:-}" ] && ok "claude credential in env" || bad "no CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY"
+  if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}${ANTHROPIC_API_KEY:-}" ]; then ok "claude credential in env"
+  elif [ "${CLAUDE_CODE_REMOTE:-}" = true ]; then ok "Claude Code on the web supplies the login"
+  else bad "no CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY (claude setup-token; in GitHub Actions a repository secret)"; fi
 fi
 
 for pl in $(node -e 'for(const x of require(process.argv[1]).plugins) if(x.required) console.log(x.id)' "$DIR/plugins.json"); do
-  claude plugin list 2>/dev/null | grep -q "$pl" && ok "plugin $pl" || bad "plugin $pl not installed (bash dev-factory/scripts/install.sh --apply)"
+  claude plugin list 2>/dev/null | grep -q "$pl" && ok "plugin $pl" || bad "plugin $pl not installed (claude plugin install superpowers@claude-plugins-official, or: dev-factory install --apply)"
 done
 
 # MCP servers are all optional: report what this repository enabled, and say what a missing one costs
 MCP_FILE="${DF_MCP_FILE:-$REPO/.mcp.json}"
 mcp_list="$(claude mcp list 2>/dev/null)"
 enabled="$(DF_MCP_FILE="$MCP_FILE" node "$DIR/scripts/mcp.mjs" list 2>/dev/null | grep '^on ' | awk '{print $2}')"
-if [ -z "$enabled" ]; then ok "no MCP servers enabled (all are optional: node dev-factory/scripts/mcp.mjs list)"; fi
+if [ -z "$enabled" ]; then ok "no MCP servers enabled (all are optional: dev-factory mcp list)"; fi
 for srv in $enabled; do
   if printf '%s\n' "$mcp_list" | grep -E "^($srv|plugin:dev-factory:$srv):" | grep -q 'Connected'; then ok "MCP $srv connected"
-  else warn "MCP $srv enabled but not connected (in claude run /mcp; its entry in .mcp.json can be removed with: node dev-factory/scripts/mcp.mjs disable $srv)"; fi
+  else warn "MCP $srv enabled but not connected (in claude run /mcp; its entry in .mcp.json can be removed with: dev-factory mcp disable $srv)"; fi
 done
-node "$DIR/scripts/config.mjs" validate >/dev/null 2>&1 && ok "config.json valid" || bad "config.json invalid (node dev-factory/scripts/config.mjs validate)"
+node "$DIR/scripts/config.mjs" validate >/dev/null 2>&1 && ok "config.json valid" || bad "config.json invalid (dev-factory config validate)"
 bash "$DIR/scripts/lint-vocabulary.sh" >/dev/null && ok "vocabulary lint" || bad "vocabulary lint"
 exit $fail

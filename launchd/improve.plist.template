@@ -2,11 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>com.dev-factory.improve</string>
+  <key>Label</key><string>__LABEL__</string>
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>__REPO__/dev-factory/scripts/improve.sh</string>
+    <string>__LAUNCHER__</string>
+    <string>__JOB__</string>
   </array>
   <key>WorkingDirectory</key><string>__REPO__</string>
   <key>StartCalendarInterval</key><dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>
@@ -15,6 +16,8 @@
   <dict>
     <key>PATH</key><string>__PATH__</string>
     <key>HOME</key><string>__HOME__</string>
+    <key>DF_REPO</key><string>__REPO__</string>
+    <key>DF_STATE_DIR</key><string>__STATE__</string>
   </dict>
   <key>StandardOutPath</key><string>__HOME__/Library/Logs/dev-factory-launchd.out.log</string>
   <key>StandardErrorPath</key><string>__HOME__/Library/Logs/dev-factory-launchd.err.log</string>

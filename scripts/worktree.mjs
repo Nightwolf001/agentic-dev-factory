@@ -5,6 +5,7 @@
 //   worktree.mjs resolve [--base NAME] [--repo DIR]                          print {name, ref, usedDefault}; exit 3 when the base cannot be used
 //   worktree.mjs add --branch NEW --path DIR [--base NAME] [--repo DIR]      resolve, then git worktree add -b NEW DIR <ref>
 //   worktree.mjs attach --branch EXISTING --path DIR [--repo DIR]            worktree on an existing remote branch (fix passes)
+//   worktree.mjs root [--repo DIR]                                           print the folder worktrees are created in (git.worktreeRoot)
 //   worktree.mjs default-branch [--repo DIR]                                 print the branch a run builds on when no base is named
 //   worktree.mjs parse --file F                                              print the "Base branch:" name from a ticket, or nothing
 import { execFileSync } from 'node:child_process';
@@ -118,6 +119,7 @@ if (isMain(import.meta.url)) {
 	try {
 		const cmd = a._[0];
 		if (cmd === 'default-branch') console.log(defaultBase);
+		else if (cmd === 'root') console.log(path.resolve(repo, get('git.worktreeRoot') || '../.worktrees'));
 		else if (cmd === 'resolve') console.log(JSON.stringify(resolveBase({ repo, name: a.base, defaultBase })));
 		else if (cmd === 'add' && a.branch && a.path)
 			console.log(JSON.stringify(addWorktree({ repo, branch: a.branch, name: a.base, defaultBase, dest: a.path })));

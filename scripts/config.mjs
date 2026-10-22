@@ -14,6 +14,7 @@ import { isMain } from './is-main.mjs';
 const FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'config.json');
 export const REPO_CONFIG = 'dev-factory.config.json';
 export const SOURCES = ['local', 'github', 'notion', 'jira'];
+export const SCHEDULERS = ['auto', 'launchd', 'github-actions', 'routine', 'none'];
 
 export const ENV_OVERRIDES = {
 	'caps.maxOpenPrs': 'DF_MAX_OPEN_PRS',
@@ -190,6 +191,12 @@ export function validate(config = load()) {
 		problems.push('tasks.bugTypes must be a non-empty list of names');
 	if (!/^[A-Za-z][A-Za-z0-9]*-[0-9]+$/.test(dig(config, 'tasks.placeholderKey') ?? ''))
 		problems.push('tasks.placeholderKey must look like TASK-000');
+	if (!['auto', 'local', 'cloud'].includes(dig(config, 'runtime.mode') ?? 'auto')) problems.push('runtime.mode must be auto, local or cloud');
+	if (!SCHEDULERS.includes(dig(config, 'runtime.scheduler') ?? 'auto')) problems.push(`runtime.scheduler must be one of ${SCHEDULERS.join(', ')}`);
+	const sandbox = dig(config, 'sandbox.enabled');
+	if (sandbox != null && typeof sandbox !== 'boolean') problems.push('sandbox.enabled must be true, false or null');
+	const wt = dig(config, 'git.worktreeRoot');
+	if (wt !== undefined && (typeof wt !== 'string' || !wt)) problems.push('git.worktreeRoot must be a folder path');
 	const attribution = dig(config, 'git.agentAttribution');
 	if (attribution !== undefined && typeof attribution !== 'boolean') problems.push('git.agentAttribution must be true or false');
 	const type = dig(config, 'environment.type');

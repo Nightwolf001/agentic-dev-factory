@@ -22,6 +22,9 @@ export function build({ cfg = load(), mcpFile = path.resolve('.mcp.json'), base 
 		if (site) domains.add(site);
 	}
 	for (const d of get('sandbox.extraDomains', { config: cfg }) ?? []) domains.add(d);
+	// null leaves the base file's choice; a cloud environment that supplies its own sandbox can switch ours off
+	const sandboxOn = get('sandbox.enabled', { config: cfg });
+	if (typeof sandboxOn === 'boolean') out.sandbox.enabled = sandboxOn;
 	out.sandbox.network.allowedDomains = [...domains];
 	out.permissions.allow = [...new Set([...out.permissions.allow, ...allowRules(mcpFile)])];
 	return out;
