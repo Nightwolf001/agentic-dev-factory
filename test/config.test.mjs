@@ -155,3 +155,10 @@ test('the keys the scheduler scripts read are required, and the stall window mus
 	bad.caps.stallMinutes = '90m';
 	assert.deepEqual(validate(bad), ['caps.stallMinutes must be a non-negative integer']);
 });
+
+test('git.agentAttribution defaults to false and must be a boolean', () => {
+	const c = load();
+	assert.equal(c.git.agentAttribution, false);
+	c.git.agentAttribution = 'no';
+	assert.ok(validate(c).includes('git.agentAttribution must be true or false'));
+});

@@ -19,6 +19,10 @@ else
   command -v node >/dev/null && ok "node $(node -v)" || bad "node not installed"
 fi
 command -v git >/dev/null && ok "git present" || bad "git not installed"
+gid="$(git -C "$REPO" config user.name 2>/dev/null) <$(git -C "$REPO" config user.email 2>/dev/null)>"
+if [ "$gid" = " <>" ]; then bad "git user.name and user.email are not set: commits would have no author (git config --global user.name ...)"
+elif printf '%s' "$gid" | grep -qiE 'claude|anthropic'; then bad "git identity is an agent ($gid): set your own user.name and user.email"
+else ok "commits are made as $gid"; fi
 command -v claude >/dev/null && ok "claude $(claude --version 2>/dev/null | head -1)" || bad "claude not installed"
 gh auth status >/dev/null 2>&1 && ok "gh authenticated (pull requests)" || bad "gh not authenticated (gh auth login)"
 

@@ -190,6 +190,8 @@ export function validate(config = load()) {
 		problems.push('tasks.bugTypes must be a non-empty list of names');
 	if (!/^[A-Za-z][A-Za-z0-9]*-[0-9]+$/.test(dig(config, 'tasks.placeholderKey') ?? ''))
 		problems.push('tasks.placeholderKey must look like TASK-000');
+	const attribution = dig(config, 'git.agentAttribution');
+	if (attribution !== undefined && typeof attribution !== 'boolean') problems.push('git.agentAttribution must be true or false');
 	const type = dig(config, 'environment.type');
 	if (type !== undefined && !['none', 'compose'].includes(type)) problems.push('environment.type must be none or compose');
 	if (type === 'compose') {

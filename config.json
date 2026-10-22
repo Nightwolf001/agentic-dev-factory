@@ -64,6 +64,7 @@
 	},
 	"git": {
 		"baseBranch": null,
+		"agentAttribution": false,
 		"branchTypes": {
 			"bug": "fix",
 			"story": "feature",

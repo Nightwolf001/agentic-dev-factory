@@ -394,3 +394,24 @@ test('a repository replaces the default QA profiles with its own dev-factory.qa.
 	assert.deepEqual(uiGlobsFor(root, 'web'), ['site/**']);
 	assert.deepEqual(nonUiGlobsFor(root, 'web'), ['**/*.md']);
 });
+
+test('verify refuses commits authored by an agent or carrying an agent trailer when attribution is off', async () => {
+	const { attributionProblems } = await import('../bin/qa.mjs');
+	const root = makeRepo();
+	g(root, 'update-ref', 'refs/remotes/origin/develop', 'HEAD');
+	g(root, 'checkout', '-qb', 'task/X-9-attr');
+	const commit = (msg, extra = []) => {
+		fs.writeFileSync(path.join(root, `f${Math.random()}.txt`), 'x');
+		g(root, 'add', '-A');
+		g(root, ...extra, 'commit', '-qm', msg);
+	};
+	commit('Plain change [X-9]');
+	assert.deepEqual(attributionProblems(root, 'HEAD', 'origin/develop'), []);
+	commit('With trailer [X-9]\n\nCo-Authored-By: Claude Sonnet <noreply@anthropic.com>');
+	assert.match(attributionProblems(root, 'HEAD', 'origin/develop')[0], /agent attribution line/);
+	commit('Agent author [X-9]', ['-c', 'user.name=Claude', '-c', 'user.email=noreply@anthropic.com']);
+	const problems = attributionProblems(root, 'HEAD', 'origin/develop');
+	assert.equal(problems.length, 2);
+	assert.match(problems.join(' '), /authored or committed by an agent identity/);
+	assert.deepEqual(attributionProblems(root, 'HEAD', 'origin/no-such-base'), [], 'an unknown base is not a verdict');
+});

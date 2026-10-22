@@ -161,9 +161,35 @@ function gitParts(args) {
 	return { sub: undefined, rest: [], globals: args };
 }
 
+// Commits and PR text carry the person's own identity, never an agent's: no Co-Authored-By or "generated with" line, no
+// author override, no identity set through config or environment. Switched off with git.agentAttribution.
+const AGENT_MARK = /co-authored-by|noreply@anthropic\.com|generated with\b.{0,40}claude/i;
+const IDENTITY_ENV = /(^|\s)GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL|DATE)=/;
+function denyAttribution(sub, rest, seg) {
+	if (sub === 'commit') {
+		if (rest.some((a) => /^--(author|reset-author|trailer)\b/.test(a)))
+			return 'commits use the git user of this machine: no --author, --reset-author or --trailer';
+		if (AGENT_MARK.test(seg)) return 'commit messages carry no Co-Authored-By or generated-by line (git.agentAttribution is false)';
+	}
+	if (sub === 'config') {
+		// reading user.name is fine; giving it a value, or unsetting it, changes whose commits these are
+		const at = rest.findIndex((a) => /^user\./i.test(a));
+		const writes = rest.some((a) => /^--(unset|unset-all|add|replace-all|edit)$/.test(a));
+		if (at > -1 && (writes || rest.slice(at + 1).some((a) => !a.startsWith('-'))))
+			return "the git identity is the person's own: user.* is not changed";
+	}
+	return null;
+}
+
 function denyGit(args, ctx, seg) {
 	const { sub, rest, globals } = gitParts(args);
+	if (ctx.noAttribution) {
+		const why = denyAttribution(sub, rest, seg);
+		if (why) return why;
+	}
 	for (let i = 0; i < globals.length; i++) {
+		if (globals[i] === '-c' && ctx.noAttribution && /^user\./i.test(globals[i + 1] ?? ''))
+			return "the git identity is the person's own: -c user.* is not allowed";
 		if (globals[i] === '-c' && !SAFE_GIT_CONFIG.test(globals[i + 1] ?? '')) return `git -c ${globals[i + 1] ?? ''} is not allowed`;
 	}
 	if (sub === 'push') {
@@ -210,8 +236,10 @@ function ghApiWrites(args) {
 	return false;
 }
 
-function denyGh(args) {
+function denyGh(args, ctx = {}, seg = '') {
 	const p = ghPositionals(args);
+	if (ctx.noAttribution && p[0] === 'pr' && ['create', 'edit', 'comment'].includes(p[1]) && AGENT_MARK.test(seg))
+		return 'PR text carries no Co-Authored-By or generated-by line (git.agentAttribution is false)';
 	if (p[0] === 'pr' && ['merge', 'review', 'ready', 'close', 'reopen'].includes(p[1])) return `gh pr ${p[1]} is reserved for people`;
 	if (p[0] === 'api' && ghApiWrites(args)) return 'gh api writes are not allowed: no -X other than GET, no body field, no --input';
 	if (['release', 'alias', 'secret', 'variable'].includes(p[0]) || (p[0] === 'repo' && ['delete', 'edit', 'archive'].includes(p[1])))
@@ -297,6 +325,12 @@ function denyForReadOnly(seg, extra = []) {
 
 export function evaluate(command, ctx = {}) {
 	const readOnly = READ_ONLY_ROLES.has(ctx.role);
+	// leading VAR=value words are stripped from each segment, so the identity variables are looked for in the whole command
+	if (ctx.noAttribution && IDENTITY_ENV.test(command) && /\bgit\b/.test(command))
+		return {
+			deny: true,
+			reason: 'dev-factory guard: commits are made as the git user of this machine: GIT_AUTHOR_* and GIT_COMMITTER_* are not allowed',
+		};
 	for (const seg of segments(command)) {
 		const { cmd, args, tokens } = invocation(seg);
 		const deny = (why) => ({ deny: true, reason: `dev-factory guard: ${why} [${seg.slice(0, 80)}]` });
@@ -317,7 +351,7 @@ export function evaluate(command, ctx = {}) {
 		const body = [cmd, ...args].join(' ');
 		let reason = null;
 		if (cmd === 'git') reason = denyGit(args, ctx, seg);
-		else if (cmd === 'gh') reason = denyGh(args);
+		else if (cmd === 'gh') reason = denyGh(args, ctx, seg);
 		if (!reason && /\b(curl|wget|http|https)\b.*(atlassian\.net|api\.notion\.com|notion\.so)/.test(seg))
 			reason = 'direct task-tracker access is reserved for the scheduler';
 		if (!reason && /^docker\s+(system|volume|image|builder|network|container)\s+prune/.test(body)) reason = 'docker prune is not allowed';

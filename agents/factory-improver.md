@@ -21,7 +21,7 @@ Work in this order:
 1. Read `dev-factory/AGENTS.md` and `dev-factory/README.md`, then the files the change touches.
 2. Behaviour change in an `.mjs` file: write the failing test in `dev-factory/test/` first, see it fail, make it pass. Skill, agent or command text: make the smallest edit that removes the symptom and keep the README in step.
 3. Run `node --test dev-factory/test/*.test.mjs`, Prettier, `bash dev-factory/scripts/lint-vocabulary.sh`, `claude plugin validate ./dev-factory`.
-4. Commit with a message ending in `[<KEY>]` (no attribution trailer), `git push -u origin <branch>`.
+4. Commit with a message ending in `[<KEY>]` (no attribution trailer, as `git.agentAttribution` says), `git push -u origin <branch>`.
 5. Open the draft PR: `gh pr create --draft --base <base> --head <branch> --title "Improvement: <summary> [<KEY>]" --body-file <file> --label ai-tooling` (confirm the label exists with `gh label list`; if not, name it in the body). The body states the symptom, the evidence counts, the change, the task link when the source has one and that a person must review and merge.
 6. Write `.dev-factory/improve.done` containing the PR URL.
 

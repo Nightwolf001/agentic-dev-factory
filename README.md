@@ -284,21 +284,22 @@ Defaults ship in `config.json` and name no organisation, site or project. A repo
 
 `/dev-factory:setup` writes this for you. `node dev-factory/scripts/config.mjs validate` checks it; `get source.states.inProgress` reads from the active source.
 
-| Key                                                         | Meaning                                                                                                                     |
-| ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `tasks.source`, `tasks.label`, `tasks.blockedLabel`         | The tracker, the label that marks a task as the factory's, the label that parks one                                         |
-| `tasks.bugTypes`, `tasks.placeholderKey`                    | Task types that count as bugs; the key used for `/dev-factory:quick` branches and PR titles (set it to one your CI accepts) |
-| `sources.<name>.*`                                          | Per-tracker settings and the mapping from `ready`, `inProgress`, `inReview`, `reviewed`, `done` to its own status names     |
-| `git.baseBranch`, `git.branchTypes`                         | Branch to build on (`null` = the repository's default branch); task type to branch prefix, matched case-insensitively       |
-| `pr.sizeLabels`, `pr.areaLabels`, `pr.categoryByBranchType` | PR labels. Area labels are path prefix to label, none by default                                                            |
-| `environment.*`                                             | `type` `none` (tests run on the host, the default) or `compose`; see [Environments](#environments)                          |
-| `mobile.*`                                                  | `appDir` enables the device lane; `install`, `pods`, `start`, `build`, `nativeInputs` are the commands it runs              |
-| `caps.*`, `models.*`                                        | Concurrency, open PRs, budget, stall and resume limits; model and effort per role                                           |
-| `environments.<name>`                                       | Optional: Sentry org/projects and Axiom datasets the debugger may read in that environment                                  |
-| `telemetry.*`, `debug.*`, `validation.*`                    | Result caps and scrub patterns; debug budget; wait before post-merge validation                                             |
-| `improvement.*`                                             | Label, optional project, and per-scan caps for the self-improvement scan                                                    |
-| `review.specialistAxes`                                     | Globs that trigger the extra `data`, `infra` and `security` review steps                                                    |
-| `sandbox.extraDomains`                                      | Extra hosts the scheduled pass may reach                                                                                    |
+| Key                                                         | Meaning                                                                                                                                                                                  |
+| ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tasks.source`, `tasks.label`, `tasks.blockedLabel`         | The tracker, the label that marks a task as the factory's, the label that parks one                                                                                                      |
+| `tasks.bugTypes`, `tasks.placeholderKey`                    | Task types that count as bugs; the key used for `/dev-factory:quick` branches and PR titles (set it to one your CI accepts)                                                              |
+| `sources.<name>.*`                                          | Per-tracker settings and the mapping from `ready`, `inProgress`, `inReview`, `reviewed`, `done` to its own status names                                                                  |
+| `git.agentAttribution`                                      | `false` (default): every commit and PR is the person's own; the guard refuses `Co-Authored-By`, `--author` and "generated with" text, and `qa.mjs verify` refuses a branch that has them |
+| `git.baseBranch`, `git.branchTypes`                         | Branch to build on (`null` = the repository's default branch); task type to branch prefix, matched case-insensitively                                                                    |
+| `pr.sizeLabels`, `pr.areaLabels`, `pr.categoryByBranchType` | PR labels. Area labels are path prefix to label, none by default                                                                                                                         |
+| `environment.*`                                             | `type` `none` (tests run on the host, the default) or `compose`; see [Environments](#environments)                                                                                       |
+| `mobile.*`                                                  | `appDir` enables the device lane; `install`, `pods`, `start`, `build`, `nativeInputs` are the commands it runs                                                                           |
+| `caps.*`, `models.*`                                        | Concurrency, open PRs, budget, stall and resume limits; model and effort per role                                                                                                        |
+| `environments.<name>`                                       | Optional: Sentry org/projects and Axiom datasets the debugger may read in that environment                                                                                               |
+| `telemetry.*`, `debug.*`, `validation.*`                    | Result caps and scrub patterns; debug budget; wait before post-merge validation                                                                                                          |
+| `improvement.*`                                             | Label, optional project, and per-scan caps for the self-improvement scan                                                                                                                 |
+| `review.specialistAxes`                                     | Globs that trigger the extra `data`, `infra` and `security` review steps                                                                                                                 |
+| `sandbox.extraDomains`                                      | Extra hosts the scheduled pass may reach                                                                                                                                                 |
 
 QA surface rules (which paths need a browser or device walk) are in `qa/profiles.yaml`; a repository replaces them with its own `dev-factory.qa.yaml` of the same shape.
 
@@ -413,6 +414,7 @@ Cases live under `qa/cases/<KEY>/` (`.spec.ts` for Playwright, `.yaml` for Maest
 
 -   The debugger and researcher cannot edit code; the improver cannot edit what enforces the factory's own limits.
 -   The builder has no task-tracker or GitHub write tools. The scheduled pass is the only holder of them, so a task cannot approve itself.
+-   Commits and PRs are always the person's own. While `git.agentAttribution` is `false` (the default) the shell guard refuses `Co-Authored-By`, `--author`, identity set through `git config` or `GIT_AUTHOR_*`, and "generated with" text in a commit or PR; `qa.mjs verify` refuses a branch with an agent as author, committer or co-author; the scheduled pass runs with Claude Code's own commit and PR attribution switched off. In your own interactive sessions set `"attribution": {"commit": "", "pr": ""}` in your Claude Code settings so Claude Code adds none either.
 -   Only the task's own branch may be pushed, never forced. The shell guard reads git past global options, wrappers and `sh -c` or `$(...)` payloads, and treats `gh api` with a body field as a write.
 -   When the environment is a container, dependencies are installed and tests run inside it, never on the host.
 -   Inside a run, the factory's own files (`dev-factory/`, `.claude/`, `.github/`), run state, and QA and review records cannot be edited by a task, by tool or by shell. Review records can only be written by `qa.mjs review record`, which refuses anyone whose `run.json` role is not that axis's reviewer; debug rounds likewise need the debugger role.

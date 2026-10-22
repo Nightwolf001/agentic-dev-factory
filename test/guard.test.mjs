@@ -552,3 +552,37 @@ test('host installs and tests are allowed when the repository has no container e
 	assert.equal(host('yarn install'), false);
 	assert.equal(host('git push --force origin task/APP-12-fix-thing'), true, 'the rest of the guard still applies');
 });
+
+// ---- the person's own identity on every commit ----
+
+const own = (c, extra = {}) => evaluate(c, { branch: 'task/APP-12-fix-thing', role: 'builder', noAttribution: true, ...extra });
+
+test('commits and PRs carry no agent attribution while git.agentAttribution is false', () => {
+	for (const c of [
+		'git commit -m "Fix thing [APP-12]" -m "Co-Authored-By: Claude <noreply@anthropic.com>"',
+		'git commit -m "Fix thing\n\nCo-authored-by: someone <a@b.c>"',
+		'git commit --author="Claude <noreply@anthropic.com>" -m x',
+		'git commit --reset-author -m x',
+		'git commit --trailer "Co-authored-by: X <x@y.z>" -m x',
+		'GIT_AUTHOR_NAME=Claude git commit -m x',
+		'GIT_COMMITTER_EMAIL=noreply@anthropic.com git commit -m x',
+		'git config user.name Claude',
+		'git config --global user.email noreply@anthropic.com',
+		'git -c user.name=Claude commit -m x',
+		'gh pr create --title t --body "Generated with [Claude Code](https://claude.com/claude-code)"',
+		'gh pr edit 3 --body "Co-Authored-By: Claude"',
+	])
+		assert.equal(own(c).deny, true, c);
+	for (const c of [
+		'git commit -m "Fix thing [APP-12]"',
+		'git commit -n -m "Add export [APP-12]"',
+		'git config user.name',
+		'gh pr create --draft --title t --body-file body.md',
+	])
+		assert.equal(own(c).deny, false, c);
+});
+
+test('the attribution rules are off when a repository opts in, and for guards that were given no setting', () => {
+	assert.equal(own('git commit -m "x" -m "Co-Authored-By: Claude <noreply@anthropic.com>"', { noAttribution: false }).deny, false);
+	assert.equal(evaluate('git commit -m "x" -m "Co-Authored-By: Claude"', { branch: 'task/APP-12-fix-thing' }).deny, false);
+});

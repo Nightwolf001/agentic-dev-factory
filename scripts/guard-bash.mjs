@@ -26,7 +26,13 @@ process.stdin
 			/* no readable config: fall back to the strictest reading below */
 		}
 		const containerOnly = environment.type === 'compose';
-		const verdict = evaluate(command, { branch: run?.branch, role: run?.role, containerOnly, service: environment.service });
+		let noAttribution = true;
+		try {
+			noAttribution = get('git.agentAttribution') !== true;
+		} catch {
+			/* no readable config: keep the strict reading */
+		}
+		const verdict = evaluate(command, { branch: run?.branch, role: run?.role, containerOnly, service: environment.service, noAttribution });
 		if (verdict.deny) {
 			process.stderr.write(verdict.reason + '\n');
 			process.exit(2);
