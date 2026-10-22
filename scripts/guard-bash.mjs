@@ -1,5 +1,6 @@
 // PreToolUse hook entry. Active only inside a factory run: DF_ACTIVE=1 or .dev-factory/run.json
 // in the session's cwd. Elsewhere it allows everything, so interactive sessions are unaffected.
+import { get } from './config.mjs';
 import { evaluate } from './guard-lib.mjs';
 import { resolveRun } from './run-context.mjs';
 
@@ -18,7 +19,14 @@ process.stdin
 		if (process.env.DF_ACTIVE !== '1' && !run) process.exit(0);
 		const command = evt.tool_input?.command;
 		if (typeof command !== 'string') process.exit(0);
-		const verdict = evaluate(command, { branch: run?.branch, role: run?.role });
+		let environment = {};
+		try {
+			environment = get('environment') ?? {};
+		} catch {
+			/* no readable config: fall back to the strictest reading below */
+		}
+		const containerOnly = environment.type === 'compose';
+		const verdict = evaluate(command, { branch: run?.branch, role: run?.role, containerOnly, service: environment.service });
 		if (verdict.deny) {
 			process.stderr.write(verdict.reason + '\n');
 			process.exit(2);

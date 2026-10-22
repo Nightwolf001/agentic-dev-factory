@@ -2,7 +2,7 @@
 // the PreToolUse hook input. A hook sees command strings only, so this is a guard against mistakes
 // and against ordinary bypasses (wrappers, global options, substitutions, inline interpreters), not a
 // sandbox: an agent that writes and runs its own program is stopped by the real separation, which is that
-// the builder has no Jira or GitHub tools, the scheduler holds the credentials, and a person merges.
+// the builder has no task-tracker or GitHub tools, the scheduler holds the credentials, and a person merges.
 const PROTECTED = new Set(['develop', 'preprod', 'main', 'master']);
 const READ_ONLY_ROLES = new Set(['reviewer', 'debugger', 'researcher']);
 
@@ -258,15 +258,15 @@ const REVIEWER_ALLOWED = [
 ];
 
 // A debugger also reads the ticket's own stack (compose ps and logs, pm2 logs and process list, curl against
-// *.olarm.local) and records through qa.mjs debug and scrub. It still never edits, installs or pushes.
+// localhost and *.local / *.test hosts) and records through qa.mjs debug and scrub. It still never edits, installs or pushes.
 const DEBUGGER_EXTRA = [
 	/^node\s+\S*dev-factory\/bin\/qa\.mjs\s+(debug|scrub)\b/,
 	/^docker\s+compose\s+(-f\s+\S+\s+)?(-p\s+\S+\s+)?(ps|logs)\b/,
-	/^docker\s+compose\s+(-f\s+\S+\s+)?(-p\s+\S+\s+)?exec\s+-T\s+(-u\s+\S+\s+)?devcontainer\s+pm2\s+(logs\s+--nostream|jlist|status|list)\b/,
+	/^docker\s+compose\s+(-f\s+\S+\s+)?(-p\s+\S+\s+)?exec\s+-T\s+(-u\s+\S+\s+)?[A-Za-z][\w.-]*\s+pm2\s+(logs\s+--nostream|jlist|status|list)\b/,
 	// the red loop: a test runner or curl inside the ticket's own devcontainer
-	/^docker\s+compose\s+(-f\s+\S+\s+)*(-p\s+\S+\s+)?exec\s+-T\s+(-u\s+\S+\s+)?(-w\s+\S+\s+)?devcontainer\s+(npx\s+(vitest|jest|playwright\s+test)|npm\s+(test|run\s+test\S*)|node\s+--test|yarn\s+(test|vitest|jest))\b/,
+	/^docker\s+compose\s+(-f\s+\S+\s+)*(-p\s+\S+\s+)?exec\s+-T\s+(-u\s+\S+\s+)?(-w\s+\S+\s+)?[A-Za-z][\w.-]*\s+(npx\s+(vitest|jest|playwright\s+test)|npm\s+(test|run\s+test\S*)|node\s+--test|yarn\s+(test|vitest|jest))\b/,
 	// the whole segment must be one plain URL: a trailing $(...) or second URL is not a read of the ticket stack
-	/^curl\s+(-[ksfSLI]+\s+)*https?:\/\/[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.olarm\.local(:\d+)?(\/[\w\-./?=%:,+@]*)?$/,
+	/^curl\s+(-[ksfSLI]+\s+)*https?:\/\/(localhost|127\.0\.0\.1|[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.(local|localhost|test))(:\d+)?(\/[\w\-./?=%:,+@]*)?$/,
 ];
 const CURL_WRITE = /\s(-X|--request|-d|--data\S*|-F|--form|-T|--upload-file|-o|--output|-O)\b/;
 // Substitution, process substitution and variables run or read things the allowlist never saw; single quotes are literal.
@@ -318,15 +318,17 @@ export function evaluate(command, ctx = {}) {
 		let reason = null;
 		if (cmd === 'git') reason = denyGit(args, ctx, seg);
 		else if (cmd === 'gh') reason = denyGh(args);
-		if (!reason && /\b(curl|wget|http|https)\b.*atlassian\.net/.test(seg)) reason = 'direct Jira access is reserved for the scheduler';
+		if (!reason && /\b(curl|wget|http|https)\b.*(atlassian\.net|api\.notion\.com|notion\.so)/.test(seg))
+			reason = 'direct task-tracker access is reserved for the scheduler';
 		if (!reason && /^docker\s+(system|volume|image|builder|network|container)\s+prune/.test(body)) reason = 'docker prune is not allowed';
 		if (
 			!reason &&
+			ctx.containerOnly &&
 			/^(npm\s+(--prefix\s+\S+\s+)?(install|i|ci|test|run\s+test)\b|npx\s+(vitest|jest|playwright\s+test)\b|yarn\s+(--cwd\s+\S+\s+)?(test|jest|vitest)\b|pnpm\s+(install|i|test|run\s+test|jest|vitest)\b)/.test(
 				body,
 			)
 		) {
-			reason = 'services are installed and tested inside the devcontainer, not on the host (docker compose exec ... devcontainer ...)';
+			reason = `dependencies are installed and tests run inside the ticket's environment container, not on the host (docker compose exec ... ${ctx.service || '<service>'} ...)`;
 		}
 		if (reason) return deny(reason);
 	}
@@ -376,7 +378,7 @@ export function evaluateEdit({ filePath, text = '', root, active = false, run = 
 		if (enforcement.test(rel))
 			return {
 				deny: true,
-				reason: `dev-factory guard: ${rel} enforces the factory's own limits; changes to it are made by a person, file a Jira issue instead`,
+				reason: `dev-factory guard: ${rel} enforces the factory's own limits; changes to it are made by a person, file a task instead`,
 			};
 		if (rel.startsWith('dev-factory/') && !rel.includes('..')) return { deny: false };
 		return { deny: true, reason: `dev-factory guard: an improver changes only dev-factory/ (got ${rel})` };

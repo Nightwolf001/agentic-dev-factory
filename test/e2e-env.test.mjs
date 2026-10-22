@@ -8,7 +8,7 @@ import { test } from 'node:test';
 const SCRIPT = new URL('../scripts/e2e-env.sh', import.meta.url).pathname;
 
 // A fake docker that records every call; `compose ls` lists one df-* project and `config --services` one service.
-function fixture() {
+function fixture(config = {}) {
 	const base = fs.mkdtempSync(path.join(os.tmpdir(), 'df-e2e-'));
 	const bin = path.join(base, 'bin');
 	const state = path.join(base, 'state');
@@ -17,14 +17,16 @@ function fixture() {
 		fs.mkdirSync(d, { recursive: true });
 	fs.writeFileSync(path.join(worktree, '.devcontainer/docker-compose.yml'), 'services: {}\n');
 	fs.writeFileSync(path.join(worktree, '.dev-factory/run.json'), '{}');
+	fs.writeFileSync(path.join(worktree, 'dev-factory.config.json'), JSON.stringify(config));
 	fs.writeFileSync(
 		path.join(bin, 'docker'),
 		`#!/bin/bash
 echo "$@" >> "${base}/docker.log"
 case "$*" in
-  *"compose ls"*) echo '[{"Name":"df-oapp-1"}]' ;;
+  *"compose ls"*) echo '[{"Name":"df-app-1"}]' ;;
   *"config --services"*) echo api ;;
   *"ps -aq"*) echo c1 ;;
+  *" build"*|*" up -d"*|*" exec "*) exit 0 ;;
   *) exit 1 ;;
 esac
 `,
@@ -38,7 +40,7 @@ esac
 
 test('up rejects an unknown --ports value', () => {
 	const f = fixture();
-	const r = f.run('up', '--key', 'OAPP-1', '--ports', 'bogus');
+	const r = f.run('up', '--key', 'APP-1', '--ports', 'bogus');
 	assert.equal(r.status, 1);
 	assert.match(r.stderr, /--ports must be canonical or none/);
 });
@@ -48,37 +50,39 @@ test('the compose override strips host ports only for --ports none', () => {
 		['none', true],
 		['canonical', false],
 	]) {
-		const f = fixture();
-		f.run('up', '--key', 'OAPP-1', '--ports', ports); // fails at compose build on the fake docker; the override is already written
+		const f = fixture({
+			environment: { type: 'compose', composeFile: '.devcontainer/docker-compose.yml', service: 'app', webBaseUrl: 'https://login.app.local' },
+		});
+		f.run('up', '--key', 'APP-1', '--ports', ports); // fails at compose build on the fake docker; the override is already written
 		const override = fs.readFileSync(path.join(f.worktree, '.dev-factory/compose.override.yml'), 'utf8');
 		assert.equal(override.includes('ports: !reset []'), strips, ports);
 		assert.match(override, /dev-factory: "1"/);
 		const env = JSON.parse(fs.readFileSync(path.join(f.worktree, '.dev-factory/env.json'), 'utf8'));
 		assert.equal(env.ports, ports);
-		assert.equal(env.webBaseUrl, ports === 'canonical' ? 'https://login.olarm.local' : '');
+		assert.equal(env.webBaseUrl, ports === 'canonical' ? 'https://login.app.local' : '');
 	}
 });
 
 test('sweep removes an orphan stack but spares one whose worktree is still being worked on', () => {
 	const old = fixture();
-	fs.writeFileSync(path.join(old.state, 'live/df-oapp-1'), `99999999\n${old.worktree}\n`);
+	fs.writeFileSync(path.join(old.state, 'live/df-app-1'), `99999999\n${old.worktree}\n`);
 	const past = new Date(Date.now() - 6 * 3600_000);
 	fs.utimesSync(path.join(old.worktree, '.dev-factory/run.json'), past, past);
 	old.run('sweep');
-	assert.match(old.log(), /ps -aq --filter label=com.docker.compose.project=df-oapp-1/);
+	assert.match(old.log(), /ps -aq --filter label=com.docker.compose.project=df-app-1/);
 
 	const fresh = fixture();
-	fs.writeFileSync(path.join(fresh.state, 'live/df-oapp-1'), `99999999\n${fresh.worktree}\n`);
+	fs.writeFileSync(path.join(fresh.state, 'live/df-app-1'), `99999999\n${fresh.worktree}\n`);
 	fresh.run('sweep');
 	assert.doesNotMatch(fresh.log(), /ps -aq/);
 
 	const gone = fixture();
-	fs.writeFileSync(path.join(gone.state, 'live/df-oapp-1'), `99999999\n${gone.worktree}-missing\n`);
+	fs.writeFileSync(path.join(gone.state, 'live/df-app-1'), `99999999\n${gone.worktree}-missing\n`);
 	gone.run('sweep');
 	assert.match(gone.log(), /ps -aq/);
 });
 
-test('up refuses a key that is not a Jira key, since it reaches node -e snippets', () => {
+test('up refuses a key that is not a task key, since it reaches node -e snippets', () => {
 	const f = fixture();
 	for (const key of ["X-1'; touch /tmp/pwned; '", 'no-digits-', '../x-1', 'A B-1']) {
 		const r = f.run('up', '--key', key);
@@ -93,4 +97,33 @@ test('every shell script parses (bash -n), the scheduler scripts included', asyn
 		const r = spawnSync('bash', ['-n', path.join(dir, f)], { encoding: 'utf8' });
 		assert.equal(r.status, 0, `${f}: ${r.stderr}`);
 	}
+});
+
+test('with no environment configured, up only records that and down forgets it', () => {
+	const f = fixture();
+	const up = f.run('up', '--key', 'APP-1', '--ports', 'canonical');
+	assert.equal(up.status, 0, up.stderr);
+	const envFile = path.join(f.worktree, '.dev-factory/env.json');
+	assert.equal(JSON.parse(fs.readFileSync(envFile, 'utf8')).mode, 'none');
+	assert.equal(f.run('verify').status, 0);
+	assert.equal(f.log(), '', 'docker is never called');
+	assert.equal(f.run('down').status, 0);
+	assert.equal(fs.existsSync(envFile), false);
+});
+
+test('a compose environment runs its configured setup commands inside the configured service and polls the ping URL', () => {
+	const f = fixture({
+		environment: {
+			type: 'compose',
+			composeFile: '.devcontainer/docker-compose.yml',
+			service: 'web',
+			user: 'dev',
+			setup: ['npm ci'],
+			pingUrl: 'http://app.local/ping',
+		},
+	});
+	f.run('up', '--key', 'APP-1');
+	const log = f.log();
+	assert.match(log, /exec -T -u dev web bash -c npm ci/);
+	assert.doesNotMatch(log, /startup|pm2|devcontainer exec/);
 });

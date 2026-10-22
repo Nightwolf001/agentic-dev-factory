@@ -12,10 +12,10 @@ const SCRIPTS = new URL('../scripts/', import.meta.url).pathname;
 function fixture(run) {
 	const base = fs.mkdtempSync(path.join(os.tmpdir(), 'df-ctx-'));
 	const repo = path.join(base, 'repo');
-	const worktree = path.join(base, '.worktrees', 'OAPP-1');
+	const worktree = path.join(base, '.worktrees', 'APP-1');
 	fs.mkdirSync(repo, { recursive: true });
 	fs.mkdirSync(path.join(worktree, '.dev-factory'), { recursive: true });
-	fs.writeFileSync(path.join(worktree, '.dev-factory', 'run.json'), JSON.stringify({ key: 'OAPP-1', ...run }));
+	fs.writeFileSync(path.join(worktree, '.dev-factory', 'run.json'), JSON.stringify({ key: 'APP-1', ...run }));
 	const env = { ...process.env, DF_STATE_DIR: path.join(base, 'state'), DF_ACTIVE: '1' };
 	return { repo, worktree, env };
 }
@@ -63,7 +63,7 @@ test('the edit hook protects the worktree of the dispatched role, and the stop g
 	const edit = (file) =>
 		hook('edit-guard.mjs', env, { cwd: repo, agent_type: 'dev-factory:factory-researcher', tool_input: { file_path: file, content: 'x' } });
 	assert.equal(edit(path.join(worktree, 'services/api/a.js')).status, 2);
-	assert.equal(edit(path.join(worktree, 'docs/plans/OAPP-1/research.md')).status, 0);
+	assert.equal(edit(path.join(worktree, 'docs/plans/APP-1/research.md')).status, 0);
 	assert.equal(edit(path.join(worktree, '.dev-factory/blocked.json')).status, 0);
 	const stop = hook('stop-gate.mjs', env, { cwd: repo, agent_type: 'dev-factory:factory-researcher' });
 	assert.equal(stop.status, 2);
