@@ -110,8 +110,12 @@ if (isMain(import.meta.url)) {
 			}
 			if (added.length) console.log(`enabled: ${added.join(', ')}`);
 			for (const r of connectReport(file, listing)) {
-				const next =
-					r.state === 'connected' ? '' : r.login ? '  -> in claude run /mcp and log in' : '  -> restart claude so it reads .mcp.json';
+				const hint = {
+					'needs login': 'in claude run /mcp and log in',
+					failed: 'see: claude mcp list',
+					'not started': 'restart claude so it reads .mcp.json',
+				};
+				const next = r.state === 'connected' ? '' : `  -> ${hint[r.state]}`;
 				console.log(`${r.state === 'connected' ? 'ok  ' : 'todo'}  ${r.id.padEnd(20)} ${r.state}${next}`);
 			}
 		} else if (cmd === 'recommend') console.log(recommend(load()).join(' '));
