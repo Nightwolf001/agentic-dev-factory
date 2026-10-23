@@ -67,7 +67,7 @@ SCHED="$(node "$DIR/scripts/config.mjs" get runtime.scheduler 2>/dev/null || ech
 if [ "$SCHED" = auto ]; then
   if [ "$(uname)" = Darwin ] && [ "$RUNTIME" = local ]; then SCHED=launchd; else SCHED=none; fi
 fi
-SLUG="$(basename "$REPO" | tr -c 'A-Za-z0-9\n' '-' | sed 's/-*$//')-$(printf '%s' "$REPO" | cksum | cut -d' ' -f1 | cut -c1-6)"
+SLUG="$(df_slug "$REPO")"
 case "$SCHED" in
   launchd)
     for job in tick improve; do

@@ -17,6 +17,7 @@
     <key>PATH</key><string>__PATH__</string>
     <key>HOME</key><string>__HOME__</string>
     <key>DF_REPO</key><string>__REPO__</string>
+    <key>DF_SCHEDULED</key><string>1</string>
     <key>DF_STATE_DIR</key><string>__STATE__</string>
   </dict>
   <key>StandardOutPath</key><string>__HOME__/Library/Logs/dev-factory-launchd.out.log</string>

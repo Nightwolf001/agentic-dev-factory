@@ -15,19 +15,19 @@ This directory is the factory itself: a Claude Code plugin that plans, builds, v
 
 ## Where things are
 
-| Concern                           | File                                                                                                                                                           |
-| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The scheduled pass                | `commands/tick.md`, `scripts/tick.sh`                                                                                                                          |
-| The per-ticket phases             | `agents/factory-builder.md`, `skills/*`                                                                                                                        |
-| Review                            | `agents/factory-reviewer.md`, `skills/review/SKILL.md`                                                                                                         |
-| What an agent may run or edit     | `scripts/guard-lib.mjs`, `hooks/hooks.json`                                                                                                                    |
-| When an agent may stop            | `scripts/stop-gate.mjs`                                                                                                                                        |
-| Which run a hook event belongs to | `scripts/run-context.mjs`                                                                                                                                      |
-| Evidence and review truth         | `bin/qa.mjs`                                                                                                                                                   |
-| Debugging and telemetry           | `agents/factory-debugger.md`, `scripts/debug-lib.mjs`, `scripts/mcp-guard-lib.mjs`, `skills/diagnose`, `skills/telemetry`                                      |
-| Self-improvement                  | `commands/improve.md`, `agents/factory-improver.md`, `scripts/factory-target.mjs`, `scripts/run-record.mjs`, `IMPROVEMENT-PLAN.md`                             |
-| Scheduler preflight               | `scripts/frontier.mjs`, `scripts/tick.sh`                                                                                                                      |
-| Task sources                      | `scripts/sources/*.mjs`, `scripts/tasks.mjs`, `skills/task-source/*`                                                                                           |
-| Packaging, CLI and cloud          | `.claude-plugin/*`, `bin/dev-factory`, `scripts/cli.mjs`, `scripts/runtime.sh`, `scripts/cloud.mjs`, `templates/`, `scripts/install.sh`                        |
-| Optional MCP servers              | `mcp/catalog.json`, `scripts/mcp.mjs`, `scripts/factory-settings.mjs`, `scripts/cli.mjs`, `scripts/cloud.mjs`, `scripts/plugin-root.mjs`, `scripts/runtime.sh` |
-| Environments                      | `scripts/e2e-env.sh`, `scripts/mobile-env.sh`                                                                                                                  |
+| Concern                           | File                                                                                                                                                            |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The scheduled pass                | `commands/tick.md`, `scripts/tick.sh`                                                                                                                           |
+| The per-ticket phases             | `agents/factory-builder.md`, `skills/*`                                                                                                                         |
+| Review                            | `agents/factory-reviewer.md`, `skills/review/SKILL.md`                                                                                                          |
+| What an agent may run or edit     | `scripts/guard-lib.mjs`, `hooks/hooks.json`                                                                                                                     |
+| When an agent may stop            | `scripts/stop-gate.mjs`                                                                                                                                         |
+| Which run a hook event belongs to | `scripts/run-context.mjs`                                                                                                                                       |
+| Evidence and review truth         | `bin/qa.mjs`                                                                                                                                                    |
+| Debugging and telemetry           | `agents/factory-debugger.md`, `scripts/debug-lib.mjs`, `scripts/mcp-guard-lib.mjs`, `skills/diagnose`, `skills/telemetry`                                       |
+| Self-improvement                  | `commands/improve.md`, `agents/factory-improver.md`, `scripts/factory-target.mjs`, `scripts/run-record.mjs`, `IMPROVEMENT-PLAN.md`                              |
+| Scheduler preflight               | `scripts/frontier.mjs`, `scripts/tick.sh`                                                                                                                       |
+| Task sources                      | `scripts/sources/*.mjs`, `scripts/tasks.mjs`, `skills/task-source/*`                                                                                            |
+| Packaging, CLI and cloud          | `.claude-plugin/*`, `bin/dev-factory`, `scripts/cli.mjs`, `scripts/runtime.sh`, `scripts/cloud.mjs`, `templates/`, `scripts/install.sh`, `scripts/scheduler.sh` |
+| Optional MCP servers              | `mcp/catalog.json`, `scripts/mcp.mjs`, `scripts/factory-settings.mjs`, `scripts/cli.mjs`, `scripts/cloud.mjs`, `scripts/plugin-root.mjs`, `scripts/runtime.sh`  |
+| Environments                      | `scripts/e2e-env.sh`, `scripts/mobile-env.sh`                                                                                                                   |

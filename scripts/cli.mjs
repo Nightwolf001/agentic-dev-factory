@@ -5,6 +5,7 @@
 //   dev-factory mcp list|enable|connect... optional MCP servers
 //   dev-factory tasks list|create|init...  tasks in the configured task source
 //   dev-factory config get|validate        read the merged configuration
+//   dev-factory scheduler on|off|status    switch the scheduled passes of this repository on or off
 //   dev-factory tick | improve             run one scheduled pass now
 //   dev-factory cloud init [--github-actions]  set the repository up for Claude Code on the web or GitHub Actions
 //   dev-factory qa|worktree|env ...        the QA recorder, worktree helper and environment script
@@ -26,6 +27,7 @@ export const COMMANDS = {
 	config: ['node', 'scripts/config.mjs'],
 	tick: ['bash', 'scripts/tick.sh'],
 	improve: ['bash', 'scripts/improve.sh'],
+	scheduler: ['bash', 'scripts/scheduler.sh'],
 	cloud: ['node', 'scripts/cloud.mjs'],
 	target: ['node', 'scripts/factory-target.mjs'],
 	qa: ['node', 'bin/qa.mjs'],

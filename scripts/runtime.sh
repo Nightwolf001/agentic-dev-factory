@@ -5,6 +5,8 @@
 #   df_repo               the repository under work: DF_REPO, else the git top level of the current directory
 #   df_state_dir          machine state: DF_STATE_DIR, else ~/.dev-factory
 #   df_log_file JOB       DF_LOG, else the macOS log folder for a local Mac, else <state>/logs/JOB.log
+#   df_slug REPO          a name for the repository, used in launchd labels and the pause switch
+#   df_paused_file REPO   the pause switch file of the repository (see scripts/scheduler.sh)
 #   df_load_env           secrets: <state>/.env.local, then the plugin's own .env.local when an older setup has one
 # DIR is the plugin directory and must be set by the caller.
 df_runtime() {
@@ -20,6 +22,10 @@ df_log_file() {
   if [ "$(uname)" = Darwin ] && [ "$(df_runtime)" = local ]; then printf '%s' "$HOME/Library/Logs/dev-factory-$1.log"
   else printf '%s' "$(df_state_dir)/logs/$1.log"; fi
 }
+# A short name for a repository, unique to its path: launchd labels and the pause switch are per repository.
+df_slug() { printf '%s-%s' "$(basename "$1" | tr -c 'A-Za-z0-9\n' '-' | sed 's/-*$//')" "$(printf '%s' "$1" | cksum | cut -d' ' -f1 | cut -c1-6)"; }
+# The pause switch: while this file exists, scheduled passes (DF_SCHEDULED=1) for the repository do nothing; manual runs are unaffected.
+df_paused_file() { printf '%s' "$(df_state_dir)/paused.$(df_slug "$1")"; }
 df_load_env() {
   local f
   for f in "$(df_state_dir)/.env.local" "$DIR/.env.local"; do

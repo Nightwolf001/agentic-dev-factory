@@ -7,6 +7,10 @@ REPO="$(df_repo)"; [ -n "$REPO" ] || { echo "dev-factory: run this from inside a
 STATE="$(df_state_dir)"; LOG="$(df_log_file improve)"
 mkdir -p "$STATE" "$(dirname "$LOG")"
 df_load_env
+# the pause switch (dev-factory scheduler off): scheduled passes stop here, manual runs go on
+if [ "${DF_SCHEDULED:-}" = 1 ] && [ -f "$(df_paused_file "$REPO")" ]; then
+  mkdir -p "$(dirname "$LOG")"; echo "$(date -u +%FT%TZ) paused (dev-factory scheduler on resumes)" >> "$LOG"; exit 0
+fi
 export DF_ACTIVE=1
 export DF_OWNER_PID=$$
 

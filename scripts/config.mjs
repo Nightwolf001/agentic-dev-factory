@@ -35,6 +35,7 @@ export const ENV_OVERRIDES = {
 	'caps.maxResumes': 'DF_MAX_RESUMES',
 	'caps.frontierRepeatHours': 'DF_FRONTIER_REPEAT_HOURS',
 	'improvement.factoryRepo': 'DF_FACTORY_REPO',
+	'runtime.scheduler': 'DF_SCHEDULER',
 };
 
 // Keys every source needs; the active source's own keys are added by requiredFor().

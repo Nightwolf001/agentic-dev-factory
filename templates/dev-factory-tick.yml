@@ -21,6 +21,7 @@ jobs:
     timeout-minutes: 120
     env:
       DF_RUNTIME: cloud
+      DF_SCHEDULED: '1'
       DF_REPO: ${{ github.workspace }}
       DF_STATE_DIR: ${{ runner.temp }}/dev-factory
       GH_TOKEN: ${{ secrets.DF_GH_TOKEN || github.token }}

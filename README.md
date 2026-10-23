@@ -343,10 +343,24 @@ Choose where the schedule runs with `runtime.scheduler` (default `auto`):
 | `routine`        | Claude's cloud              | `dev-factory cloud init --routine` prints the `/schedule` request to make                                                |
 | `none`           | nowhere; you run it by hand | `dev-factory tick`                                                                                                       |
 
+Switch the schedule on and off with one command, whichever scheduler you use:
+
 ```bash
-dev-factory tick                                                # one pass by hand, in the current repository
-launchctl bootout gui/$(id -u)/com.dev-factory.<repo>.tick      # stop a launchd job
+dev-factory scheduler status            # which scheduler, running or stopped, pause switch
+dev-factory scheduler off               # stop the scheduled passes (add tick or improve to stop one)
+dev-factory scheduler on                # start them again
+dev-factory tick                        # one pass by hand, in the current repository: not affected by the switch
 ```
+
+In a Claude session the same thing is `/dev-factory:scheduler on|off|status`. `off` keeps the jobs and the configuration; `on` restores them. What each scheduler does:
+
+| Scheduler        | `off`                                                            | `on`                                                            |
+| ---------------- | ---------------------------------------------------------------- | --------------------------------------------------------------- |
+| `launchd`        | unloads this repository's `tick` and `improve` jobs              | loads them (installing them first if they were never installed) |
+| `github-actions` | `gh workflow disable dev-factory-tick.yml`                       | `gh workflow enable dev-factory-tick.yml`                       |
+| `routine`        | sets the pause switch; pause the routine itself with `/schedule` | clears the pause switch; resume the routine with `/schedule`    |
+
+`off` also sets a pause switch (`~/.dev-factory/paused.<repo>`) that scheduled passes read first, so a pass that was already queued does nothing; manual `dev-factory tick` runs ignore it.
 
 A pass builds one task at a time by default, keeps at most `caps.maxOpenPrs` factory PRs open, and stops a session at `caps.maxBudgetUsd`.
 
@@ -389,6 +403,7 @@ The GitHub Actions workflow runs one pass every 15 minutes under a `concurrency`
 | Check the machine and config      | `/dev-factory:doctor`                                                                                     |
 | Check a fix after the merge       | `/dev-factory:validate TASK-12` (needs a telemetry MCP server)                                            |
 | Run one scheduled pass            | `dev-factory tick` or `/dev-factory:tick`                                                                 |
+| Switch the schedule on or off     | `/dev-factory:scheduler on\|off\|status` or `dev-factory scheduler on\|off\|status`                       |
 | Ask for changes                   | Submit a **Request changes** review on the PR, or comment `/dev-factory fix <what to change>` on the task |
 | Unblock                           | Answer the factory's comment, then remove the `factory-blocked` label                                     |
 | Keep a task out of the queue      | Remove `tasks.label` or add `factory-blocked`                                                             |
@@ -504,7 +519,7 @@ The improver cannot edit what enforces the factory's own limits (the guards, the
 
 | Path                           | Purpose                                                                                               |
 | ------------------------------ | ----------------------------------------------------------------------------------------------------- |
-| `commands/`                    | `setup`, `plan`, `build`, `quick`, `tick`, `status`, `validate`, `improve`, `doctor`                  |
+| `commands/`                    | `setup`, `plan`, `build`, `quick`, `tick`, `scheduler`, `status`, `validate`, `improve`, `doctor`     |
 | `agents/`                      | `factory-builder`, `-reviewer`, `-debugger`, `-researcher`, `-improver`, `-promoter`                  |
 | `skills/`                      | `task-source`, `implement`, `qa`, `review`, `ship`, `environment`, `diagnose`, `telemetry`, `improve` |
 | `scripts/sources/`             | One file per task source (`local`, `github`, `jira`, `notion`) and their shared model                 |
