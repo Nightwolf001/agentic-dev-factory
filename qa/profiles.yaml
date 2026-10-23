@@ -1,21 +1,28 @@
-# QA profiles. uiGlobs decide whether a diff touches a surface that needs a walk; nonUiGlobs carve documentation out of them.
+# Default QA profiles. A repository replaces them by committing its own dev-factory.qa.yaml with the same shape.
+# uiGlobs decide whether a diff touches a surface that needs a walk; nonUiGlobs carve documentation and tests out of them.
 web:
   runner: playwright
-  baseUrl: https://login.olarm.local
+  baseUrl: http://localhost:3000
   uiGlobs:
-    - "clients/web-*/src/**"
-    - "clients/web-ui/**"
-    - "clients/web-*/index.html"
+    - "**/*.tsx"
+    - "**/*.jsx"
+    - "**/*.vue"
+    - "**/*.svelte"
+    - "**/*.html"
+    - "**/*.css"
+    - "**/*.scss"
   nonUiGlobs:
     - "**/*.md"
+    - "**/*.test.*"
+    - "**/*.spec.*"
+    - "**/__tests__/**"
   expectedProcesses: []
 mobile:
   runner: maestro
   platform: ios
   deviceProfile: iPhone 16
   uiGlobs:
-    - "clients/mobile/src/**"
-    - "clients/mobile/ios/**"
-    - "clients/mobile/android/**"
+    - "**/ios/**"
+    - "**/android/**"
   nonUiGlobs:
     - "**/*.md"

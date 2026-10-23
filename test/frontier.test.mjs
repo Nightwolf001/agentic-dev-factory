@@ -4,28 +4,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { load } from '../scripts/config.mjs';
-import { commitPending, decide, discardPending, savePending, fingerprintOf, isBuildable, prNeedsAction, queries } from '../scripts/frontier.mjs';
+import { commitPending, decide, discardPending, fingerprintOf, isBuildable, prNeedsAction, prStateFor, savePending } from '../scripts/frontier.mjs';
 
 const cfg = load();
-const issue = (key, extra = {}) => ({ key, fields: { status: { name: 'To Do' }, updated: '2026-10-15T10:00:00Z', issuelinks: [], ...extra } });
-const deps = (map, prs = {}) => ({
-	search: async (jql) => map[Object.keys(queries(cfg)).find((k) => queries(cfg)[k] === jql)] ?? [],
-	prState: async (key) => prs[key] ?? null,
-});
+const task = (key, extra = {}) => ({ key, state: 'ready', updated: '2026-10-15T10:00:00Z', labels: ['dev-factory'], blockedBy: [], ...extra });
+// list() answers by the first state in the filter, so a test sets up the queue, the strays and the tasks in review separately
+const deps = (byState, prs = {}) => ({ list: async ({ states }) => byState[states[0]] ?? [], prState: async (key) => prs[key] ?? null });
 
-test('queries carry the configured projects, label, stall window and blocked label', () => {
-	const q = queries(cfg);
-	assert.match(q.frontier, /project in \("OAPP", "PLAT", "ONE", "MAX"\)/);
-	assert.match(q.frontier, /status in \("Ready for Dev", "To Do"\)/);
-	assert.match(q.frontier, /labels != "factory-blocked"/);
-	assert.match(q.strays, /status = "In Progress" AND updated <= -90m/);
-	assert.match(q.peerReview, /status = "Peer review"/);
-});
-
-test('an unresolved blocker makes an issue unbuildable', () => {
-	const link = (cat) => ({ type: { inward: 'is blocked by' }, inwardIssue: { fields: { status: { statusCategory: { key: cat } } } } });
-	assert.equal(isBuildable(issue('A', { issuelinks: [link('indeterminate')] })), false);
-	assert.equal(isBuildable(issue('A', { issuelinks: [link('done')] })), true);
+test('an unresolved blocker makes a task unbuildable', () => {
+	assert.equal(isBuildable(task('A', { blockedBy: [{ key: 'B', done: false }] })), false);
+	assert.equal(isBuildable(task('A', { blockedBy: [{ key: 'B', done: true }] })), true);
+	assert.equal(isBuildable(task('A')), true);
 });
 
 test('empty frontier skips the session', async () => {
@@ -34,43 +23,60 @@ test('empty frontier skips the session', async () => {
 });
 
 test('a stray or a merged PR always runs the session', async () => {
-	assert.equal((await decide({ cfg, deps: deps({ strays: [issue('S')] }), state: null })).run, true);
-	assert.equal((await decide({ cfg, deps: deps({ peerReview: [issue('R')] }, { R: { state: 'MERGED' } }), state: null })).run, true);
-	assert.equal((await decide({ cfg, deps: deps({ peerReview: [issue('R')] }, {}), state: null })).run, false);
+	assert.equal((await decide({ cfg, deps: deps({ inProgress: [task('S')] }), state: null })).run, true);
+	assert.equal((await decide({ cfg, deps: deps({ inReview: [task('R')] }, { R: { state: 'MERGED' } }), state: null })).run, true);
+	assert.equal((await decide({ cfg, deps: deps({ inReview: [task('R')] }, {}), state: null })).run, false);
+});
+
+test('strays are asked for with the configured stall window', async () => {
+	let asked;
+	await decide({ cfg, deps: { list: async (f) => ((asked = asked ?? f), []), prState: async () => null }, state: null });
+	assert.deepEqual(asked, { states: ['inProgress'], staleMinutes: 90 });
 });
 
 test('an unchanged frontier is not re-dispatched until the repeat window passes', async () => {
-	const frontier = [issue('F-1')];
-	const first = await decide({ cfg, deps: deps({ frontier }), state: null });
+	const ready = [task('F-1')];
+	const first = await decide({ cfg, deps: deps({ ready }), state: null });
 	assert.equal(first.run, true);
 	const state = { fingerprint: first.fingerprint, at: new Date().toISOString() };
-	assert.equal((await decide({ cfg, deps: deps({ frontier }), state })).run, false);
+	assert.equal((await decide({ cfg, deps: deps({ ready }), state })).run, false);
 	const later = Date.now() + 7 * 3600_000;
-	assert.equal((await decide({ cfg, deps: deps({ frontier }), state, now: later })).run, true);
-	const changed = [issue('F-1', { updated: '2026-10-15T11:00:00Z' })];
-	assert.equal((await decide({ cfg, deps: deps({ frontier: changed }), state })).run, true);
+	assert.equal((await decide({ cfg, deps: deps({ ready }), state, now: later })).run, true);
+	const changed = [task('F-1', { updated: '2026-10-15T11:00:00Z' })];
+	assert.equal((await decide({ cfg, deps: deps({ ready: changed }), state })).run, true);
 });
 
 test('a stray defeats the fingerprint skip', async () => {
-	const frontier = [issue('F-1')];
-	const state = { fingerprint: fingerprintOf(frontier), at: new Date().toISOString() };
-	assert.equal((await decide({ cfg, deps: deps({ frontier, strays: [issue('S')] }), state })).run, true);
+	const ready = [task('F-1')];
+	const state = { fingerprint: fingerprintOf(ready), at: new Date().toISOString() };
+	assert.equal((await decide({ cfg, deps: deps({ ready, inProgress: [task('S')] }), state })).run, true);
 });
 
 test('blocked frontier items are dropped before fingerprinting', async () => {
-	const blocked = issue('B', {
-		issuelinks: [{ type: { inward: 'is blocked by' }, inwardIssue: { fields: { status: { statusCategory: { key: 'new' } } } } }],
-	});
-	assert.equal((await decide({ cfg, deps: deps({ frontier: [blocked] }), state: null })).run, false);
+	const blocked = task('B', { blockedBy: [{ key: 'X', done: false }] });
+	assert.equal((await decide({ cfg, deps: deps({ ready: [blocked] }), state: null })).run, false);
 });
 
-test('done statuses count by name, so UAT and Ready for Release unblock', () => {
-	const link = (name, cat) => ({ type: { inward: 'is blocked by' }, inwardIssue: { fields: { status: { name, statusCategory: { key: cat } } } } });
-	const done = ['UAT', 'Ready for Release', 'Done'];
-	assert.equal(isBuildable(issue('A', { issuelinks: [link('UAT', 'indeterminate')] }), done), true);
-	assert.equal(isBuildable(issue('A', { issuelinks: [link('Ready for Release', 'done')] }), done), true);
-	assert.equal(isBuildable(issue('A', { issuelinks: [link('Peer review', 'indeterminate')] }), done), false);
-	assert.equal(isBuildable(issue('A', { issuelinks: [link('UAT', 'indeterminate')] }), []), false);
+test('prStateFor finds the PR by the key in its title', () => {
+	const calls = [];
+	const run = (args) => {
+		calls.push(args.join(' '));
+		if (args[1] === 'list') return JSON.stringify([{ number: 7 }]);
+		return JSON.stringify({
+			state: 'OPEN',
+			reviewDecision: 'APPROVED',
+			author: { login: 'bot' },
+			commits: [{ committedDate: 'x' }],
+			reviews: [],
+		});
+	};
+	const pr = prStateFor('GH-12', run);
+	assert.match(calls[0], /GH-12 in:title/);
+	assert.equal(pr.reviewDecision, 'APPROVED');
+	assert.equal(
+		prStateFor('GH-1', () => '[]'),
+		null,
+	);
 });
 
 test('prNeedsAction: advance on approved or merged, fix on a fresh change request only', () => {
@@ -93,23 +99,6 @@ test('comments, bot reviews, questions and an LGTM never start a fix pass', () =
 	assert.equal(prNeedsAction({ ...base, reviews: [{ state: 'COMMENTED', submittedAt: at, author: 'cursor' }] }), null);
 	assert.equal(prNeedsAction({ ...base, reviews: [{ state: 'COMMENTED', submittedAt: at, author: 'fr' }] }), null);
 	assert.equal(prNeedsAction({ ...base, reviews: [{ state: 'DISMISSED', submittedAt: at, author: 'fr' }] }), null);
-});
-
-test('the blocker is the inwardIssue of an "is blocked by" link, as Jira returns it on the blocked issue', () => {
-	// Shape taken from a live Jira site: OAPP-3617 blocks OAPP-3619. The blocked issue lists the blocker as inwardIssue,
-	// the blocker lists the blocked issue as outwardIssue with the same type.
-	const type = { name: 'Blocks', inward: 'is blocked by', outward: 'blocks' };
-	const status = (name, key) => ({ name, statusCategory: { key } });
-	const blocked = issue('OAPP-3619', {
-		issuelinks: [{ type, inwardIssue: { key: 'OAPP-3617', fields: { status: status('In Progress', 'indeterminate') } } }],
-	});
-	const blocker = issue('OAPP-3617', {
-		issuelinks: [{ type, outwardIssue: { key: 'OAPP-3619', fields: { status: status('Ready for Dev', 'new') } } }],
-	});
-	assert.equal(isBuildable(blocked), false, 'blocked by an unfinished issue');
-	assert.equal(isBuildable(blocker), true, 'the blocker itself is claimable although the issue it blocks is not done');
-	const finished = issue('OAPP-3619', { issuelinks: [{ type, inwardIssue: { key: 'OAPP-3617', fields: { status: status('Done', 'done') } } }] });
-	assert.equal(isBuildable(finished), true);
 });
 
 test('a frontier fingerprint is remembered only once the session is committed', () => {

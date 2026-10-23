@@ -1,3 +1,5 @@
+import { qaCommand } from './plugin-root.mjs';
+
 // Decides whether a factory agent may stop. Pure: the caller supplies what exists on disk.
 //   has(file)        whether .dev-factory/<file> exists
 //   head             the worktree's HEAD sha (reviewers)
@@ -6,19 +8,19 @@ export function decide({ run, has, head = '', debug = { rounds: 0, open: [], has
 	if (run.role === 'reviewer') {
 		return {
 			finished: has(`review/${head}-${run.axis}.json`),
-			next: `Finish by recording the ${run.axis} review: node dev-factory/bin/qa.mjs review record --axis ${run.axis} --head ${head.slice(0, 12)} --summary "..." --findings '[...]'.`,
+			next: `Finish by recording the ${run.axis} review: ${qaCommand('review record')} --axis ${run.axis} --head ${head.slice(0, 12)} --summary "..." --findings '[...]'.`,
 		};
 	}
 	if (run.role === 'promoter') {
 		return {
 			finished: has('blocked.json') || has('promote.done'),
-			next: 'Finish: node dev-factory/bin/qa.mjs promote check must pass, then push, open the draft PR and write .dev-factory/promote.done containing the PR URL, or write .dev-factory/blocked.json {"reason","decision"}.',
+			next: `Finish: ${qaCommand('promote check')} must pass, then push, open the draft PR and write .dev-factory/promote.done containing the PR URL, or write .dev-factory/blocked.json {"reason","decision"}.`,
 		};
 	}
 	if (run.role === 'improver') {
 		return {
 			finished: has('blocked.json') || has('improve.done'),
-			next: 'Finish: run the tests, Prettier, the vocabulary lint and claude plugin validate, push the branch, open the draft PR, then write .dev-factory/improve.done containing the PR URL, or write .dev-factory/blocked.json {"reason","decision"}.',
+			next: 'Finish: run the tests, Prettier, the vocabulary lint (on the worktree) and claude plugin validate, push the branch, open the draft PR, then write .dev-factory/improve.done containing the PR URL, or write .dev-factory/blocked.json {"reason","decision"}.',
 		};
 	}
 	if (run.role === 'researcher') {

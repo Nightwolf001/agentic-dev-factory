@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# The dev-factory command line. See scripts/cli.mjs.
+DIR="$(cd "$(dirname "$0")/.." && pwd)"
+exec node "$DIR/scripts/cli.mjs" "$@"

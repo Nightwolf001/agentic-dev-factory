@@ -1,6 +1,19 @@
 {
 	"name": "dev-factory",
-	"description": "Olarm dev-factory: builds labelled Jira tickets into draft PRs.",
-	"owner": { "name": "Olarm" },
-	"plugins": [{ "name": "dev-factory", "source": "./", "description": "Ticket-to-draft-PR factory" }]
+	"owner": {
+		"name": "dev-factory contributors"
+	},
+	"description": "dev-factory: plans, builds, verifies and ships tasks from GitHub Issues, Notion, Jira or local files as draft PRs.",
+	"allowCrossMarketplaceDependenciesOn": ["claude-plugins-official"],
+	"plugins": [
+		{
+			"name": "dev-factory",
+			"source": ".",
+			"description": "Plans, builds, verifies and ships tasks to draft PRs with QA evidence and two-step review. Every MCP server is optional.",
+			"version": "0.2.0",
+			"category": "development",
+			"tags": ["automation", "pull-requests", "qa", "workflow"],
+			"dependencies": ["superpowers@claude-plugins-official"]
+		}
+	]
 }

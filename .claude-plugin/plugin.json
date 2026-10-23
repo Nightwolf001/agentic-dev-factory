@@ -1,8 +1,12 @@
 {
 	"name": "dev-factory",
-	"description": "Picks up labelled Jira tickets, builds them in an isolated worktree against a verified e2e environment, validates with MCP-driven QA, and opens a draft PR.",
-	"version": "0.1.0",
+	"version": "0.2.0",
+	"description": "Plans, builds, verifies and ships tasks to draft PRs. Takes tasks from GitHub Issues, Notion, Jira or local files; builds each in an isolated worktree, records QA evidence, reviews in two steps, and opens a draft PR. Every MCP server is optional.",
 	"author": {
-		"name": "Olarm"
-	}
+		"name": "dev-factory contributors"
+	},
+	"homepage": "https://github.com/Nightwolf001/agentic-dev-factory",
+	"repository": "https://github.com/Nightwolf001/agentic-dev-factory",
+	"license": "MIT",
+	"keywords": ["agents", "automation", "pull-requests", "qa", "github", "jira", "notion", "workflow"]
 }

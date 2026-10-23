@@ -1,0 +1,122 @@
+{
+	"servers": {
+		"playwright": {
+			"title": "Playwright",
+			"purpose": "Browser walks for web QA evidence (screenshots, DOM checks).",
+			"category": "qa",
+			"recommended": true,
+			"config": {
+				"command": "npx",
+				"args": ["-y", "@playwright/mcp@0.0.82", "--isolated", "--ignore-https-errors"]
+			},
+			"without": "A change that touches web UI cannot get a browser walk, so it is blocked for a person to check; changes without UI are unaffected.",
+			"domains": []
+		},
+		"maestro": {
+			"title": "Maestro",
+			"purpose": "Mobile UI flows on a simulator or emulator.",
+			"category": "qa",
+			"recommended": false,
+			"config": {
+				"command": "maestro",
+				"args": ["mcp", "--no-viewer"]
+			},
+			"requires": ["maestro CLI on PATH"],
+			"without": "A change that touches the mobile app cannot get a device walk, so it is blocked for a person to check; changes without UI are unaffected.",
+			"domains": []
+		},
+		"context7": {
+			"title": "Context7",
+			"purpose": "Current library documentation for the builder and reviewers.",
+			"category": "docs",
+			"recommended": true,
+			"config": {
+				"command": "npx",
+				"args": ["-y", "@upstash/context7-mcp"],
+				"env": {
+					"CONTEXT7_API_KEY": "${CONTEXT7_API_KEY:-}"
+				}
+			},
+			"without": "Agents rely on the repository's own docs and on WebFetch.",
+			"domains": ["mcp.context7.com", "context7.com"]
+		},
+		"21st": {
+			"title": "21st.dev Magic",
+			"purpose": "UI component inspiration for frontend tickets.",
+			"category": "design",
+			"recommended": false,
+			"config": {
+				"type": "http",
+				"url": "https://21st.dev/api/mcp"
+			},
+			"without": "UI work follows the repository's own components and brand rules.",
+			"domains": ["21st.dev"]
+		},
+		"sequential-thinking": {
+			"title": "Sequential Thinking",
+			"purpose": "Structured step-by-step reasoning for hard problems.",
+			"category": "reasoning",
+			"recommended": false,
+			"config": {
+				"command": "npx",
+				"args": ["-y", "@modelcontextprotocol/server-sequential-thinking"]
+			},
+			"without": "Agents reason in their own context.",
+			"domains": []
+		},
+		"atlassian": {
+			"title": "Atlassian (Jira)",
+			"purpose": "Read and write Jira issues for tasks.source = jira.",
+			"category": "tracker",
+			"tracker": "jira",
+			"recommended": false,
+			"config": {
+				"type": "http",
+				"url": "https://mcp.atlassian.com/v1/mcp"
+			},
+			"requires": ["OAuth login once: run /mcp in claude"],
+			"without": "Choose another tasks.source (local, github or notion).",
+			"domains": ["mcp.atlassian.com"]
+		},
+		"notion": {
+			"title": "Notion",
+			"purpose": "Read and write Notion pages for tasks.source = notion.",
+			"category": "tracker",
+			"tracker": "notion",
+			"recommended": false,
+			"config": {
+				"type": "http",
+				"url": "https://mcp.notion.com/mcp"
+			},
+			"requires": ["OAuth login once: run /mcp in claude"],
+			"without": "Choose another tasks.source (local, github or jira).",
+			"domains": ["mcp.notion.com", "api.notion.com", "www.notion.so"]
+		},
+		"sentry": {
+			"title": "Sentry",
+			"purpose": "Read-only error telemetry for bug triage and post-merge validation.",
+			"category": "telemetry",
+			"recommended": false,
+			"config": {
+				"type": "http",
+				"url": "https://mcp.sentry.dev/mcp"
+			},
+			"requires": ["OAuth login once: run /mcp in claude"],
+			"without": "Bugs are triaged from the ticket text and a reproduction; post-merge validation is skipped.",
+			"domains": ["mcp.sentry.dev", "sentry.io", "*.sentry.io"]
+		},
+		"axiom": {
+			"title": "Axiom",
+			"purpose": "Read-only log telemetry for bug triage and post-merge validation.",
+			"category": "telemetry",
+			"recommended": false,
+			"config": {
+				"type": "http",
+				"url": "https://mcp.axiom.co/mcp"
+			},
+			"requires": ["OAuth login once: run /mcp in claude"],
+			"without": "Bugs are triaged from the ticket text and a reproduction; post-merge validation is skipped.",
+			"domains": ["mcp.axiom.co", "api.axiom.co"]
+		}
+	}
+}

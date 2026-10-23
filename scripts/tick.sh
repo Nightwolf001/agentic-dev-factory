@@ -2,11 +2,16 @@
 # One scheduled pass. Safe to run by hand. Exit 0 on a normal pass (including an empty frontier),
 # 75 when another pass is still running, non-zero on a failed run.
 set -uo pipefail
-DIR="$(cd "$(dirname "$0")/.." && pwd)"; REPO="$(cd "$DIR/.." && pwd)"
-STATE="${DF_STATE_DIR:-$HOME/.dev-factory}"; LOG="${DF_LOG:-$HOME/Library/Logs/dev-factory-tick.log}"
+DIR="$(cd "$(dirname "$0")/.." && pwd)"
+. "$DIR/scripts/runtime.sh"
+REPO="$(df_repo)"; [ -n "$REPO" ] || { echo "dev-factory: run this from inside a git repository (or set DF_REPO)" >&2; exit 1; }
+STATE="$(df_state_dir)"; LOG="$(df_log_file tick)"
 mkdir -p "$STATE" "$(dirname "$LOG")"
-
-if [ -f "$DIR/.env.local" ]; then set -a; . "$DIR/.env.local"; set +a; fi
+df_load_env
+# the pause switch (dev-factory scheduler off): scheduled passes stop here, manual runs go on
+if [ "${DF_SCHEDULED:-}" = 1 ] && [ -f "$(df_paused_file "$REPO")" ]; then
+  mkdir -p "$(dirname "$LOG")"; echo "$(date -u +%FT%TZ) paused (dev-factory scheduler on resumes)" >> "$LOG"; exit 0
+fi
 export DF_ACTIVE=1
 export DF_OWNER_PID=$$
 
@@ -20,9 +25,9 @@ cd "$REPO" || exit 1
 STARTED="$(date -u +%FT%TZ)"
 echo "$STARTED pass start" >> "$LOG"
 bash "$DIR/scripts/doctor.sh" --ci >> "$LOG" 2>&1 || { echo "$(date -u +%FT%TZ) preflight failed" >> "$LOG"; exit 1; }
-git fetch origin develop --quiet >> "$LOG" 2>&1 || true
+git fetch origin "$(node "$DIR/scripts/worktree.mjs" default-branch)" --quiet >> "$LOG" 2>&1 || true
 
-# cheap preflight: a session starts only when the check says there is work, so a Jira or gh failure costs nothing
+# cheap preflight: a session starts only when the check says there is work, so a tracker or gh failure costs nothing
 . "$DIR/scripts/preflight.sh"
 if [ "${DF_PREFLIGHT:-on}" != off ]; then
   node "$DIR/scripts/frontier.mjs" check >> "$LOG" 2>&1
@@ -35,10 +40,14 @@ if [ "${DF_PREFLIGHT:-on}" != off ]; then
   fi
 fi
 
+# the settings this pass runs with: the base file plus the domains and MCP servers this repository enabled
+node "$DIR/scripts/factory-settings.mjs" "$STATE/settings.json" || { echo "$(date -u +%FT%TZ) could not build settings" >> "$LOG"; exit 1; }
+MCP_ARGS=(); [ -f "$REPO/.mcp.json" ] && MCP_ARGS=(--mcp-config "$REPO/.mcp.json")
+
 claude -p "/dev-factory:tick" \
   --plugin-dir "$DIR" \
-  --mcp-config "$DIR/.mcp.json" \
-  --settings "$DIR/settings.factory.json" \
+  ${MCP_ARGS[@]+"${MCP_ARGS[@]}"} \
+  --settings "$STATE/settings.json" \
   --permission-prompts none \
   --model "$(node "$DIR/scripts/config.mjs" get models.orchestrator)" \
   --effort "$(node "$DIR/scripts/config.mjs" get models.effort)" \

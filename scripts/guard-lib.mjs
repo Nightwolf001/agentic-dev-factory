@@ -2,7 +2,18 @@
 // the PreToolUse hook input. A hook sees command strings only, so this is a guard against mistakes
 // and against ordinary bypasses (wrappers, global options, substitutions, inline interpreters), not a
 // sandbox: an agent that writes and runs its own program is stopped by the real separation, which is that
-// the builder has no Jira or GitHub tools, the scheduler holds the credentials, and a person merges.
+// the builder has no task-tracker or GitHub tools, the scheduler holds the credentials, and a person merges.
+import path from 'node:path';
+import { PLUGIN_ROOT } from './plugin-root.mjs';
+
+// `node <plugin>/bin/qa.mjs <rest>`: the real script of this plugin (its own directory, quoted or not), or one vendored at
+// dev-factory/. A file called qa.mjs that an agent wrote elsewhere is not it.
+const escapeRe = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+export function qaBin(rest = '') {
+	const own = `"?${escapeRe(PLUGIN_ROOT)}/bin/qa\\.mjs"?`;
+	return new RegExp(`^node\\s+(?:${own}|\\S*dev-factory/bin/qa\\.mjs)\\s${rest ? `+${rest}` : ''}`);
+}
+
 const PROTECTED = new Set(['develop', 'preprod', 'main', 'master']);
 const READ_ONLY_ROLES = new Set(['reviewer', 'debugger', 'researcher']);
 
@@ -161,9 +172,35 @@ function gitParts(args) {
 	return { sub: undefined, rest: [], globals: args };
 }
 
+// Commits and PR text carry the person's own identity, never an agent's: no Co-Authored-By or "generated with" line, no
+// author override, no identity set through config or environment. Switched off with git.agentAttribution.
+const AGENT_MARK = /co-authored-by|noreply@anthropic\.com|generated with\b.{0,40}claude/i;
+const IDENTITY_ENV = /(^|\s)GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL|DATE)=/;
+function denyAttribution(sub, rest, seg) {
+	if (sub === 'commit') {
+		if (rest.some((a) => /^--(author|reset-author|trailer)\b/.test(a)))
+			return 'commits use the git user of this machine: no --author, --reset-author or --trailer';
+		if (AGENT_MARK.test(seg)) return 'commit messages carry no Co-Authored-By or generated-by line (git.agentAttribution is false)';
+	}
+	if (sub === 'config') {
+		// reading user.name is fine; giving it a value, or unsetting it, changes whose commits these are
+		const at = rest.findIndex((a) => /^user\./i.test(a));
+		const writes = rest.some((a) => /^--(unset|unset-all|add|replace-all|edit)$/.test(a));
+		if (at > -1 && (writes || rest.slice(at + 1).some((a) => !a.startsWith('-'))))
+			return "the git identity is the person's own: user.* is not changed";
+	}
+	return null;
+}
+
 function denyGit(args, ctx, seg) {
 	const { sub, rest, globals } = gitParts(args);
+	if (ctx.noAttribution) {
+		const why = denyAttribution(sub, rest, seg);
+		if (why) return why;
+	}
 	for (let i = 0; i < globals.length; i++) {
+		if (globals[i] === '-c' && ctx.noAttribution && /^user\./i.test(globals[i + 1] ?? ''))
+			return "the git identity is the person's own: -c user.* is not allowed";
 		if (globals[i] === '-c' && !SAFE_GIT_CONFIG.test(globals[i + 1] ?? '')) return `git -c ${globals[i + 1] ?? ''} is not allowed`;
 	}
 	if (sub === 'push') {
@@ -210,8 +247,15 @@ function ghApiWrites(args) {
 	return false;
 }
 
-function denyGh(args) {
+const FACTORY_ROLES = new Set(['builder', 'reviewer', 'debugger', 'researcher', 'improver', 'promoter']);
+const ISSUE_WRITES = ['create', 'edit', 'close', 'reopen', 'comment', 'delete', 'transfer', 'lock', 'unlock', 'pin', 'unpin', 'develop'];
+
+function denyGh(args, ctx = {}, seg = '') {
 	const p = ghPositionals(args);
+	if (FACTORY_ROLES.has(ctx.role) && p[0] === 'issue' && ISSUE_WRITES.includes(p[1]))
+		return 'issues are the task tracker: only the scheduler writes to it, a factory agent does not (gh issue ' + p[1] + ')';
+	if (ctx.noAttribution && p[0] === 'pr' && ['create', 'edit', 'comment'].includes(p[1]) && AGENT_MARK.test(seg))
+		return 'PR text carries no Co-Authored-By or generated-by line (git.agentAttribution is false)';
 	if (p[0] === 'pr' && ['merge', 'review', 'ready', 'close', 'reopen'].includes(p[1])) return `gh pr ${p[1]} is reserved for people`;
 	if (p[0] === 'api' && ghApiWrites(args)) return 'gh api writes are not allowed: no -X other than GET, no body field, no --input';
 	if (['release', 'alias', 'secret', 'variable'].includes(p[0]) || (p[0] === 'repo' && ['delete', 'edit', 'archive'].includes(p[1])))
@@ -250,7 +294,7 @@ const REVIEWER_ALLOWED = [
 	// so a read-only role moves into the worktree inside the same command: `cd <worktree> && git diff ...`
 	/^cd\s+[\w./~-]+$/,
 	/^git\s+(diff|log|show|status|rev-parse|merge-base|ls-files|cat-file|blame|grep|rev-list|diff-tree)\b/,
-	/^node\s+\S*dev-factory\/bin\/qa\.mjs\s+(review|learnings)\b/,
+	qaBin('(review|learnings)\\b'),
 	/^(grep|rg|ls|cat|head|tail|wc|sort|uniq|jq|nl|pwd|echo|basename|dirname|stat|file)\b/,
 	// print-only sed: any other script (w, e) can write or run a command
 	/^sed\s+-n\s+(['"]?)\d+(,(\d+|\$))?p\1\s+[^\s;&|<>$`]+$/,
@@ -258,15 +302,15 @@ const REVIEWER_ALLOWED = [
 ];
 
 // A debugger also reads the ticket's own stack (compose ps and logs, pm2 logs and process list, curl against
-// *.olarm.local) and records through qa.mjs debug and scrub. It still never edits, installs or pushes.
+// localhost and *.local / *.test hosts) and records through qa.mjs debug and scrub. It still never edits, installs or pushes.
 const DEBUGGER_EXTRA = [
-	/^node\s+\S*dev-factory\/bin\/qa\.mjs\s+(debug|scrub)\b/,
+	qaBin('(debug|scrub)\\b'),
 	/^docker\s+compose\s+(-f\s+\S+\s+)?(-p\s+\S+\s+)?(ps|logs)\b/,
-	/^docker\s+compose\s+(-f\s+\S+\s+)?(-p\s+\S+\s+)?exec\s+-T\s+(-u\s+\S+\s+)?devcontainer\s+pm2\s+(logs\s+--nostream|jlist|status|list)\b/,
+	/^docker\s+compose\s+(-f\s+\S+\s+)?(-p\s+\S+\s+)?exec\s+-T\s+(-u\s+\S+\s+)?[A-Za-z][\w.-]*\s+pm2\s+(logs\s+--nostream|jlist|status|list)\b/,
 	// the red loop: a test runner or curl inside the ticket's own devcontainer
-	/^docker\s+compose\s+(-f\s+\S+\s+)*(-p\s+\S+\s+)?exec\s+-T\s+(-u\s+\S+\s+)?(-w\s+\S+\s+)?devcontainer\s+(npx\s+(vitest|jest|playwright\s+test)|npm\s+(test|run\s+test\S*)|node\s+--test|yarn\s+(test|vitest|jest))\b/,
+	/^docker\s+compose\s+(-f\s+\S+\s+)*(-p\s+\S+\s+)?exec\s+-T\s+(-u\s+\S+\s+)?(-w\s+\S+\s+)?[A-Za-z][\w.-]*\s+(npx\s+(vitest|jest|playwright\s+test)|npm\s+(test|run\s+test\S*)|node\s+--test|yarn\s+(test|vitest|jest))\b/,
 	// the whole segment must be one plain URL: a trailing $(...) or second URL is not a read of the ticket stack
-	/^curl\s+(-[ksfSLI]+\s+)*https?:\/\/[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.olarm\.local(:\d+)?(\/[\w\-./?=%:,+@]*)?$/,
+	/^curl\s+(-[ksfSLI]+\s+)*https?:\/\/(localhost|127\.0\.0\.1|[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.(local|localhost|test))(:\d+)?(\/[\w\-./?=%:,+@]*)?$/,
 ];
 const CURL_WRITE = /\s(-X|--request|-d|--data\S*|-F|--form|-T|--upload-file|-o|--output|-O)\b/;
 // Substitution, process substitution and variables run or read things the allowlist never saw; single quotes are literal.
@@ -297,6 +341,12 @@ function denyForReadOnly(seg, extra = []) {
 
 export function evaluate(command, ctx = {}) {
 	const readOnly = READ_ONLY_ROLES.has(ctx.role);
+	// leading VAR=value words are stripped from each segment, so the identity variables are looked for in the whole command
+	if (ctx.noAttribution && IDENTITY_ENV.test(command) && /\bgit\b/.test(command))
+		return {
+			deny: true,
+			reason: 'dev-factory guard: commits are made as the git user of this machine: GIT_AUTHOR_* and GIT_COMMITTER_* are not allowed',
+		};
 	for (const seg of segments(command)) {
 		const { cmd, args, tokens } = invocation(seg);
 		const deny = (why) => ({ deny: true, reason: `dev-factory guard: ${why} [${seg.slice(0, 80)}]` });
@@ -308,7 +358,7 @@ export function evaluate(command, ctx = {}) {
 			continue;
 		}
 		const touchesProtected = PROTECTED_BASH.test(seg);
-		if (touchesProtected && WRITE_LIKE.test(seg) && !/^node\s+\S*dev-factory\/bin\/qa\.mjs\s/.test(seg)) {
+		if (touchesProtected && WRITE_LIKE.test(seg) && !qaBin('').test(seg)) {
 			return deny('factory files and run state are changed only through qa.mjs and the scheduler');
 		}
 		if (ctx.role === 'promoter' && WRITE_LIKE.test(seg) && !/^(git|gh|node)\s/.test(seg) && !SENTINEL_SHELL.test(seg)) {
@@ -317,16 +367,20 @@ export function evaluate(command, ctx = {}) {
 		const body = [cmd, ...args].join(' ');
 		let reason = null;
 		if (cmd === 'git') reason = denyGit(args, ctx, seg);
-		else if (cmd === 'gh') reason = denyGh(args);
-		if (!reason && /\b(curl|wget|http|https)\b.*atlassian\.net/.test(seg)) reason = 'direct Jira access is reserved for the scheduler';
+		else if (cmd === 'gh') reason = denyGh(args, ctx, seg);
+		if (!reason && /\b(curl|wget|http|https)\b.*(atlassian\.net|api\.notion\.com|notion\.so)/.test(seg))
+			reason = 'direct task-tracker access is reserved for the scheduler';
+		if (!reason && FACTORY_ROLES.has(ctx.role) && /^node\s+\S*tasks\.mjs"?\s+(set-state|comment|label|block|create|init)\b/.test(seg))
+			reason = 'the task tracker is written only by the scheduler, not by a factory agent (tasks.mjs ' + seg.split(/\s+/)[2] + ')';
 		if (!reason && /^docker\s+(system|volume|image|builder|network|container)\s+prune/.test(body)) reason = 'docker prune is not allowed';
 		if (
 			!reason &&
+			ctx.containerOnly &&
 			/^(npm\s+(--prefix\s+\S+\s+)?(install|i|ci|test|run\s+test)\b|npx\s+(vitest|jest|playwright\s+test)\b|yarn\s+(--cwd\s+\S+\s+)?(test|jest|vitest)\b|pnpm\s+(install|i|test|run\s+test|jest|vitest)\b)/.test(
 				body,
 			)
 		) {
-			reason = 'services are installed and tested inside the devcontainer, not on the host (docker compose exec ... devcontainer ...)';
+			reason = `dependencies are installed and tests run inside the ticket's environment container, not on the host (docker compose exec ... ${ctx.service || '<service>'} ...)`;
 		}
 		if (reason) return deny(reason);
 	}
@@ -335,7 +389,7 @@ export function evaluate(command, ctx = {}) {
 
 // Shell writes to the factory directory (its own QA cases aside), run state, evidence and review records, hook wiring and husky are refused.
 const PROTECTED_BASH =
-	/\.dev-factory\/(review|qa|evidence|debug)(\/|\s|$)|\.dev-factory\/(run|env)\.json|(^|[\s/'"])dev-factory\/(?!qa\/cases\/)|\.dev-factory\/compose\.override\.yml|\.claude\/|\.github\/workflows|\.husky\//;
+	/\.factory\/tasks\/|\.dev-factory\/(review|qa|evidence|debug)(\/|\s|$)|\.dev-factory\/(run|env)\.json|(^|[\s/'"])dev-factory\/(?!qa\/cases\/)|\.dev-factory\/compose\.override\.yml|\.claude\/|\.github\/workflows|\.husky\//;
 const WRITE_LIKE = /(^|[^2&0-9])>{1,2}\s*[^&\s]|\btee\b|\b(cp|mv|rm|ln|truncate|dd|install)\b|\bsed\s+-i|\bperl\s+-i/;
 
 const FORBIDDEN = new RegExp(['co[-_ ]?' + 'work', 'co[-_ ]?' + 'lab', 'night[-_ ]?' + 'shift', 'day[-_ ]?' + 'shift'].join('|'), 'i');
@@ -353,7 +407,7 @@ const normalize = (p, root) => {
 export function evaluateEdit({ filePath, text = '', root, active = false, run = null }) {
 	if (typeof filePath !== 'string' || !filePath) return { deny: false };
 	const rel = normalize(filePath, root);
-	if (/^dev-factory\//.test(rel) && FORBIDDEN.test(text)) {
+	if ((/^dev-factory\//.test(rel) || (run?.role === 'improver' && run.factoryPrefix === '')) && FORBIDDEN.test(text)) {
 		return { deny: true, reason: 'dev-factory guard: this vocabulary is not allowed under dev-factory/ (see scripts/lint-vocabulary.sh)' };
 	}
 	if (!active) return { deny: false };
@@ -371,19 +425,26 @@ export function evaluateEdit({ filePath, text = '', root, active = false, run = 
 	}
 	if (run?.role === 'improver') {
 		// An improver may change the factory, except the files that enforce its own limits.
-		const enforcement =
-			/^dev-factory\/(scripts\/(guard-lib|guard-bash|edit-guard|stop-gate|stop-gate-lib|mcp-guard|mcp-guard-lib|scrub-lib|debug-lib)\.|bin\/qa\.mjs|hooks\/|settings\.factory\.json|config\.json|plugins\.json)/;
+		// the factory is a folder of this repository (`dev-factory/`, the default) or the repository itself (factoryPrefix '')
+		const prefix = run.factoryPrefix ?? 'dev-factory/';
+		const enforcement = new RegExp(
+			`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(scripts/(guard-lib|guard-bash|edit-guard|stop-gate|stop-gate-lib|mcp-guard|mcp-guard-lib|scrub-lib|debug-lib|plugin-root)\\.|bin/qa\\.mjs|hooks/|settings\\.factory\\.json|config\\.json|plugins\\.json)`,
+		);
 		if (enforcement.test(rel))
 			return {
 				deny: true,
-				reason: `dev-factory guard: ${rel} enforces the factory's own limits; changes to it are made by a person, file a Jira issue instead`,
+				reason: `dev-factory guard: ${rel} enforces the factory's own limits; changes to it are made by a person, file a task instead`,
 			};
-		if (rel.startsWith('dev-factory/') && !rel.includes('..')) return { deny: false };
-		return { deny: true, reason: `dev-factory guard: an improver changes only dev-factory/ (got ${rel})` };
+		const inside = prefix === '' ? !/^(\.git|\.github|\.claude|\.dev-factory)(\/|$)/.test(rel) : rel.startsWith(prefix);
+		if (inside && !rel.includes('..') && !path.isAbsolute(rel)) return { deny: false };
+		return { deny: true, reason: `dev-factory guard: an improver changes only the factory${prefix ? ` under ${prefix}` : ''} (got ${rel})` };
 	}
-	const ownCase = run?.key && rel.startsWith(`dev-factory/qa/cases/${run.key}/`);
+	const ownCase = run?.key && (rel.startsWith(`.factory/qa/cases/${run.key}/`) || rel.startsWith(`dev-factory/qa/cases/${run.key}/`));
+	// the installed plugin is outside the worktree, in the plugin cache: no ticket edits it by absolute path
+	if (/(^|\/)\.claude\/plugins\//.test(filePath))
+		return { deny: true, reason: 'dev-factory guard: the installed plugin is not edited by a ticket' };
 	const protectedPath =
-		/^(dev-factory\/|\.claude\/|\.github\/|\.husky\/|\.dev-factory\/(review|qa|evidence|debug)\/|\.dev-factory\/(run|env)\.json|\.dev-factory\/compose\.override\.yml)/.test(
+		/^(\.factory\/(tasks|qa\/cases)\/|dev-factory\/|\.claude\/|\.github\/|\.husky\/|\.dev-factory\/(review|qa|evidence|debug)\/|\.dev-factory\/(run|env)\.json|\.dev-factory\/compose\.override\.yml)/.test(
 			rel,
 		);
 	if (protectedPath && !ownCase) {

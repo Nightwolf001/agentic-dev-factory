@@ -17,6 +17,7 @@
 //   qa.mjs debug status | debug block --reason TEXT
 //   qa.mjs ticket lint --file F [--strict true]   exit 1 and list what the issue description lacks
 //   qa.mjs ticket base --file F                   {"base": "<branch>"} from a "Base branch:" line, or null
+//   qa.mjs ticket blocked-by --file F             {"blockedBy": ["KEY", ...]} from a "Blocked by" line or section
 //   qa.mjs learnings check --key KEY [--body-file F]   require and validate .dev-factory/learnings.md (short, scoped; it goes into the PR body)
 //   qa.mjs promote check               only the Learned rules section of AGENTS.md files may differ from the base
 //   qa.mjs scrub --file F     fail when F holds emails, phone numbers, tokens or long identifiers
@@ -30,10 +31,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as debugLib from '../scripts/debug-lib.mjs';
+import { load as loadConfig } from '../scripts/config.mjs';
 import { isMain } from '../scripts/is-main.mjs';
 import { learningRequired, lintLearnings, parseLearnings } from '../scripts/learnings-lib.mjs';
 import { checkPromotion } from '../scripts/promote-lib.mjs';
 import { lintTicket } from '../scripts/ticket-lib.mjs';
+import { normaliseRef, parseBlockedBy } from '../scripts/sources/common.mjs';
 import { parseBase, validName } from '../scripts/worktree.mjs';
 import { scrubFindings } from '../scripts/scrub-lib.mjs';
 import { workRoot } from '../scripts/run-context.mjs';
@@ -103,8 +106,11 @@ function loadRun(root, run) {
 	return readJson(file);
 }
 
+// QA cases are committed with the change they verify, in the repository under test, not in the plugin.
+export const CASES_DIR = path.join('.factory', 'qa', 'cases');
+
 export function listCases(root, key) {
-	const dir = path.join(root, 'dev-factory', 'qa', 'cases', key);
+	const dir = path.join(root, CASES_DIR, key);
 	if (!fs.existsSync(dir)) return [];
 	return fs
 		.readdirSync(dir)
@@ -118,7 +124,7 @@ export function start({ root, key, profile }) {
 	const dirty = dirtyFiles(root);
 	if (dirty.length) throw new QaError(`working tree is not clean (commit first): ${dirty.slice(0, 5).join(', ')}`);
 	const cases = listCases(root, key);
-	if (!cases.length) throw new QaError(`needs_own_case: no case authored under dev-factory/qa/cases/${key}/`, 2);
+	if (!cases.length) throw new QaError(`needs_own_case: no case authored under ${CASES_DIR}/${key}/`, 2);
 	const run = nextRun(root);
 	const envFile = path.join(root, '.dev-factory', 'env.json');
 	const manifest = {
@@ -198,8 +204,14 @@ export function done({ root, run }) {
 }
 
 // Minimal reader for a glob list (uiGlobs, nonUiGlobs) in profiles.yaml (no YAML dependency).
-function globListFor(profile, key) {
-	const text = fs.readFileSync(fileURLToPath(new URL('../qa/profiles.yaml', import.meta.url)), 'utf8').split('\n');
+// A repository's own dev-factory.qa.yaml, when it has one, replaces the plugin's default profiles.
+function profilesFile(root) {
+	const own = root ? path.join(root, 'dev-factory.qa.yaml') : null;
+	return own && fs.existsSync(own) ? own : fileURLToPath(new URL('../qa/profiles.yaml', import.meta.url));
+}
+
+function globListFor(profile, key, root) {
+	const text = fs.readFileSync(profilesFile(root), 'utf8').split('\n');
 	const globs = [];
 	let inProfile = false;
 	let inGlobs = false;
@@ -223,9 +235,9 @@ function globListFor(profile, key) {
 	return globs;
 }
 
-export const uiGlobsFor = (root, profile) => globListFor(profile, 'uiGlobs');
+export const uiGlobsFor = (root, profile) => globListFor(profile, 'uiGlobs', root);
 // Files under a UI folder that are still not UI surface (documentation), so a docs-only diff does not need a walk.
-export const nonUiGlobsFor = (root, profile) => globListFor(profile, 'nonUiGlobs');
+export const nonUiGlobsFor = (root, profile) => globListFor(profile, 'nonUiGlobs', root);
 
 export function globToRegExp(glob) {
 	let re = '';
@@ -392,7 +404,29 @@ export function runForKey(root, key, head) {
 	return runs.length ? runs[0].m : null;
 }
 
-export function verify({ root, head, run, key, requireReview = false, specialistAxes = {}, base = baseFor(root) }) {
+// Commits of a run belong to the person who ran it: an author, committer or trailer naming an agent is refused.
+export function attributionProblems(root, head, base) {
+	let log = '';
+	try {
+		log = git(root, 'log', `${base}..${head}`, '--format=%h%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%B%x1e');
+	} catch {
+		return [];
+	}
+	const out = [];
+	for (const entry of log
+		.split('\x1e')
+		.map((e) => e.trim())
+		.filter(Boolean)) {
+		const [sha, an, ae, cn, ce, body] = entry.split('\x1f');
+		if (/claude|anthropic/i.test(`${an} ${ae} ${cn} ${ce}`))
+			out.push(`commit ${sha} is authored or committed by an agent identity (${an} <${ae}>)`);
+		else if (/co-authored-by[^\n]*(claude|anthropic)|noreply@anthropic\.com|generated with[^\n]{0,40}claude/i.test(body ?? ''))
+			out.push(`commit ${sha} carries an agent attribution line`);
+	}
+	return out;
+}
+
+export function verify({ root, head, run, key, requireReview = false, specialistAxes = {}, base = baseFor(root), noAttribution = false }) {
 	if (!head) throw new QaError('verify needs --head');
 	if (run == null && !key) throw new QaError('verify needs --run or --key');
 	const problems = [];
@@ -423,6 +457,7 @@ export function verify({ root, head, run, key, requireReview = false, specialist
 			else if (st.axes[axis].blocking > 0) problems.push(`review step ${axis} has ${st.axes[axis].blocking} open Critical or High finding(s)`);
 		}
 	}
+	if (noAttribution) problems.push(...attributionProblems(root, manifest.head, base));
 	if (problems.length) throw new QaError(`verify failed: ${problems.join('; ')}`);
 	return { ok: true, verdict: manifest.verdict, head: manifest.head };
 }
@@ -497,7 +532,7 @@ function parseArgs(argv) {
 
 function cfg() {
 	try {
-		return JSON.parse(fs.readFileSync(new URL('../config.json', import.meta.url), 'utf8'));
+		return loadConfig(); // the defaults with the repository's dev-factory.config.json merged over them
 	} catch {
 		return {};
 	}
@@ -596,6 +631,7 @@ function main() {
 					key: a.key,
 					requireReview: a['require-review'] === 'true',
 					specialistAxes: cfg().review?.specialistAxes,
+					noAttribution: cfg().git?.agentAttribution !== true,
 				});
 				break;
 			case 'learnings':
@@ -622,7 +658,16 @@ function main() {
 					result = { base: parseBase(fs.readFileSync(a.file, 'utf8')) };
 					break;
 				}
-				if (a._[0] !== 'lint' || !a.file) throw new QaError('usage: qa.mjs ticket lint --file F [--strict true] | ticket base --file F');
+				if (a._[0] === 'blocked-by' && a.file) {
+					result = {
+						blockedBy: parseBlockedBy(fs.readFileSync(a.file, 'utf8'))
+							.map((r) => normaliseRef(r))
+							.filter(Boolean),
+					};
+					break;
+				}
+				if (a._[0] !== 'lint' || !a.file)
+					throw new QaError('usage: qa.mjs ticket lint --file F [--strict true] | ticket base --file F | ticket blocked-by --file F');
 				const problems = lintTicket(fs.readFileSync(a.file, 'utf8'), { strict: a.strict === 'true' });
 				if (problems.length) throw new QaError(`ticket lint failed: ${problems.join('; ')}`);
 				result = { ok: true };

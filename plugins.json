@@ -1,6 +1,9 @@
 {
 	"marketplaces": {
-		"claude-plugins-official": { "source": "github", "repo": "anthropics/claude-plugins-official" }
+		"claude-plugins-official": {
+			"source": "github",
+			"repo": "anthropics/claude-plugins-official"
+		}
 	},
 	"plugins": [
 		{
@@ -13,7 +16,11 @@
 			"required": false,
 			"why": "design guidance for UI tickets, used together with the 21st MCP and the repo brand rules"
 		},
-		{ "id": "code-simplifier@claude-plugins-official", "required": false, "why": "optional clean-up pass before QA" }
+		{
+			"id": "code-simplifier@claude-plugins-official",
+			"required": false,
+			"why": "optional clean-up pass before QA"
+		}
 	],
 	"disabled": [
 		{

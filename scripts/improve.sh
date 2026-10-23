@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
 # Weekly self-improvement pass. Safe to run by hand. Exit 75 when another pass or improvement scan is running.
 set -uo pipefail
-DIR="$(cd "$(dirname "$0")/.." && pwd)"; REPO="$(cd "$DIR/.." && pwd)"
-STATE="${DF_STATE_DIR:-$HOME/.dev-factory}"; LOG="${DF_LOG:-$HOME/Library/Logs/dev-factory-improve.log}"
+DIR="$(cd "$(dirname "$0")/.." && pwd)"
+. "$DIR/scripts/runtime.sh"
+REPO="$(df_repo)"; [ -n "$REPO" ] || { echo "dev-factory: run this from inside a git repository (or set DF_REPO)" >&2; exit 1; }
+STATE="$(df_state_dir)"; LOG="$(df_log_file improve)"
 mkdir -p "$STATE" "$(dirname "$LOG")"
-if [ -f "$DIR/.env.local" ]; then set -a; . "$DIR/.env.local"; set +a; fi
+df_load_env
+# the pause switch (dev-factory scheduler off): scheduled passes stop here, manual runs go on
+if [ "${DF_SCHEDULED:-}" = 1 ] && [ -f "$(df_paused_file "$REPO")" ]; then
+  mkdir -p "$(dirname "$LOG")"; echo "$(date -u +%FT%TZ) paused (dev-factory scheduler on resumes)" >> "$LOG"; exit 0
+fi
 export DF_ACTIVE=1
 export DF_OWNER_PID=$$
 
-# share the single-flight lock with the tick: both create worktrees and talk to Jira
+# share the single-flight lock with the tick: both create worktrees and talk to the task source
 . "$DIR/scripts/lock.sh"
 df_lock_acquire "$STATE" "$LOG" improve || exit $?
 trap 'df_lock_release "$STATE"' EXIT
@@ -17,12 +23,15 @@ rm -f "$STATE/active-run.json"
 cd "$REPO" || exit 1
 echo "$(date -u +%FT%TZ) improve start" >> "$LOG"
 bash "$DIR/scripts/doctor.sh" --ci >> "$LOG" 2>&1 || { echo "$(date -u +%FT%TZ) preflight failed" >> "$LOG"; exit 1; }
-git fetch origin develop --quiet >> "$LOG" 2>&1 || true
+git fetch origin "$(node "$DIR/scripts/worktree.mjs" default-branch)" --quiet >> "$LOG" 2>&1 || true
+
+node "$DIR/scripts/factory-settings.mjs" "$STATE/settings.json" || { echo "$(date -u +%FT%TZ) could not build settings" >> "$LOG"; exit 1; }
+MCP_ARGS=(); [ -f "$REPO/.mcp.json" ] && MCP_ARGS=(--mcp-config "$REPO/.mcp.json")
 
 claude -p "/dev-factory:improve" \
   --plugin-dir "$DIR" \
-  --mcp-config "$DIR/.mcp.json" \
-  --settings "$DIR/settings.factory.json" \
+  ${MCP_ARGS[@]+"${MCP_ARGS[@]}"} \
+  --settings "$STATE/settings.json" \
   --permission-prompts none \
   --model "$(node "$DIR/scripts/config.mjs" get models.improver)" \
   --effort "$(node "$DIR/scripts/config.mjs" get models.efforts.improver)" \

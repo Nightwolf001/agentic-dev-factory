@@ -106,7 +106,7 @@ test('the CLI passes the command after -- through', () => {
 	execFileSync('git', ['init', '-q'], { cwd: root });
 	const run = (...a) => JSON.parse(execFileSync('node', [QA, ...a], { cwd: root, encoding: 'utf8' }));
 	fs.mkdirSync(path.join(root, '.dev-factory'));
-	fs.writeFileSync(path.join(root, '.dev-factory/run.json'), JSON.stringify({ key: 'OAPP-1', role: 'debugger' }));
+	fs.writeFileSync(path.join(root, '.dev-factory/run.json'), JSON.stringify({ key: 'APP-1', role: 'debugger' }));
 	run('debug', 'open', '--trigger', 'triage', '--command', 'curl x');
 	assert.equal(run('debug', 'run', '--id', '1', '--', 'echo', 'hello').exitCode, 0);
 	assert.equal(run('debug', 'status').rounds, 1);
@@ -120,7 +120,7 @@ test('debug run refuses an awk program or a substitution before anything is spaw
 		`awk 'BEGIN{system("touch ${marker}")}'`,
 		`echo $(touch ${marker})`,
 		`echo \`touch ${marker}\``,
-		`curl -s https://api.olarm.local/$(touch ${marker})`,
+		`curl -s https://api.app.local/$(touch ${marker})`,
 		`cat dev-factory/.env.local`,
 	])
 		refused(() => runLoop({ root, id: rec.id, command }), /dev-factory guard/);
@@ -135,7 +135,7 @@ test('only the debugger the scheduler dispatched opens, runs, records or blocks 
 		spawnSync('node', [QA, ...a], { cwd: root, encoding: 'utf8', env: { ...process.env, DF_STATE_DIR: path.join(root, 'state') } });
 	const setRole = (role) => {
 		fs.mkdirSync(path.join(root, '.dev-factory'), { recursive: true });
-		fs.writeFileSync(path.join(root, '.dev-factory/run.json'), JSON.stringify({ key: 'OAPP-1', role }));
+		fs.writeFileSync(path.join(root, '.dev-factory/run.json'), JSON.stringify({ key: 'APP-1', role }));
 	};
 	const writes = [
 		['debug', 'open', '--trigger', 'triage', '--command', 'curl x'],

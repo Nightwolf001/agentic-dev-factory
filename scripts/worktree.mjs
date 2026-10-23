@@ -1,10 +1,12 @@
 // Chooses the branch a run builds on and creates its worktree. The base is the first of: an explicit --base, a
-// "Base branch:" line in the ticket, then git.baseBranch from config.json (develop). A base must be on origin and not
+// "Base branch:" line in the ticket, then git.baseBranch from config (null means the repository's default branch on origin). A base must be on origin and not
 // behind the user's local copy of it: the factory never pushes a base branch, and a PR needs the same commits on both sides.
 //
 //   worktree.mjs resolve [--base NAME] [--repo DIR]                          print {name, ref, usedDefault}; exit 3 when the base cannot be used
 //   worktree.mjs add --branch NEW --path DIR [--base NAME] [--repo DIR]      resolve, then git worktree add -b NEW DIR <ref>
 //   worktree.mjs attach --branch EXISTING --path DIR [--repo DIR]            worktree on an existing remote branch (fix passes)
+//   worktree.mjs root [--repo DIR]                                           print the folder worktrees are created in (git.worktreeRoot)
+//   worktree.mjs default-branch [--repo DIR]                                 print the branch a run builds on when no base is named
 //   worktree.mjs parse --file F                                              print the "Base branch:" name from a ticket, or nothing
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -39,6 +41,19 @@ export function parseBase(text) {
 		text || '',
 	);
 	return m && validName(m[1]) ? m[1] : null;
+}
+
+// git.baseBranch when set, otherwise the branch origin/HEAD points at, otherwise main.
+export function defaultBranch({ repo, configured }) {
+	if (configured) return configured;
+	try {
+		return git(repo, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD').replace(/^origin\//, '');
+	} catch {
+		return gitOk(repo, 'rev-parse', '--verify', '--quiet', 'refs/remotes/origin/master') &&
+			!gitOk(repo, 'rev-parse', '--verify', '--quiet', 'refs/remotes/origin/main')
+			? 'master'
+			: 'main';
+	}
 }
 
 export function resolveBase({ repo, name, defaultBase, fetch = true }) {
@@ -100,10 +115,12 @@ function args(argv) {
 if (isMain(import.meta.url)) {
 	const a = args(process.argv.slice(2));
 	const repo = a.repo || process.cwd();
-	const defaultBase = a.default || get('git.baseBranch');
+	const defaultBase = defaultBranch({ repo, configured: a.default || get('git.baseBranch') });
 	try {
 		const cmd = a._[0];
-		if (cmd === 'resolve') console.log(JSON.stringify(resolveBase({ repo, name: a.base, defaultBase })));
+		if (cmd === 'default-branch') console.log(defaultBase);
+		else if (cmd === 'root') console.log(path.resolve(repo, get('git.worktreeRoot') || '../.worktrees'));
+		else if (cmd === 'resolve') console.log(JSON.stringify(resolveBase({ repo, name: a.base, defaultBase })));
 		else if (cmd === 'add' && a.branch && a.path)
 			console.log(JSON.stringify(addWorktree({ repo, branch: a.branch, name: a.base, defaultBase, dest: a.path })));
 		else if (cmd === 'attach' && a.branch && a.path) console.log(JSON.stringify(attachWorktree({ repo, branch: a.branch, dest: a.path })));

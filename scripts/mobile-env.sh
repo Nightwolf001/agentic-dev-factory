@@ -10,10 +10,12 @@
 set -uo pipefail
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 STATE_DIR="${DF_STATE_DIR:-$HOME/.dev-factory}"
-METRO_PORT="${DF_METRO_PORT:-8081}"
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+cfg() { node "$SELF_DIR/config.mjs" get "mobile.$1" 2>/dev/null || true; }
+METRO_PORT="${DF_METRO_PORT:-$(cfg metroPort)}"; METRO_PORT="${METRO_PORT:-8081}"
 WORKTREE="$(pwd)"; cmd="${1:-}"; [ -n "$cmd" ] && shift
 while [ $# -gt 0 ]; do case "$1" in --worktree) WORKTREE="$(cd "$2" && pwd)"; shift 2 ;; *) echo "unknown argument $1" >&2; exit 3 ;; esac; done
-RUN_DIR="$WORKTREE/.dev-factory"; ENV_JSON="$RUN_DIR/env.json"; APP="$WORKTREE/clients/mobile"
+RUN_DIR="$WORKTREE/.dev-factory"; ENV_JSON="$RUN_DIR/env.json"; APP="$WORKTREE/$(cfg appDir)"
 log() { echo "mobile-env: $*" >&2; }
 die() { log "$*"; exit 1; }
 
@@ -37,13 +39,17 @@ pick_device() {
 metro_pid_file="$RUN_DIR/metro.pid"
 port_holder() { lsof -nP -iTCP:"$METRO_PORT" -sTCP:LISTEN -t 2>/dev/null | head -1; }
 
-native_hash() { cat "$APP/ios/Podfile.lock" "$APP"/ios/OlarmApp.xcodeproj/project.pbxproj 2>/dev/null | shasum -a 256 | cut -c1-16; }
+# hash of the files named in mobile.nativeInputs (globs, relative to appDir): a change means a native rebuild
+native_hash() { ( cd "$APP" && for g in $(node -e 'for (const p of JSON.parse(process.argv[1]||"[]")) console.log(p)' "$(cfg nativeInputs)"); do cat $g 2>/dev/null; done ) | shasum -a 256 | cut -c1-16; }
+# a configured command with {port} and {udid} filled in; empty when not configured
+mobile_cmd() { local c; c="$(cfg "$1")"; c="${c//\{port\}/$METRO_PORT}"; echo "${c//\{udid\}/$udid}"; }
 
 json_merge() { node -e "const f='$ENV_JSON';const j=JSON.parse(require('fs').readFileSync(f,'utf8'));Object.assign(j,JSON.parse(process.argv[1]));require('fs').writeFileSync(f,JSON.stringify(j,null,2))" "$1"; }
 
 do_up() {
   [ -f "$ENV_JSON" ] || die "no environment recorded; start the backend with e2e-env.sh up --device first"
   [ "$(node -p "require('$ENV_JSON').mode")" = "device" ] || die "backend environment is not in device mode"
+  [ -n "$(cfg appDir)" ] || die "mobile.appDir is not configured, the device lane is disabled"
   [ -d "$APP" ] || die "missing $APP"
 
   local line udid state; line="$(pick_device)" || die "$line"; udid="${line% *}"; state="${line#* }"
@@ -58,13 +64,14 @@ do_up() {
   fi
 
   cd "$APP" || exit 1
-  bash scripts/set-e2e-environment.sh local >&2 || die "could not point .env at the local backend"
-  [ -d node_modules ] || { log "yarn install"; yarn install --frozen-lockfile >&2 || die "yarn install failed"; }
-  [ -d ios/Pods ] || { log "pod install"; yarn pods >&2 || die "pod install failed"; }
+  local step
+  step="$(mobile_cmd prepare)"; [ -z "$step" ] || bash -c "$step" >&2 || die "prepare failed: $step"
+  step="$(mobile_cmd install)"; if [ -n "$step" ] && [ ! -d node_modules ]; then log "$step"; bash -c "$step" >&2 || die "install failed"; fi
+  step="$(mobile_cmd pods)"; if [ -n "$step" ] && [ ! -d ios/Pods ]; then log "$step"; bash -c "$step" >&2 || die "pod install failed"; fi
 
   if [ -z "$(port_holder)" ]; then
     log "starting Metro on $METRO_PORT from $APP"
-    nohup yarn start:port "$METRO_PORT" > "$RUN_DIR/metro.log" 2>&1 &
+    nohup bash -c "$(mobile_cmd start)" > "$RUN_DIR/metro.log" 2>&1 &
     echo $! > "$metro_pid_file"
     local end=$((SECONDS + 300))
     until curl -sf "http://localhost:$METRO_PORT/status" 2>/dev/null | grep -q running; do
@@ -76,7 +83,7 @@ do_up() {
   local stamp="$STATE_DIR/native-$(native_hash).stamp"
   if [ ! -f "$stamp" ] || [ "${DF_FORCE_NATIVE_BUILD:-0}" = 1 ]; then
     log "native inputs changed (or first run): building and installing the app"
-    yarn ios --udid "$udid" --port "$METRO_PORT" >&2 || die "native build failed"
+    bash -c "$(mobile_cmd build)" >&2 || die "native build failed"
     mkdir -p "$STATE_DIR"; touch "$stamp"
   else log "native build skipped (inputs unchanged)"; fi
 

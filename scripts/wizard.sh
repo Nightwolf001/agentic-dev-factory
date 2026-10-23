@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
-# Walks a person through the steps only they can do: telemetry login, Jira labels, unattended login.
-# Usage: bash dev-factory/scripts/doctor.sh --wizard
+# Walks a person through the steps only they can do: choosing a task source, optional MCP servers, unattended login.
+# Usage: dev-factory doctor --wizard
 set -uo pipefail
-DIR="$(cd "$(dirname "$0")/.." && pwd)"; ENVF="$DIR/.env.local"
-[ -f "$ENVF" ] || { cp "$DIR/.env.example" "$ENVF"; chmod 600 "$ENVF"; echo "created $ENVF"; }
-echo "dev-factory setup wizard"
-echo; echo "1. Sentry and Axiom: start 'claude', run /mcp and authenticate plugin:dev-factory:sentry and plugin:dev-factory:axiom (OAuth; they are separate from your claude.ai connections, and read access is enforced by mcp-guard)."
-echo "2. Check both show as connected: claude mcp list | grep plugin:dev-factory"
-echo; echo "3. Ask a Jira admin to allow the labels: factory-blocked, factory-validated, factory-regression, needs-research, dev-factory-improvement."
-echo "4. Unattended login: run 'claude setup-token' and put the result in CLAUDE_CODE_OAUTH_TOKEN in $ENVF."
-echo "5. Fill environments in dev-factory/config.json (Sentry org and projects, Axiom datasets per environment)."
-echo; echo "Then run: bash dev-factory/scripts/doctor.sh"
+DIR="$(cd "$(dirname "$0")/.." && pwd)"
+. "$DIR/scripts/runtime.sh"
+ENVF="$(df_state_dir)/.env.local"
+[ -f "$ENVF" ] || { mkdir -p "$(dirname "$ENVF")"; cp "$DIR/.env.example" "$ENVF"; chmod 600 "$ENVF"; echo "created $ENVF"; }
+SOURCE="$(node "$DIR/scripts/config.mjs" get tasks.source 2>/dev/null)"
+echo "dev-factory setup wizard (task source: ${SOURCE:-unset})"
+echo; echo "1. Task source: pick one in dev-factory.config.json at the repository root ({\"tasks\": {\"source\": \"local|github|notion|jira\"}}), or run /dev-factory:setup to be asked."
+case "$SOURCE" in
+  github) echo "   GitHub: run 'dev-factory tasks init' once to create the labels. No token needed beyond 'gh auth login'." ;;
+  local) echo "   Local: tasks are markdown files under $(node "$DIR/scripts/config.mjs" get sources.local.dir 2>/dev/null); 'dev-factory tasks init' creates the folder." ;;
+  notion) echo "   Notion: share the task database with an internal integration, put its secret in NOTION_TOKEN in $ENVF, set sources.notion.databaseId, and enable the MCP: dev-factory mcp enable notion" ;;
+  jira) echo "   Jira: set sources.jira.site, cloudId and projects, put JIRA_EMAIL and JIRA_API_TOKEN in $ENVF, enable the MCP: dev-factory mcp enable atlassian, and ask an admin to allow the labels the factory adds." ;;
+esac
+echo; echo "2. Optional MCP servers: dev-factory mcp list   (enable with: dev-factory mcp enable ID). Servers that use OAuth need one login: start 'claude' and run /mcp."
+echo; echo "3. Unattended runs only: run 'claude setup-token' and put the result in CLAUDE_CODE_OAUTH_TOKEN in $ENVF."
+echo; echo "Then run: dev-factory doctor"

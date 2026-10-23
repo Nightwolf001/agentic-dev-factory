@@ -45,50 +45,50 @@ test('learnings lint wants short scoped entries', () => {
 });
 
 test('learnings are required after a debug round or a High finding, validated, and must reach the PR body', () => {
-	const root = wt({ key: 'OAPP-7' });
-	assert.equal(learningsCheck({ root, key: 'OAPP-7' }).required, false);
+	const root = wt({ key: 'APP-7' });
+	assert.equal(learningsCheck({ root, key: 'APP-7' }).required, false);
 	review(root, 'a1', 'spec', { high: 1 });
 	assert.throws(
-		() => learningsCheck({ root, key: 'OAPP-7' }),
+		() => learningsCheck({ root, key: 'APP-7' }),
 		(e) => e instanceof QaError && /is required because a review round/.test(e.message),
 	);
 	const f = path.join(root, '.dev-factory/learnings.md');
 	fs.writeFileSync(f, '- only a lesson without scope here\n');
-	assert.throws(() => learningsCheck({ root, key: 'OAPP-7' }), /missing the indented "scope:"/);
+	assert.throws(() => learningsCheck({ root, key: 'APP-7' }), /missing the indented "scope:"/);
 	fs.writeFileSync(f, GOOD);
-	assert.equal(learningsCheck({ root, key: 'OAPP-7' }).ok, true);
+	assert.equal(learningsCheck({ root, key: 'APP-7' }).ok, true);
 	const body = path.join(root, 'body.md');
 	fs.writeFileSync(body, '## Description\nx\n');
-	assert.throws(() => learningsCheck({ root, key: 'OAPP-7', bodyFile: body }), /PR body does not carry/);
+	assert.throws(() => learningsCheck({ root, key: 'APP-7', bodyFile: body }), /PR body does not carry/);
 	fs.writeFileSync(body, '## Description\nx\n\n' + GOOD);
-	assert.equal(learningsCheck({ root, key: 'OAPP-7', bodyFile: body }).ok, true);
+	assert.equal(learningsCheck({ root, key: 'APP-7', bodyFile: body }).ok, true);
 	fs.writeFileSync(f, '- user a@b.co hit the pool exhaustion bug\n  scope: .\n');
-	assert.throws(() => learningsCheck({ root, key: 'OAPP-7' }), /raw data/);
+	assert.throws(() => learningsCheck({ root, key: 'APP-7' }), /raw data/);
 });
 
 test("merged PR bodies yield entries, candidates need two tickets or a person's promote comment", () => {
 	const body = (t, scope = 'services/api') => `## Description\nx\n\n## Learnings\n- ${t}\n  scope: ${scope}\n\n## Deployment\nnone\n`;
 	const prs = [
 		{
-			title: 'Fix: pool [OAPP-1]',
+			title: 'Fix: pool [APP-1]',
 			body: body('Release the connection before the retry loop sleeps in the api pool'),
 			mergedAt: '2026-10-01',
 			comments: [],
 		},
 		{
-			title: 'Fix: pool again [OAPP-2]',
+			title: 'Fix: pool again [APP-2]',
 			body: body('The api pool is exhausted when the retry loop keeps its connection open', 'services/api/lib'),
 			mergedAt: '2026-10-05',
 			comments: [],
 		},
 		{
-			title: 'Feat: other [OAPP-3]',
+			title: 'Feat: other [APP-3]',
 			body: body('Mobile locale files need the Italian plural keys added together', 'clients/mobile'),
 			mergedAt: '2026-10-06',
 			comments: [],
 		},
 		{
-			title: 'Feat: confirmed [OAPP-4]',
+			title: 'Feat: confirmed [APP-4]',
 			body: body('Run the key parity scan after touching any locale file in mobile', 'clients/mobile/src/locales'),
 			mergedAt: '2026-10-07',
 			comments: [{ body: '/dev-factory promote' }],
@@ -99,7 +99,7 @@ test("merged PR bodies yield entries, candidates need two tickets or a person's 
 	assert.equal(entries.length, 4);
 	const c = promotionCandidates(entries, 2);
 	assert.equal(c.length, 2);
-	assert.deepEqual(c.find((x) => x.scope.startsWith('services/api')).tickets.sort(), ['OAPP-1', 'OAPP-2']);
+	assert.deepEqual(c.find((x) => x.scope.startsWith('services/api')).tickets.sort(), ['APP-1', 'APP-2']);
 	assert.equal(c.find((x) => x.scope.startsWith('clients/mobile')).confirmed, true);
 });
 
@@ -119,7 +119,7 @@ test('preload picks the few learnings whose scope matches the ticket text', () =
 
 test('a promotion may change only the Learned rules section of AGENTS.md files', () => {
 	const before = '# Mobile\n\nSome guidance.\n\n## Testing\nrun tests\n';
-	const rule = '- Add a testID to every tappable before writing the e2e flow (OAPP-1, OAPP-2)';
+	const rule = '- Add a testID to every tappable before writing the e2e flow (APP-1, APP-2)';
 	const add = (t) => ({ path: 'clients/mobile/AGENTS.md', before, after: t });
 	assert.deepEqual(checkPromotion([add(`${before}\n## Learned rules\n${rule}\n`)]), []);
 	assert.match(checkPromotion([add(before.replace('Some guidance', 'Other guidance') + `\n## Learned rules\n${rule}\n`)]).join(), /outside/);
@@ -127,17 +127,17 @@ test('a promotion may change only the Learned rules section of AGENTS.md files',
 	assert.match(checkPromotion([{ path: 'CLAUDE.md', before: 'x', after: 'y' }]).join(), /only AGENTS\.md/);
 	assert.match(checkPromotion([{ path: 'dev-factory/AGENTS.md', before: 'x', after: 'y' }]).join(), /only AGENTS\.md/);
 	assert.match(checkPromotion([add(before)]).join(), /section is missing/);
-	const many = Array.from({ length: 3 }, (_, i) => `- Rule number ${i} that is long enough to count (OAPP-${i + 1})`).join('\n');
+	const many = Array.from({ length: 3 }, (_, i) => `- Rule number ${i} that is long enough to count (APP-${i + 1})`).join('\n');
 	assert.match(checkPromotion([add(`${before}\n## Learned rules\n${many}\n`)], { cap: 2 }).join(), /cap is 2/);
 	const withSection = `${before}\n## Learned rules\n${rule}\n\n## Later\ntext\n`;
-	const grown = `${before}\n## Learned rules\n${rule}\n- Another rule that is long enough to count (OAPP-9)\n\n## Later\ntext\n`;
+	const grown = `${before}\n## Learned rules\n${rule}\n- Another rule that is long enough to count (APP-9)\n\n## Later\ntext\n`;
 	assert.deepEqual(checkPromotion([{ path: 'clients/mobile/AGENTS.md', before: withSection, after: grown }]), []);
 	const tampered = grown.replace('text\n', 'changed\n');
 	assert.match(checkPromotion([{ path: 'clients/mobile/AGENTS.md', before: withSection, after: tampered }]).join(), /outside/);
 });
 
 test('a ticket record summarises the run state', () => {
-	const root = wt({ key: 'OAPP-8', kind: 'bug' });
+	const root = wt({ key: 'APP-8', kind: 'bug' });
 	review(root, 'h1', 'spec', { high: 1 });
 	review(root, 'h2', 'spec', {});
 	review(root, 'h2', 'standards', {});
@@ -145,7 +145,7 @@ test('a ticket record summarises the run state', () => {
 	fs.writeFileSync(path.join(root, '.dev-factory/ship.done'), 'x');
 	debugLib.open({ root, trigger: 'triage', command: 'curl x', output: 'Error: boom' });
 	const r = buildTicketRecord({ worktree: root, env: 'staging', costUsd: 3.2 });
-	assert.equal(r.key, 'OAPP-8');
+	assert.equal(r.key, 'APP-8');
 	assert.equal(r.reviewRounds, 2);
 	assert.equal(r.reviewHigh, 1);
 	assert.equal(r.debugRounds, 1);
