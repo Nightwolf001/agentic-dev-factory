@@ -508,14 +508,49 @@ This section is for the owner of the plugin. The factory is installed from the m
 | `vendored` | the plugin is copied into the repository at `dev-factory/`                                                                              | `dev-factory/` in a worktree of that repository      |
 | `none`     | the plugin is only installed and no checkout is named                                                                                   | no PRs: findings are filed as improvement tasks only |
 
-The evidence comes from the machine you run it on: every pass appends a record to `~/.dev-factory/runs/`, whichever repository it ran in, so a scan on your own machine sees patterns across all your projects. (Runs in GitHub Actions or a cloud session are not on your machine.) A typical owner setup:
+#### Two copies, two jobs
 
-```bash
-git clone git@github.com:<you>/agentic-dev-factory.git ~/code/agentic-dev-factory
-export DF_FACTORY_REPO=~/code/agentic-dev-factory     # in your shell profile, or improvement.factoryRepo in a project's dev-factory.config.json
-```
+As the owner you have the plugin on your machine twice, on purpose:
 
-Then, from any project that uses the factory, run `/dev-factory:improve` (or let the weekly job run it). It clusters recurring causes, files improvement tasks in that project's task source, and for each finding that qualifies opens a worktree of your checkout, has the `factory-improver` agent write the failing test first and then the change, runs the tests, Prettier, the vocabulary lint and `claude plugin validate` on that worktree, runs the two reviews, and opens a **draft PR on the plugin's repository**. You review and merge it, bump `version` in `.claude-plugin/plugin.json` and the marketplace entry, and everyone gets it with `claude plugin update dev-factory@dev-factory`.
+| Copy                 | Where                                                                               | What it is for                                                                                                 |
+| -------------------- | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| **Installed plugin** | Claude's plugin cache, `~/.claude/plugins/cache/dev-factory/dev-factory/<version>/` | What runs for every project. Read-only: nothing edits it. It changes only when you run `claude plugin update`. |
+| **Source checkout**  | a folder you choose, for example `~/code/agentic-dev-factory` (`DF_FACTORY_REPO`)   | Where improvements are made and where your own edits go. A normal git clone of the plugin repository.          |
+
+#### Set it up once
+
+1. **Install the plugin** (the same two commands as the [Quick start](#quick-start)): `claude plugin marketplace add <you>/agentic-dev-factory`, then `claude plugin install dev-factory@dev-factory`.
+2. **Clone the source** anywhere you like: `git clone git@github.com:<you>/agentic-dev-factory.git ~/code/agentic-dev-factory`.
+3. **Point the factory at the clone**, permanently. Add this line to your shell profile and open a new terminal:
+    ```bash
+    echo 'export DF_FACTORY_REPO=~/code/agentic-dev-factory' >> ~/.zshrc
+    ```
+    Or, for one project, set it in that project's `dev-factory.config.json` (`~` is expanded): `{ "improvement": { "factoryRepo": "~/code/agentic-dev-factory" } }`. Claude started from a terminal inherits the variable; if you open Claude from the Dock or an app launcher it may not read your shell profile, so use the config setting instead.
+4. **Check it** from inside any project: `dev-factory target` should print `{"mode":"clone","repo":"/Users/you/code/agentic-dev-factory","prefix":""}`. `"mode":"none"` means it cannot find the checkout; the `reason` says why.
+5. **Keep the clone current** and clean. Before a scan, run `git -C ~/code/agentic-dev-factory pull --ff-only`. Leave it on `main` with no uncommitted changes, because the improver builds on `origin/main` through its own worktree and never touches your working files.
+
+The evidence comes from the machine you run it on: every pass appends a record to `~/.dev-factory/runs/`, whichever repository it ran in, so a scan on your own machine sees patterns across all your projects. (Runs in GitHub Actions or a cloud session are not on your machine.)
+
+#### How a scan works
+
+1. From any project that uses the factory, run `/dev-factory:improve` (or let the weekly job run it). It runs `dev-factory target` first to find your checkout.
+2. It clusters recurring causes from the run records, and files an improvement task for each in **that project's** task source (so the project's tracker shows the factory's own backlog).
+3. For each finding that qualifies, up to `improvement.maxPrsPerScan`, it fetches your clone and adds a worktree of it (under `git.worktreeRoot`, beside the project, not inside your clone) on a new `ai-tooling/<KEY>-<slug>` branch cut from the clone's default branch.
+4. The `factory-improver` agent writes the failing test first and then the change, and runs the tests, Prettier, the vocabulary lint and `claude plugin validate` on that worktree. Two fresh reviewers then check the commit.
+5. It opens a **draft PR on the plugin's own repository** (the clone's `origin`). It never merges, and it never touches the installed copy or your clone's working tree.
+
+#### After you merge an improvement
+
+Installed copies update only when the plugin's version changes, so a merge alone reaches nobody:
+
+1. Review the draft PR and merge it into `main`.
+2. Bump `version` in `.claude-plugin/plugin.json` and in the marketplace entry in `.claude-plugin/marketplace.json` to the same new number (a test checks they agree), and merge that.
+3. On each machine: `claude plugin marketplace update dev-factory`, then `claude plugin update dev-factory@dev-factory`, then restart Claude or run `/reload-plugins`. Scheduled jobs pick up the new version by themselves, because they run the launcher, which finds the newest installed copy.
+4. Pull your clone: `git -C ~/code/agentic-dev-factory pull --ff-only`.
+
+#### Working on the plugin by hand
+
+Open Claude inside the clone with the clone itself loaded as the plugin: `cd ~/code/agentic-dev-factory && claude --plugin-dir .`. That copy takes precedence over the installed one for the session, so you can try a change before releasing it. Running `/dev-factory:improve` there is mode `self`.
 
 The improver cannot edit what enforces the factory's own limits (the guards, the stop gate, `qa.mjs`, hooks, base settings, `config.json`, `plugins.json`) or `.github/` and `.claude/`; a finding there stays an improvement task for you. Someone who only installs the plugin gets mode `none` and can still file improvement tasks and promote learnings into their own `AGENTS.md`.
 
