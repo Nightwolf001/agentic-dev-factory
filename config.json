@@ -131,9 +131,11 @@
 		"user": null,
 		"setup": [],
 		"processCheck": null,
+		"readyTimeout": 900,
 		"pingUrl": null,
 		"webBaseUrl": null,
-		"submodules": []
+		"submodules": [],
+		"preCommit": null
 	},
 	"mobile": {
 		"appDir": null,

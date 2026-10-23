@@ -162,3 +162,14 @@ test('git.agentAttribution defaults to false and must be a boolean', () => {
 	c.git.agentAttribution = 'no';
 	assert.ok(validate(c).includes('git.agentAttribution must be true or false'));
 });
+
+test('environment.readyTimeout and environment.preCommit are validated, and default to 900 seconds and nothing', () => {
+	const c = load();
+	assert.equal(c.environment.readyTimeout, 900);
+	assert.equal(c.environment.preCommit, null);
+	c.environment.readyTimeout = '15m';
+	c.environment.preCommit = '';
+	const p = validate(c);
+	assert.ok(p.includes('environment.readyTimeout must be a non-negative integer'));
+	assert.ok(p.includes('environment.preCommit must be a command or null'));
+});

@@ -98,6 +98,7 @@ const NUMERIC = [
 	'debug.maxDebugRounds',
 	'debug.debugMinutes',
 	'validation.minHoursAfterMerge',
+	'environment.readyTimeout',
 	'improvement.maxTicketsPerScan',
 	'improvement.maxPrsPerScan',
 	'improvement.minEvidence',
@@ -204,6 +205,8 @@ export function validate(config = load()) {
 		problems.push('improvement.factoryRepo must be a folder path or null');
 	const attribution = dig(config, 'git.agentAttribution');
 	if (attribution !== undefined && typeof attribution !== 'boolean') problems.push('git.agentAttribution must be true or false');
+	const preCommit = dig(config, 'environment.preCommit');
+	if (preCommit != null && (typeof preCommit !== 'string' || !preCommit)) problems.push('environment.preCommit must be a command or null');
 	const type = dig(config, 'environment.type');
 	if (type !== undefined && !['none', 'compose'].includes(type)) problems.push('environment.type must be none or compose');
 	if (type === 'compose') {

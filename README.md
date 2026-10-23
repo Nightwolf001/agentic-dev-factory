@@ -242,6 +242,8 @@ dev-factory mcp connect --all   # every server in the catalog
 
 Servers are written to the repository's own `.mcp.json` (merged, never overwriting yours). The scheduled pass builds its sandbox and permission settings from what is enabled, so a server that is off opens no network access.
 
+A server you already have, at user scope or as a claude.ai connector, is used as it is: `enable` and `connect` skip it and say so rather than writing a second copy into `.mcp.json` (Claude warns about duplicates and runs both). `--force` adds it anyway. The scheduled pass is allowed to use those servers too. `dev-factory mcp doctor` (part of `dev-factory doctor`) reports each server in use and where it comes from, any that wait for your approval or a login, and a Playwright configured without `--isolated`, which makes QA walks share one browser profile; the fix is printed with it.
+
 | Server                | What it adds                                  | Without it                                                           |
 | --------------------- | --------------------------------------------- | -------------------------------------------------------------------- |
 | `playwright`          | browser walks and screenshots for web QA      | a change that touches web UI is blocked for a person to check        |
@@ -299,7 +301,7 @@ Defaults ship in `config.json` and name no organisation, site or project. A repo
 | `git.worktreeRoot`                                          | Folder worktrees are created in (default `../.worktrees`)                                                                                                                                                          |
 | `git.baseBranch`, `git.branchTypes`                         | Branch to build on (`null` = the repository's default branch); task type to branch prefix, matched case-insensitively                                                                                              |
 | `pr.sizeLabels`, `pr.areaLabels`, `pr.categoryByBranchType` | PR labels. Area labels are path prefix to label, none by default                                                                                                                                                   |
-| `environment.*`                                             | `type` `none` (tests run on the host, the default) or `compose`; see [Environments](#environments)                                                                                                                 |
+| `environment.*`                                             | `type` `none` (tests run on the host, the default) or `compose`, with `readyTimeout` and `preCommit`; see [Environments](#environments)                                                                            |
 | `mobile.*`                                                  | `appDir` enables the device lane; `install`, `pods`, `start`, `build`, `nativeInputs` are the commands it runs                                                                                                     |
 | `caps.*`, `models.*`                                        | Concurrency, open PRs, budget, stall and resume limits; model and effort per role                                                                                                                                  |
 | `environments.<name>`                                       | Optional: Sentry org/projects and Axiom datasets the debugger may read in that environment                                                                                                                         |
@@ -452,6 +454,8 @@ Runs the whole flow (worktree, environment, test-first build, QA walk, two revie
 | `e2e-env.sh sweep`                                       | Remove `df-*` projects with no live owner, except one whose worktree changed in the last 3 hours. Safe any time. |
 
 Isolated mode (`--ports none`) publishes no host ports so several worktrees can coexist, but a host browser cannot reach it; web QA needs `--ports canonical`, which the pass uses whenever `caps.maxConcurrent` is 1 and which takes a machine-wide lock (`environment.webBaseUrl` is recorded in `env.json`). `--device` implies canonical ports and, when `mobile.appDir` is set, boots a simulator and starts the app's dev server (`scripts/mobile-env.sh`). Run state lives in `.dev-factory/` inside each worktree (gitignored); machine state in `~/.dev-factory/`.
+
+A canonical-ports start first checks that the compose file's published host ports are free and refuses with exit 75 and the port numbers (and the process holding them, when `lsof` can tell) before building anything, so your own copy of the stack running on the same ports is reported in seconds rather than after a long build. Other settings: `environment.readyTimeout` (seconds to wait for a fresh stack, default 900; the first start installs dependencies, so raise it, or set `DF_READY_TIMEOUT`), and `environment.preCommit` (a command to run inside the container before each commit, for repositories whose commit hook needs the container's tools: the builder runs it, then commits with `git commit -n`; unset means commit normally and let the hooks run). The isolated environments need Docker Compose 2.24 or newer; `dev-factory doctor` checks.
 
 ## QA evidence
 

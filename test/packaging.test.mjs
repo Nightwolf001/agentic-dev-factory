@@ -128,3 +128,11 @@ test('the launchd jobs get a label of their own per repository, so two repositor
 		assert.doesNotMatch(t, /dev-factory\/scripts/, `${job}: no path inside the repository`);
 	}
 });
+
+test('the builder is told exactly when the commit hook runs in the container, instead of guessing', () => {
+	const builder = read('agents/factory-builder.md');
+	assert.match(builder, /environment\.preCommit/);
+	assert.match(builder, /Never use `-n` otherwise/);
+	assert.match(read('commands/setup.md'), /environment\.preCommit/);
+	assert.match(read('commands/setup.md'), /claude mcp list/);
+});
