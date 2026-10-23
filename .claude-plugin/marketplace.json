@@ -10,7 +10,7 @@
 			"name": "dev-factory",
 			"source": ".",
 			"description": "Plans, builds, verifies and ships tasks to draft PRs with QA evidence and two-step review. Every MCP server is optional.",
-			"version": "0.2.0",
+			"version": "0.3.0",
 			"category": "development",
 			"tags": ["automation", "pull-requests", "qa", "workflow"],
 			"dependencies": ["superpowers@claude-plugins-official"]
