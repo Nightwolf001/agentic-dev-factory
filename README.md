@@ -132,7 +132,7 @@ Put the snippet in `dev-factory.config.json` at the repository root (or let `/de
 
 Run `dev-factory tasks init` once to create the labels. An open issue with the `dev-factory` label is `ready`; progress is a label (`df:in-progress`, `df:in-review`, `df:reviewed`); a closed issue is `done`. `repo` defaults to the current repository and `assignee` is optional (leave it out and any labelled issue qualifies). Keys are `GH-<issue number>`.
 
-**`notion`**: a database with a title (`Name`), a `Status` property (status or select) whose options include the five states, a `Tags` multi-select, an optional `Type` select, a unique-ID property so every page has a key like `TASK-12`, and optionally a `Blocked by` relation to the same database.
+**`notion`**: a database with a title (`Name`), a `Status` property (status or select) whose options include the five states, a `Tags` multi-select, an optional `Type` select, a unique-ID property so every page has a key like `TASK-12`, and optionally a `Blocked by` relation to the same database. To show the work on the task itself, add `Branch` and `Pull request` (URL), `QA verdict` (select: pass, fail, not applicable) and `Evidence` (files); the factory fills them in when it opens the PR, and a gallery view with `Evidence` as the cover shows the screenshots. Property names are `sources.notion.properties`.
 
 ```json
 {
@@ -242,6 +242,8 @@ dev-factory mcp connect --all   # every server in the catalog
 
 Servers are written to the repository's own `.mcp.json` (merged, never overwriting yours). The scheduled pass builds its sandbox and permission settings from what is enabled, so a server that is off opens no network access.
 
+A server you already have, at user scope or as a claude.ai connector, is used as it is: `enable` and `connect` skip it and say so rather than writing a second copy into `.mcp.json` (Claude warns about duplicates and runs both). `--force` adds it anyway. The scheduled pass is allowed to use those servers too. `dev-factory mcp doctor` (part of `dev-factory doctor`) reports each server in use and where it comes from, any that wait for your approval or a login, and a Playwright configured without `--isolated`, which makes QA walks share one browser profile; the fix is printed with it.
+
 | Server                | What it adds                                  | Without it                                                           |
 | --------------------- | --------------------------------------------- | -------------------------------------------------------------------- |
 | `playwright`          | browser walks and screenshots for web QA      | a change that touches web UI is blocked for a person to check        |
@@ -261,7 +263,7 @@ OAuth servers need one login that no script can do for you: start `claude` and r
 3. A worktree and branch (`<type>/<KEY>-<slug>`) are created, and `scripts/e2e-env.sh up` starts the environment, if the repository has one.
 4. The `factory-builder` agent works test-first, then QA walks each case and records it with `bin/qa.mjs`.
 5. Two fresh-context reviewers run in order: **spec** (does it do what the task asks, nothing more) and **standards** (does it follow the repository's rules and is it safe). Critical or High findings send the builder back; QA runs again and review restarts, at most `caps.maxFixRounds` times. Triggered `data`, `infra` and `security` steps follow.
-6. The builder ships: pushes the branch, opens the draft PR with the evidence attached. The pass re-verifies the QA manifest and both review records against the PR head, comments on the task, sets it `inReview`, and tears the environment down.
+6. The builder ships: pushes the branch, opens the draft PR with the evidence attached. The pass then records where the work is on the task (`LINK`): the branch and PR links, the QA verdict and the screenshots, as properties and files in Notion, remote links in Jira, a comment on a GitHub issue, or frontmatter and a copy of the images in the local task files. The pass re-verifies the QA manifest and both review records against the PR head, comments on the task, sets it `inReview`, and tears the environment down.
 7. You review the PR. A change request (not a plain comment) from someone other than the PR author sends the task back for a fix pass; an approval or merge sets it `reviewed`. After that, QA, release and anything else belong to people.
 
 When the factory cannot continue it labels the task `factory-blocked`, comments the reason and the decision it needs, and returns it to `ready` (the label keeps it out of the queue). Answer in a comment and remove the label. If `caps.breakerThreshold` tasks were blocked within `caps.breakerWindowHours` the pass stops claiming until you look.
@@ -299,7 +301,7 @@ Defaults ship in `config.json` and name no organisation, site or project. A repo
 | `git.worktreeRoot`                                          | Folder worktrees are created in (default `../.worktrees`)                                                                                                                                                          |
 | `git.baseBranch`, `git.branchTypes`                         | Branch to build on (`null` = the repository's default branch); task type to branch prefix, matched case-insensitively                                                                                              |
 | `pr.sizeLabels`, `pr.areaLabels`, `pr.categoryByBranchType` | PR labels. Area labels are path prefix to label, none by default                                                                                                                                                   |
-| `environment.*`                                             | `type` `none` (tests run on the host, the default) or `compose`; see [Environments](#environments)                                                                                                                 |
+| `environment.*`                                             | `type` `none` (tests run on the host, the default) or `compose`, with `readyTimeout` and `preCommit`; see [Environments](#environments)                                                                            |
 | `mobile.*`                                                  | `appDir` enables the device lane; `install`, `pods`, `start`, `build`, `nativeInputs` are the commands it runs                                                                                                     |
 | `caps.*`, `models.*`                                        | Concurrency, open PRs, budget, stall and resume limits; model and effort per role                                                                                                                                  |
 | `environments.<name>`                                       | Optional: Sentry org/projects and Axiom datasets the debugger may read in that environment                                                                                                                         |
@@ -452,6 +454,8 @@ Runs the whole flow (worktree, environment, test-first build, QA walk, two revie
 | `e2e-env.sh sweep`                                       | Remove `df-*` projects with no live owner, except one whose worktree changed in the last 3 hours. Safe any time. |
 
 Isolated mode (`--ports none`) publishes no host ports so several worktrees can coexist, but a host browser cannot reach it; web QA needs `--ports canonical`, which the pass uses whenever `caps.maxConcurrent` is 1 and which takes a machine-wide lock (`environment.webBaseUrl` is recorded in `env.json`). `--device` implies canonical ports and, when `mobile.appDir` is set, boots a simulator and starts the app's dev server (`scripts/mobile-env.sh`). Run state lives in `.dev-factory/` inside each worktree (gitignored); machine state in `~/.dev-factory/`.
+
+A canonical-ports start first checks that the compose file's published host ports are free and refuses with exit 75 and the port numbers (and the process holding them, when `lsof` can tell) before building anything, so your own copy of the stack running on the same ports is reported in seconds rather than after a long build. Other settings: `environment.readyTimeout` (seconds to wait for a fresh stack, default 900; the first start installs dependencies, so raise it, or set `DF_READY_TIMEOUT`), and `environment.preCommit` (a command to run inside the container before each commit, for repositories whose commit hook needs the container's tools: the builder runs it, then commits with `git commit -n`; unset means commit normally and let the hooks run). The isolated environments need Docker Compose 2.24 or newer; `dev-factory doctor` checks.
 
 ## QA evidence
 

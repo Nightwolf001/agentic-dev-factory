@@ -15,4 +15,6 @@ Searches (always quote project keys: `MAX` and others are reserved words):
 
 Blockers are `is blocked by` links: a blocker counts as done when its status is in `states.done` or its status category is Done. Read them with the issue. `kind` comes from the issue type: a type in `tasks.bugTypes` is `bug`; Story, Epic and Feature are `story`; Improvement is `improvement`; everything else is `task`.
 
+LINK: add the branch and the PR as remote links on the issue (the Atlassian MCP's remote-link tool; `gh repo view --json url` gives the repository URL), put the QA verdict in the comment, and attach the screenshots with the MCP's attachment tool when it has one. Without one, the comment names the PR, where the screenshots are.
+
 Create issues with the project's own issue-creation skill if one exists, else with the MCP create tool: label `tasks.label`, assignee the factory user, a link for each blocker, blockers first.

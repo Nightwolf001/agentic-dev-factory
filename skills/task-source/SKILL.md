@@ -27,15 +27,16 @@ Dependencies are written in the description as a `Blocked by:` line (`Blocked by
 
 ## Operations
 
-| Operation                   | What it does                                                                                                                                        |
-| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `LIST state`                | Tasks in that state carrying `tasks.label`, oldest or highest-ranked first. `ready` leaves out tasks with `tasks.blockedLabel`.                     |
-| `LIST stale`                | `inProgress` tasks not updated for `caps.stallMinutes`: orphans of a killed pass.                                                                   |
-| `GET key`                   | Title, description, type, labels, blockers (each with whether it is done), comments.                                                                |
-| `SET key state`             | Moves the task. Never assume a workflow allows it: if the source refuses, leave the task, comment, and carry on.                                    |
-| `COMMENT key text`          | Adds a comment or activity line. Text that came from telemetry or a person's data goes through `qa.mjs scrub` first.                                |
-| `BLOCK key reason decision` | Adds `tasks.blockedLabel`, comments `[dev-factory] blocked: <reason>. Decision needed: <decision>`, returns the task to `ready`. Never retry alone. |
-| `CREATE ...`                | Makes a task with title, body, type, label `tasks.label`, blockers. Used by `/dev-factory:plan` and the improvement scan.                           |
+| Operation                               | What it does                                                                                                                                                                                                                                                           |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LIST state`                            | Tasks in that state carrying `tasks.label`, oldest or highest-ranked first. `ready` leaves out tasks with `tasks.blockedLabel`.                                                                                                                                        |
+| `LIST stale`                            | `inProgress` tasks not updated for `caps.stallMinutes`: orphans of a killed pass.                                                                                                                                                                                      |
+| `GET key`                               | Title, description, type, labels, blockers (each with whether it is done), comments.                                                                                                                                                                                   |
+| `SET key state`                         | Moves the task. Never assume a workflow allows it: if the source refuses, leave the task, comment, and carry on.                                                                                                                                                       |
+| `COMMENT key text`                      | Adds a comment or activity line. Text that came from telemetry or a person's data goes through `qa.mjs scrub` first.                                                                                                                                                   |
+| `LINK key branch pr qaVerdict evidence` | Records where the work is: the GitHub branch URL, the draft PR URL, the QA verdict (`pass`, `fail`, `not applicable`) and the QA screenshots, wherever the source can hold them. Done by the scheduler after a PR passes `qa.mjs verify`, and by `/dev-factory:build`. |
+| `BLOCK key reason decision`             | Adds `tasks.blockedLabel`, comments `[dev-factory] blocked: <reason>. Decision needed: <decision>`, returns the task to `ready`. Never retry alone.                                                                                                                    |
+| `CREATE ...`                            | Makes a task with title, body, type, label `tasks.label`, blockers. Used by `/dev-factory:plan` and the improvement scan.                                                                                                                                              |
 
 Phase comments are the resume position: every phase exit writes `[dev-factory] phase: <name> <state> run=<run-id> head=<sha>`. The latest one says where to continue; a comment `tasks.fixComment` (default `/dev-factory fix`) asks for a fix pass.
 
@@ -50,6 +51,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/tasks.mjs" list --label factory-blocked --up
 node "${CLAUDE_PLUGIN_ROOT}/scripts/tasks.mjs" get GH-12                      # GET
 node "${CLAUDE_PLUGIN_ROOT}/scripts/tasks.mjs" set-state GH-12 inProgress     # SET
 node "${CLAUDE_PLUGIN_ROOT}/scripts/tasks.mjs" comment GH-12 --file c.txt     # COMMENT
+node "${CLAUDE_PLUGIN_ROOT}/scripts/tasks.mjs" link GH-12 --branch feature/GH-12-x --pr https://github.com/o/r/pull/7 --qa-verdict pass --evidence a.png,b.png
 node "${CLAUDE_PLUGIN_ROOT}/scripts/tasks.mjs" block GH-12 --reason R --decision D
 node "${CLAUDE_PLUGIN_ROOT}/scripts/tasks.mjs" create --title T --file body.md [--type story] [--blocked-by GH-3,GH-4] [--parent GH-1]
 node "${CLAUDE_PLUGIN_ROOT}/scripts/tasks.mjs" init                           # labels or folder, once

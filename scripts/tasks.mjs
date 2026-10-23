@@ -7,11 +7,13 @@
 //   tasks.mjs set-state KEY STATE                                                           move a task
 //   tasks.mjs comment KEY --file F                                                          add a comment / activity line
 //   tasks.mjs label  KEY --add NAME | --remove NAME
+//   tasks.mjs link   KEY [--branch NAME|URL] [--pr URL] [--qa-verdict pass|fail|not applicable] [--evidence F,F]   record where the work is
 //   tasks.mjs block  KEY --reason R --decision D                                            label it blocked, comment, return it to ready
 //   tasks.mjs create --title T --file BODY [--type TYPE] [--blocked-by K,K] [--parent KEY]  prints {"key"}
 //   tasks.mjs init                                                                          create the labels or the folder
 //
 // Exit codes: 0 ok, 1 failure, 3 usage, 4 the active source is written through its MCP server.
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import { get, load } from './config.mjs';
 import { isMain } from './is-main.mjs';
@@ -29,7 +31,15 @@ function parse(argv) {
 	return a;
 }
 
-export async function run(argv, { cfg = load(), source } = {}) {
+const repoUrl = () => execFileSync('gh', ['repo', 'view', '--json', 'url', '--jq', '.url'], { encoding: 'utf8' }).trim();
+const resolveRepoUrl = async () => repoUrl();
+// A branch given by name becomes its GitHub URL; a URL is kept as it is.
+export async function branchUrl(branch, resolve) {
+	if (/^https?:\/\//.test(branch)) return branch;
+	return `${(await resolve()).replace(/\/$/, '')}/tree/${branch}`;
+}
+
+export async function run(argv, { cfg = load(), source, resolveRepoUrl: resolver = resolveRepoUrl } = {}) {
 	const [cmd, ...rest] = argv;
 	const a = parse(rest);
 	const name = get('tasks.source', { config: cfg });
@@ -66,6 +76,23 @@ export async function run(argv, { cfg = load(), source } = {}) {
 			else if (a.remove) await src.removeLabel(a._[0], a.remove);
 			else throw Object.assign(new Error('label needs --add or --remove'), { code: 3 });
 			return { ok: true };
+		case 'link': {
+			const evidence =
+				typeof a.evidence === 'string'
+					? a.evidence
+							.split(',')
+							.map((f) => f.trim())
+							.filter(Boolean)
+					: [];
+			const branch = typeof a.branch === 'string' ? await branchUrl(a.branch, resolver) : undefined;
+			await src.link(a._[0], {
+				branch,
+				pr: typeof a.pr === 'string' ? a.pr : undefined,
+				qaVerdict: typeof a['qa-verdict'] === 'string' ? a['qa-verdict'] : undefined,
+				evidence,
+			});
+			return { ok: true };
+		}
 		case 'block': {
 			const key = a._[0];
 			await src.addLabel(key, get('tasks.blockedLabel', { config: cfg }));

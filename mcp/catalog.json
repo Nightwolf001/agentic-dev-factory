@@ -90,7 +90,7 @@
 			},
 			"requires": ["OAuth login once: run /mcp in claude"],
 			"without": "Choose another tasks.source (local, github or jira).",
-			"domains": ["mcp.notion.com", "api.notion.com", "www.notion.so"]
+			"domains": ["*.notion.so", "api.notion.com", "mcp.notion.com", "www.notion.so"]
 		},
 		"sentry": {
 			"title": "Sentry",

@@ -127,3 +127,48 @@ test('a compose environment runs its configured setup commands inside the config
 	assert.match(log, /exec -T -u dev web bash -c npm ci/);
 	assert.doesNotMatch(log, /startup|pm2|devcontainer exec/);
 });
+
+test('a canonical-ports start refuses, before building anything, when a published host port is already in use', async () => {
+	const net = await import('node:net');
+	const server = net.createServer();
+	await new Promise((r) => server.listen(0, r));
+	const port = server.address().port;
+	try {
+		const f = fixture({ environment: { type: 'compose', composeFile: '.devcontainer/docker-compose.yml', service: 'app' } });
+		// the fake docker answers `config --format json` with a service that publishes the busy port and a free one
+		const dockerFile = path.join(f.base, 'bin/docker');
+		fs.writeFileSync(
+			dockerFile,
+			`#!/bin/bash
+echo "$@" >> "${f.base}/docker.log"
+case "$*" in
+  *"config --format json"*) echo '{"services":{"app":{"ports":[{"published":"${port}","target":3000},{"published":"1","target":1}]}}}' ;;
+  *"config --services"*) echo app ;;
+  *) exit 0 ;;
+esac
+`,
+			{ mode: 0o755 },
+		);
+		const r = f.run('up', '--key', 'APP-1', '--ports', 'canonical');
+		assert.equal(r.status, 75, r.stderr);
+		assert.match(r.stderr, new RegExp(`host port\\(s\\) already in use: ${port}`));
+		assert.doesNotMatch(f.log(), / build/, 'nothing was built');
+		assert.equal(fs.existsSync(path.join(f.state, 'ports.lock')), false, 'the ports lock was not taken');
+		// isolated mode publishes nothing, so a busy host port is not its business
+		const iso = f.run('up', '--key', 'APP-2', '--ports', 'none');
+		assert.doesNotMatch(iso.stderr, /already in use/);
+	} finally {
+		server.close();
+	}
+});
+
+test('the wait for a fresh stack is a config setting, with an env override', () => {
+	const f = fixture({ environment: { type: 'compose', composeFile: '.devcontainer/docker-compose.yml', service: 'app', readyTimeout: 1234 } });
+	const src = fs.readFileSync(SCRIPT, 'utf8');
+	assert.match(src, /READY_TIMEOUT="\$\{DF_READY_TIMEOUT:-\$\(cfg readyTimeout\)\}"/);
+	const out = spawnSync('node', [new URL('../scripts/config.mjs', import.meta.url).pathname, 'get', 'environment.readyTimeout'], {
+		cwd: f.worktree,
+		encoding: 'utf8',
+	});
+	assert.equal(out.stdout.trim(), '1234');
+});

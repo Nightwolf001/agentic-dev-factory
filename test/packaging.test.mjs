@@ -128,3 +128,19 @@ test('the launchd jobs get a label of their own per repository, so two repositor
 		assert.doesNotMatch(t, /dev-factory\/scripts/, `${job}: no path inside the repository`);
 	}
 });
+
+test('the builder is told exactly when the commit hook runs in the container, instead of guessing', () => {
+	const builder = read('agents/factory-builder.md');
+	assert.match(builder, /environment\.preCommit/);
+	assert.match(builder, /Never use `-n` otherwise/);
+	assert.match(read('commands/setup.md'), /environment\.preCommit/);
+	assert.match(read('commands/setup.md'), /claude mcp list/);
+});
+
+test('the ship step links the task, and every source file says how it does it', () => {
+	for (const f of ['commands/tick.md', 'commands/build.md']) assert.match(read(f), /LINK the task/, f);
+	for (const s of ['local', 'github', 'notion', 'jira']) assert.match(read(`skills/task-source/${s}.md`), /LINK/, s);
+	assert.match(read('skills/task-source/SKILL.md'), /`LINK key branch pr qaVerdict evidence`/);
+	const notion = JSON.parse(read('config.json')).sources.notion.properties;
+	for (const k of ['branch', 'pullRequest', 'qaVerdict', 'evidence']) assert.ok(notion[k], `notion property ${k}`);
+});

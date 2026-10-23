@@ -38,7 +38,11 @@
 				"status": "Status",
 				"labels": "Tags",
 				"type": "Type",
-				"id": "ID"
+				"id": "ID",
+				"branch": "Branch",
+				"pullRequest": "Pull request",
+				"evidence": "Evidence",
+				"qaVerdict": "QA verdict"
 			},
 			"states": {
 				"ready": ["Ready"],
@@ -131,9 +135,11 @@
 		"user": null,
 		"setup": [],
 		"processCheck": null,
+		"readyTimeout": 900,
 		"pingUrl": null,
 		"webBaseUrl": null,
-		"submodules": []
+		"submodules": [],
+		"preCommit": null
 	},
 	"mobile": {
 		"appDir": null,

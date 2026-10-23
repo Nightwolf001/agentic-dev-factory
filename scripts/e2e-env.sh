@@ -21,7 +21,6 @@ set -uo pipefail
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 STATE_DIR="${DF_STATE_DIR:-$HOME/.dev-factory}"
 MAX_STACKS="${DF_MAX_STACKS:-2}"
-READY_TIMEOUT="${DF_READY_TIMEOUT:-900}"
 
 # one value of the environment block; empty when unset
 cfg() { node "$SELF_DIR/config.mjs" get "environment.$1" 2>/dev/null || true; }
@@ -32,6 +31,8 @@ SERVICE_USER="$(cfg user)"
 PING_URL="${DF_PING_URL:-$(cfg pingUrl)}"
 WEB_BASE_URL="$(cfg webBaseUrl)"
 PROCESS_CHECK="$(cfg processCheck)"
+# seconds to wait for a fresh stack to answer: DF_READY_TIMEOUT, else environment.readyTimeout, else 900 (a first start installs dependencies)
+READY_TIMEOUT="${DF_READY_TIMEOUT:-$(cfg readyTimeout)}"; READY_TIMEOUT="${READY_TIMEOUT:-900}"
 # `exec -T [-u user] service`
 exec_args() { if [ -n "$SERVICE_USER" ]; then echo "exec -T -u $SERVICE_USER $SERVICE"; else echo "exec -T $SERVICE"; fi; }
 
@@ -168,6 +169,19 @@ do_up_none() {
   log "no environment configured (environment.type is none): tests run on the host"
 }
 
+# Published host ports of the compose file that something already listens on, one per line. A stack that publishes fixed
+# ports (3000, 1337...) cannot start next to a developer's own copy of it, and compose says so only after a long build.
+busy_ports() {
+  docker compose -f "$COMPOSE_FILE" config --format json 2>/dev/null | node -e '
+    let t="";process.stdin.on("data",d=>t+=d).on("end",async()=>{
+      const ports=[];
+      try{for(const s of Object.values(JSON.parse(t).services||{}))for(const p of s.ports||[]){
+        const n=Number(typeof p==="object"?p.published:String(p).split(":").slice(-2)[0]);if(n)ports.push(n)}}catch(e){}
+      const net=require("net");
+      for(const n of [...new Set(ports)])await new Promise(r=>{const s=net.createServer();
+        s.once("error",e=>{if(e.code==="EADDRINUSE")console.log(n);r()});s.once("listening",()=>s.close(()=>r()));s.listen(n)})})'
+}
+
 do_up() {
   [ -n "$KEY" ] || die "up needs --key KEY"
   [ "$ENV_TYPE" = none ] && { do_up_none; return 0; }
@@ -189,6 +203,11 @@ do_up() {
   local live_count; live_count="$(live_projects | grep -c . || true)"
   [ "$live_count" -ge "$MAX_STACKS" ] && refuse "$live_count environments already live (cap $MAX_STACKS)"
   if [ "$PORTS" = canonical ]; then
+    local busy p who=""; busy="$(busy_ports | tr '\n' ' ')"
+    if [ -n "$busy" ]; then
+      for p in $busy; do who="$who $p$(lsof -nP -iTCP:"$p" -sTCP:LISTEN 2>/dev/null | awk 'NR==2{printf " (%s, pid %s)", $1, $2}')"; done
+      refuse "host port(s) already in use:$who. Something else is running this stack's ports (your own docker compose or dev servers): stop it, then retry"
+    fi
     mkdir -p "$STATE_DIR"
     mkdir "$STATE_DIR/ports.lock" 2>/dev/null || {
       local holder; holder="$(cat "$STATE_DIR/ports.lock/owner" 2>/dev/null || true)"
