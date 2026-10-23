@@ -14,6 +14,8 @@ The state label names live in `sources.github.states`. Run `node "${CLAUDE_PLUGI
 
 Dependencies: a `Blocked by: #12, #13` line (or `GH-12`) in the issue body. A blocker that is closed counts as done; one that cannot be read counts as open.
 
+LINK: one issue comment `[dev-factory] links: branch <url>, PR <url>, QA <verdict>`. The screenshots are attached to the PR itself, so the issue only points at it.
+
 Plans: `/dev-factory:plan` creates one issue per slice with `gh issue create`, blockers first, and links each to its parent with a `Parent: GH-<n>` line (a parent issue is a tracking issue; the factory builds the slices, not the parent).
 
 Link PRs to issues with `Closes #<n>` in the PR body only when the repository wants merges to close issues; the factory moves state labels itself and closes the issue when a person merges.

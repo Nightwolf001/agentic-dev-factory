@@ -132,7 +132,7 @@ Put the snippet in `dev-factory.config.json` at the repository root (or let `/de
 
 Run `dev-factory tasks init` once to create the labels. An open issue with the `dev-factory` label is `ready`; progress is a label (`df:in-progress`, `df:in-review`, `df:reviewed`); a closed issue is `done`. `repo` defaults to the current repository and `assignee` is optional (leave it out and any labelled issue qualifies). Keys are `GH-<issue number>`.
 
-**`notion`**: a database with a title (`Name`), a `Status` property (status or select) whose options include the five states, a `Tags` multi-select, an optional `Type` select, a unique-ID property so every page has a key like `TASK-12`, and optionally a `Blocked by` relation to the same database.
+**`notion`**: a database with a title (`Name`), a `Status` property (status or select) whose options include the five states, a `Tags` multi-select, an optional `Type` select, a unique-ID property so every page has a key like `TASK-12`, and optionally a `Blocked by` relation to the same database. To show the work on the task itself, add `Branch` and `Pull request` (URL), `QA verdict` (select: pass, fail, not applicable) and `Evidence` (files); the factory fills them in when it opens the PR, and a gallery view with `Evidence` as the cover shows the screenshots. Property names are `sources.notion.properties`.
 
 ```json
 {
@@ -263,7 +263,7 @@ OAuth servers need one login that no script can do for you: start `claude` and r
 3. A worktree and branch (`<type>/<KEY>-<slug>`) are created, and `scripts/e2e-env.sh up` starts the environment, if the repository has one.
 4. The `factory-builder` agent works test-first, then QA walks each case and records it with `bin/qa.mjs`.
 5. Two fresh-context reviewers run in order: **spec** (does it do what the task asks, nothing more) and **standards** (does it follow the repository's rules and is it safe). Critical or High findings send the builder back; QA runs again and review restarts, at most `caps.maxFixRounds` times. Triggered `data`, `infra` and `security` steps follow.
-6. The builder ships: pushes the branch, opens the draft PR with the evidence attached. The pass re-verifies the QA manifest and both review records against the PR head, comments on the task, sets it `inReview`, and tears the environment down.
+6. The builder ships: pushes the branch, opens the draft PR with the evidence attached. The pass then records where the work is on the task (`LINK`): the branch and PR links, the QA verdict and the screenshots, as properties and files in Notion, remote links in Jira, a comment on a GitHub issue, or frontmatter and a copy of the images in the local task files. The pass re-verifies the QA manifest and both review records against the PR head, comments on the task, sets it `inReview`, and tears the environment down.
 7. You review the PR. A change request (not a plain comment) from someone other than the PR author sends the task back for a fix pass; an approval or merge sets it `reviewed`. After that, QA, release and anything else belong to people.
 
 When the factory cannot continue it labels the task `factory-blocked`, comments the reason and the decision it needs, and returns it to `ready` (the label keeps it out of the queue). Answer in a comment and remove the label. If `caps.breakerThreshold` tasks were blocked within `caps.breakerWindowHours` the pass stops claiming until you look.

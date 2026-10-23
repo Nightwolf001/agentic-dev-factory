@@ -138,6 +138,24 @@ export function localSource(cfg, { root = process.cwd(), env = process.env, now 
 			d.meta.updated = now().toISOString();
 			write(d.file, d);
 		},
+		// Records where the work is: the branch and PR links, the QA verdict, and copies of the evidence images next to the task files.
+		async link(key, { branch, pr, qaVerdict, evidence = [] }) {
+			const d = read(key);
+			if (branch) d.meta.branch = branch;
+			if (pr) d.meta.pr = pr;
+			if (qaVerdict) d.meta.qaVerdict = qaVerdict;
+			if (evidence.length) {
+				const out = path.join(dir, 'evidence', key);
+				fs.mkdirSync(out, { recursive: true });
+				const names = evidence.map((f) => {
+					fs.copyFileSync(f, path.join(out, path.basename(f)));
+					return `evidence/${key}/${path.basename(f)}`;
+				});
+				d.meta.evidence = names;
+			}
+			d.meta.updated = now().toISOString();
+			write(d.file, d);
+		},
 		async addLabel(key, name) {
 			const d = read(key);
 			d.meta.labels = [...new Set([...asList(d.meta.labels), name])];

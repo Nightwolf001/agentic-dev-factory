@@ -370,7 +370,7 @@ export function evaluate(command, ctx = {}) {
 		else if (cmd === 'gh') reason = denyGh(args, ctx, seg);
 		if (!reason && /\b(curl|wget|http|https)\b.*(atlassian\.net|api\.notion\.com|notion\.so)/.test(seg))
 			reason = 'direct task-tracker access is reserved for the scheduler';
-		if (!reason && FACTORY_ROLES.has(ctx.role) && /^node\s+\S*tasks\.mjs"?\s+(set-state|comment|label|block|create|init)\b/.test(seg))
+		if (!reason && FACTORY_ROLES.has(ctx.role) && /^node\s+\S*tasks\.mjs"?\s+(set-state|comment|label|link|block|create|init)\b/.test(seg))
 			reason = 'the task tracker is written only by the scheduler, not by a factory agent (tasks.mjs ' + seg.split(/\s+/)[2] + ')';
 		if (!reason && /^docker\s+(system|volume|image|builder|network|container)\s+prune/.test(body)) reason = 'docker prune is not allowed';
 		if (

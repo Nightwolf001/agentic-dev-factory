@@ -636,3 +636,9 @@ test('local task files and the installed plugin are not edited by a ticket', () 
 	assert.equal(e('.factory/qa/cases/APP-2/login.yaml').deny, true, "another task's cases");
 	assert.equal(evaluate('echo x > .factory/tasks/TASK-1-x.md', { role: 'builder', branch: 'task/APP-1-x' }).deny, true);
 });
+
+test('tasks.mjs link is refused to a factory agent like every other tracker write', () => {
+	const link = `node "${PLUGIN_ROOT}/scripts/tasks.mjs" link TASK-1 --pr https://x/pull/1`;
+	assert.equal(evaluate(link, { role: 'builder', branch: 'task/APP-1-x' }).deny, true);
+	assert.equal(evaluate(link, { branch: 'task/APP-1-x' }).deny, false, 'the scheduler may');
+});

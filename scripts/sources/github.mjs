@@ -111,6 +111,12 @@ export function githubSource(cfg, { env = process.env, gh = defaultGh } = {}) {
 		async comment(key, text) {
 			gh(['issue', 'comment', numberOf(key), '--body-file', '-', ...repoArgs], text);
 		},
+		// The PR already carries the screenshots; the issue gets one comment that points at the branch and the PR.
+		async link(key, { branch, pr, qaVerdict }) {
+			const parts = [branch && `branch ${branch}`, pr && `PR ${pr}`, qaVerdict && `QA ${qaVerdict}`].filter(Boolean);
+			if (!parts.length) return;
+			gh(['issue', 'comment', numberOf(key), '--body-file', '-', ...repoArgs], `[dev-factory] links: ${parts.join(', ')}`);
+		},
 		async addLabel(key, name) {
 			gh(['label', 'create', name, '--force', ...repoArgs]);
 			gh(['issue', 'edit', numberOf(key), '--add-label', name, ...repoArgs]);
