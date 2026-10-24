@@ -339,6 +339,51 @@ function denyForReadOnly(seg, extra = []) {
 		: 'a reviewer may only read the diff and record its review (git diff/log/show, grep, ls, cat, qa.mjs review)';
 }
 
+// Stopping things other than the run's own. The cleanup script tears down exactly what the run started; anything beyond that
+// (killing other processes, stopping other containers, shutting simulators down) is the takeover toggle's, and even then a
+// few targets stay refused: pid 0/1/-1, the parent, the shell, Claude, the terminal, the scheduler's own job, mass docker
+// commands and wiping devices.
+const PROTECTED_NAMES =
+	/(^|[\s/'"])(-?(zsh|bash|fish|sh)|claude|anthropic|launchd|sshd|WindowServer|loginwindow|Finder|Dock|SystemUIServer|Terminal|iTerm2?|tmux|screen|node)(['"]|$)/i;
+const DOCKER_STOPS = new Set(['stop', 'kill', 'rm', 'restart', 'pause', 'rmi']);
+
+function denyProcessControl(seg, cmd, args, ctx) {
+	const tokens = args.filter((a) => !a.startsWith('-'));
+	const kill = (hard, soft) => (hard ? `${hard} (never allowed)` : ctx.takeover ? null : soft);
+	const SOFT =
+		'stopping what the run did not start is off: tear down the run with scripts/cleanup.mjs, or ask the owner to set cleanup.takeover for this repository';
+	if (cmd === 'kill') {
+		if (/^%/.test(tokens[0] ?? '') && tokens.length === 1) return null; // a job of this shell
+		const hard = args.some((a) => /^(0|1|-1|-0)$/.test(a) || /\$(\$|PPID|\{PPID\})/.test(a))
+			? 'kill of pid 0/1/-1, the parent or the shell'
+			: null;
+		return kill(hard, SOFT);
+	}
+	if (cmd === 'pkill' || cmd === 'killall') {
+		const hard =
+			args.includes('-u') || args.includes('-U') || args.includes('-g') || tokens.some((t) => PROTECTED_NAMES.test(t) || /^\.?\*?$/.test(t))
+				? `${cmd} of a user, a group, a shell, Claude or the terminal`
+				: null;
+		return kill(hard, SOFT);
+	}
+	if (cmd === 'docker') {
+		const sub = tokens[0] === 'container' ? tokens[1] : tokens[0];
+		if (!DOCKER_STOPS.has(sub) || tokens[0] === 'compose') return null;
+		const hard = /\$\(|`|\bxargs\b/.test(seg) ? 'docker stop/kill/rm of everything at once' : null;
+		return kill(hard, SOFT);
+	}
+	if (cmd === 'xcrun' && tokens[0] === 'simctl') {
+		if (['erase', 'delete', 'uninstall'].includes(tokens[1]))
+			return 'simctl erase/delete/uninstall destroys a device or its data (never allowed)';
+		if (tokens[1] === 'shutdown') return kill(null, SOFT);
+		return null;
+	}
+	if (cmd === 'launchctl' && ['bootout', 'unload', 'remove', 'kill', 'disable'].includes(tokens[0])) {
+		return kill(/dev-?factory/i.test(seg) ? "stopping the factory's own scheduler job" : null, SOFT);
+	}
+	return null;
+}
+
 export function evaluate(command, ctx = {}) {
 	const readOnly = READ_ONLY_ROLES.has(ctx.role);
 	// leading VAR=value words are stripped from each segment, so the identity variables are looked for in the whole command
@@ -347,6 +392,9 @@ export function evaluate(command, ctx = {}) {
 			deny: true,
 			reason: 'dev-factory guard: commits are made as the git user of this machine: GIT_AUTHOR_* and GIT_COMMITTER_* are not allowed',
 		};
+	// the toggle is the owner's: an agent does not switch it on for itself on the command line
+	if (FACTORY_ROLES.has(ctx.role) && !ctx.takeover && (/\bDF_TAKEOVER\b/.test(command) || /(^|\s)--takeover\b/.test(command)))
+		return { deny: true, reason: 'dev-factory guard: takeover is switched on by the owner (cleanup.takeover), not by an agent' };
 	for (const seg of segments(command)) {
 		const { cmd, args, tokens } = invocation(seg);
 		const deny = (why) => ({ deny: true, reason: `dev-factory guard: ${why} [${seg.slice(0, 80)}]` });
@@ -373,6 +421,7 @@ export function evaluate(command, ctx = {}) {
 		if (!reason && FACTORY_ROLES.has(ctx.role) && /^node\s+\S*tasks\.mjs"?\s+(set-state|comment|label|link|block|create|init)\b/.test(seg))
 			reason = 'the task tracker is written only by the scheduler, not by a factory agent (tasks.mjs ' + seg.split(/\s+/)[2] + ')';
 		if (!reason && /^docker\s+(system|volume|image|builder|network|container)\s+prune/.test(body)) reason = 'docker prune is not allowed';
+		if (!reason && FACTORY_ROLES.has(ctx.role)) reason = denyProcessControl(seg, cmd, args, ctx);
 		if (
 			!reason &&
 			ctx.containerOnly &&
@@ -389,7 +438,7 @@ export function evaluate(command, ctx = {}) {
 
 // Shell writes to the factory directory (its own QA cases aside), run state, evidence and review records, hook wiring and husky are refused.
 const PROTECTED_BASH =
-	/\.factory\/tasks\/|\.dev-factory\/(review|qa|evidence|debug)(\/|\s|$)|\.dev-factory\/(run|env)\.json|(^|[\s/'"])dev-factory\/(?!qa\/cases\/)|\.dev-factory\/compose\.override\.yml|\.claude\/|\.github\/workflows|\.husky\//;
+	/\.factory\/tasks\/|\.dev-factory\/(review|qa|evidence|debug)(\/|\s|$)|\.dev-factory\/(run|env)\.json|(^|[\s/'"])dev-factory\/(?!qa\/cases\/)|\.dev-factory\/compose\.override\.yml|(^|[\s/'"])dev-factory\.config\.json|\.claude\/|\.github\/workflows|\.husky\//;
 const WRITE_LIKE = /(^|[^2&0-9])>{1,2}\s*[^&\s]|\btee\b|\b(cp|mv|rm|ln|truncate|dd|install)\b|\bsed\s+-i|\bperl\s+-i/;
 
 const FORBIDDEN = new RegExp(['co[-_ ]?' + 'work', 'co[-_ ]?' + 'lab', 'night[-_ ]?' + 'shift', 'day[-_ ]?' + 'shift'].join('|'), 'i');
@@ -444,7 +493,7 @@ export function evaluateEdit({ filePath, text = '', root, active = false, run = 
 	if (/(^|\/)\.claude\/plugins\//.test(filePath))
 		return { deny: true, reason: 'dev-factory guard: the installed plugin is not edited by a ticket' };
 	const protectedPath =
-		/^(\.factory\/(tasks|qa\/cases)\/|dev-factory\/|\.claude\/|\.github\/|\.husky\/|\.dev-factory\/(review|qa|evidence|debug)\/|\.dev-factory\/(run|env)\.json|\.dev-factory\/compose\.override\.yml)/.test(
+		/^(dev-factory\.config\.json$|\.factory\/(tasks|qa\/cases)\/|dev-factory\/|\.claude\/|\.github\/|\.husky\/|\.dev-factory\/(review|qa|evidence|debug)\/|\.dev-factory\/(run|env)\.json|\.dev-factory\/compose\.override\.yml)/.test(
 			rel,
 		);
 	if (protectedPath && !ownCase) {

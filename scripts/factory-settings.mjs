@@ -12,6 +12,9 @@ import { allowRules, catalog, claudeListing, externalServers, readProject } from
 
 const BASE = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'settings.factory.json');
 
+// what the cleanup script and an agent under takeover run to see and stop host processes
+export const TAKEOVER_EXCLUDED = ['kill *', 'pkill *', 'killall *', 'lsof *', 'ps *', 'pgrep *', 'node *cleanup.mjs*', 'dev-factory cleanup*'];
+
 // `external` are catalog servers Claude has from elsewhere (user scope, a claude.ai connector): the pass may use them too.
 export function build({
 	cfg = load(),
@@ -33,6 +36,9 @@ export function build({
 	const sandboxOn = get('sandbox.enabled', { config: cfg });
 	if (typeof sandboxOn === 'boolean') out.sandbox.enabled = sandboxOn;
 	out.sandbox.network.allowedDomains = [...domains];
+	// takeover: stopping a process or a session outside the sandbox needs those commands to run outside it (the guard still refuses the protected targets)
+	if (get('cleanup.takeover', { config: cfg }) === true)
+		out.sandbox.excludedCommands = [...new Set([...(out.sandbox.excludedCommands ?? []), ...TAKEOVER_EXCLUDED])];
 	out.permissions.allow = [...new Set([...out.permissions.allow, ...allowRules(mcpFile, external)])];
 	return out;
 }

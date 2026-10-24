@@ -46,4 +46,4 @@ Read the result from files and GitHub, not the builder's narrative: `ship.done` 
 
 Tell the person the PR URL, the QA verdict, blockers, and for `--pr` which feedback items were fixed, with the commit. The evidence comment (QA run, verdict, screenshots) is already on the PR from the ship phase; confirm it landed (`gh pr view <N> --json comments`) and report the link. Offer to post the fixed-items summary as one more PR comment (scrub it first with `node "${CLAUDE_PLUGIN_ROOT}/bin/qa.mjs" scrub --file <file>`); never post anything else, resolve threads, mark ready or merge on your own. No task source is touched.
 
-Finally `bash "${CLAUDE_PLUGIN_ROOT}/scripts/e2e-env.sh" down --worktree <worktree>`.
+Finally, whatever the outcome, tear down with `node "${CLAUDE_PLUGIN_ROOT}/scripts/cleanup.mjs" --worktree <worktree>` (stack, dev server, simulator this run booted, Playwright and Maestro sessions) and report anything it lists under `left`.

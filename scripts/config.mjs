@@ -36,6 +36,7 @@ export const ENV_OVERRIDES = {
 	'caps.frontierRepeatHours': 'DF_FRONTIER_REPEAT_HOURS',
 	'improvement.factoryRepo': 'DF_FACTORY_REPO',
 	'runtime.scheduler': 'DF_SCHEDULER',
+	'cleanup.takeover': 'DF_TAKEOVER',
 };
 
 // Keys every source needs; the active source's own keys are added by requiredFor().
@@ -153,6 +154,7 @@ export function get(dotted, { config = load(), env = process.env } = {}) {
 				.split(',')
 				.map((s) => s.trim())
 				.filter(Boolean);
+		if (typeof base === 'boolean') return /^(1|true|yes|on)$/i.test(raw);
 		return typeof base === 'number' ? Number(raw) : raw;
 	}
 	return dig(config, dotted);
@@ -205,6 +207,11 @@ export function validate(config = load()) {
 		problems.push('improvement.factoryRepo must be a folder path or null');
 	const attribution = dig(config, 'git.agentAttribution');
 	if (attribution !== undefined && typeof attribution !== 'boolean') problems.push('git.agentAttribution must be true or false');
+	const takeover = dig(config, 'cleanup.takeover');
+	if (takeover !== undefined && typeof takeover !== 'boolean') problems.push('cleanup.takeover must be true or false');
+	const cports = dig(config, 'cleanup.ports');
+	if (cports !== undefined && !(Array.isArray(cports) && cports.every((p) => Number.isInteger(p) && p > 0 && p < 65536)))
+		problems.push('cleanup.ports must be a list of port numbers');
 	const preCommit = dig(config, 'environment.preCommit');
 	if (preCommit != null && (typeof preCommit !== 'string' || !preCommit)) problems.push('environment.preCommit must be a command or null');
 	const type = dig(config, 'environment.type');

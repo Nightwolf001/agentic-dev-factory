@@ -52,9 +52,9 @@ do_up() {
   [ -n "$(cfg appDir)" ] || die "mobile.appDir is not configured, the device lane is disabled"
   [ -d "$APP" ] || die "missing $APP"
 
-  local line udid state; line="$(pick_device)" || die "$line"; udid="${line% *}"; state="${line#* }"
+  local line udid state booted=false; line="$(pick_device)" || die "$line"; udid="${line% *}"; state="${line#* }"
   if [ "$state" != "Booted" ]; then
-    log "booting $udid"; xcrun simctl boot "$udid" >&2 || die "simulator boot failed"
+    log "booting $udid"; xcrun simctl boot "$udid" >&2 || die "simulator boot failed"; booted=true   # ours: cleanup shuts it down again
   fi
   xcrun simctl bootstatus "$udid" -b >&2 || die "simulator did not finish booting"
 
@@ -89,7 +89,7 @@ do_up() {
 
   log "warming the JS bundle"
   curl -sf -m 900 -o /dev/null "http://localhost:$METRO_PORT/index.bundle?platform=ios&dev=true&minify=false" || die "bundle did not build"
-  json_merge "{\"device\":{\"udid\":\"$udid\",\"profile\":\"$(device_name)\",\"metroPort\":$METRO_PORT,\"readyAt\":\"$(date -u +%FT%TZ)\"}}"
+  json_merge "{\"device\":{\"udid\":\"$udid\",\"profile\":\"$(device_name)\",\"bootedByFactory\":$booted,\"metroPort\":$METRO_PORT,\"readyAt\":\"$(date -u +%FT%TZ)\"}}"
   log "ready: device $udid, Metro $METRO_PORT"
 }
 

@@ -2,6 +2,7 @@
 // in the session's cwd. Elsewhere it allows everything, so interactive sessions are unaffected.
 import { get } from './config.mjs';
 import { evaluate } from './guard-lib.mjs';
+import { takeoverOn } from './takeover.mjs';
 import { resolveRun } from './run-context.mjs';
 
 let input = '';
@@ -32,7 +33,14 @@ process.stdin
 		} catch {
 			/* no readable config: keep the strict reading */
 		}
-		const verdict = evaluate(command, { branch: run?.branch, role: run?.role, containerOnly, service: environment.service, noAttribution });
+		const verdict = evaluate(command, {
+			branch: run?.branch,
+			role: run?.role,
+			containerOnly,
+			service: environment.service,
+			noAttribution,
+			takeover: takeoverOn(),
+		});
 		if (verdict.deny) {
 			process.stderr.write(verdict.reason + '\n');
 			process.exit(2);

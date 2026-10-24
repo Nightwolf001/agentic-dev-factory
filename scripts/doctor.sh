@@ -60,6 +60,8 @@ case "$SOURCE" in
   *) bad "tasks.source '$SOURCE' is not one of local, github, notion, jira" ;;
 esac
 
+[ "$(cfg cleanup.takeover)" = true ] && warn "cleanup.takeover is on: agents may stop any process, container or simulator that blocks a run (never the shell, Claude or the terminal)"
+
 if [ "$CI" = 0 ]; then
   if [ "$(cfg mobile.appDir)" != "" ]; then
     command -v xcrun >/dev/null && xcrun simctl list runtimes 2>/dev/null | grep -q iOS && ok "iOS simulator runtime" || warn "no iOS simulator runtime (mobile lane disabled)"
