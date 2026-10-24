@@ -272,43 +272,260 @@ When the factory cannot continue it labels the task `factory-blocked`, comments 
 
 ## Configuration
 
-Defaults ship in `config.json` and name no organisation, site or project. A repository overrides only what differs in a **`dev-factory.config.json`** at its root (merged key by key; arrays replace). `DF_CONFIG` names a different file, and any `DF_*` variable overrides a scalar on one machine.
+You change how the factory behaves with settings, not code. Every setting has a default that works with no file at all; you only write down what differs for your repository.
+
+### How to change a setting
+
+Settings are layered. Later layers win:
+
+| Order | Layer                      | Where                                                                             | Use it for                                                                                     |
+| ----- | -------------------------- | --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| 1     | **Plugin defaults**        | `config.json` inside the plugin                                                   | Nothing: don't edit it. An update replaces it.                                                 |
+| 2     | **Your repository's file** | `dev-factory.config.json` at the repository root                                  | Everything that is true for this project and its team. Commit it.                              |
+| 3     | **A different file**       | the path in `DF_CONFIG`                                                           | A per-machine file, or tests. Replaces layer 2.                                                |
+| 4     | **Environment variable**   | the variables in the table below, in your shell or in `~/.dev-factory/.env.local` | A value that differs on one machine, such as a model, a budget or the tracker token's project. |
+
+**Merge rules for layer 2.** Objects merge key by key, so `{"git": {"baseBranch": "develop"}}` changes one value and keeps the rest of `git`. Arrays and plain values replace the default whole: `pr.areaLabels` or `environment.setup` in your file is the complete list. `null` is a real value (`git.baseBranch: null` means "the repository's default branch").
+
+```bash
+dev-factory config get debug                  # what is in effect now, defaults and your file merged
+dev-factory config get source.states.inProgress   # `source.` reads from the active task source
+dev-factory config validate                   # lists every problem; also part of `dev-factory doctor`
+```
+
+`/dev-factory:setup` writes the file for you. Edits take effect on the next command or pass; a scheduled pass reads the file fresh each time, and a cloud run reads it from the checkout. A mistake is caught by `dev-factory config validate` before it can do harm (wrong source name, missing Jira site, a negative number, an invalid scrub pattern).
+
+#### Variables that override a setting
+
+| Setting                     | Variable                   |
+| --------------------------- | -------------------------- |
+| `caps.maxOpenPrs`           | `DF_MAX_OPEN_PRS`          |
+| `caps.maxConcurrent`        | `DF_MAX_CONCURRENT`        |
+| `caps.maxBudgetUsd`         | `DF_MAX_BUDGET_USD`        |
+| `caps.maxResumes`           | `DF_MAX_RESUMES`           |
+| `caps.frontierRepeatHours`  | `DF_FRONTIER_REPEAT_HOURS` |
+| `tasks.source`              | `DF_TASK_SOURCE`           |
+| `tasks.label`               | `DF_TASK_LABEL`            |
+| `sources.github.repo`       | `DF_GITHUB_REPO`           |
+| `sources.notion.databaseId` | `DF_NOTION_DATABASE_ID`    |
+| `sources.jira.cloudId`      | `DF_JIRA_CLOUD_ID`         |
+| `sources.jira.projects`     | `DF_JIRA_PROJECTS`         |
+| `models.orchestrator`       | `DF_MODEL`                 |
+| `models.builder`            | `DF_BUILDER_MODEL`         |
+| `models.reviewer`           | `DF_REVIEWER_MODEL`        |
+| `models.debugger`           | `DF_DEBUGGER_MODEL`        |
+| `models.effort`             | `DF_EFFORT`                |
+| `mobile.metroPort`          | `DF_METRO_PORT`            |
+| `runtime.scheduler`         | `DF_SCHEDULER`             |
+| `improvement.factoryRepo`   | `DF_FACTORY_REPO`          |
+
+A list setting such as `DF_JIRA_PROJECTS` takes a comma-separated value. Other variables are not settings but switches for one run: `DF_RUNTIME`, `DF_REPO`, `DF_STATE_DIR`, `DF_LOG`, `DF_CONFIG`, `DF_PREFLIGHT=off`, `DF_READY_TIMEOUT`, `DF_PLUGIN_DIR`, `DF_MCP_FILE`.
+
+#### Common changes
 
 ```json
 {
-	"tasks": { "source": "github" },
-	"git": { "baseBranch": "main" },
-	"pr": { "areaLabels": [{ "path": "services/api", "label": "api" }] },
-	"environment": {
-		"type": "compose",
-		"composeFile": ".devcontainer/docker-compose.yml",
-		"service": "app",
-		"setup": ["npm ci"],
-		"pingUrl": "http://localhost:3000/health"
-	}
+	"debug": { "maxDebugRounds": 3, "debugMinutes": 30 },
+	"caps": { "maxFixRounds": 3, "maxBudgetUsd": 60, "maxOpenPrs": 5 },
+	"models": { "builder": "opus", "reviewer": "sonnet", "effort": "high" },
+	"git": { "baseBranch": "develop", "branchTypes": { "bug": "hotfix", "story": "feature" } },
+	"tasks": { "label": "ai-ready", "blockedLabel": "ai-parked" },
+	"pr": {
+		"areaLabels": [
+			{ "path": "services/api", "label": "api" },
+			{ "path": "clients/", "label": "frontend" }
+		]
+	},
+	"review": { "specialistAxes": { "data": ["**/migrations/**"], "security": ["**/auth/**"] } },
+	"environment": { "readyTimeout": 1800, "preCommit": "npx lint-staged" }
 }
 ```
 
-`/dev-factory:setup` writes this for you. `dev-factory config validate` checks it; `get source.states.inProgress` reads from the active source.
+| You want                                   | Change                                                                                     |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------ |
+| A bigger debug or fix budget               | `debug.maxDebugRounds`, `debug.debugMinutes`, `caps.maxFixRounds`, `caps.maxQaFixAttempts` |
+| A different spend or concurrency limit     | `caps.maxBudgetUsd` (per scheduled session), `caps.maxOpenPrs`, `caps.maxConcurrent`       |
+| A different model for one role             | `models.<role>`; raise or lower thinking with `models.effort` and `models.efforts`         |
+| Another tracker, or other status names     | `tasks.source`, then `sources.<name>` (the `states` mapping carries your workflow)         |
+| A different release label or parking label | `tasks.label`, `tasks.blockedLabel`                                                        |
+| Build on another branch                    | `git.baseBranch`, or a `Base branch:` line in one task                                     |
+| Different branch prefixes or PR labels     | `git.branchTypes`, `pr.sizeLabels`, `pr.areaLabels`, `pr.categoryByBranchType`             |
+| Which paths need extra reviews             | `review.specialistAxes`                                                                    |
+| Which paths need a browser or device walk  | `dev-factory.qa.yaml` (same shape as `qa/profiles.yaml`)                                   |
+| A stack per task                           | `environment.*` (see [Environments](#environments))                                        |
+| Where and how it is scheduled              | `runtime.scheduler`; `dev-factory scheduler on` and `off`                                  |
 
-| Key                                                         | Meaning                                                                                                                                                                                                            |
-| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `tasks.source`, `tasks.label`, `tasks.blockedLabel`         | The tracker, the label that marks a task as the factory's, the label that parks one                                                                                                                                |
-| `tasks.bugTypes`, `tasks.placeholderKey`                    | Task types that count as bugs; the key used for `/dev-factory:quick` branches and PR titles (set it to one your CI accepts)                                                                                        |
-| `sources.<name>.*`                                          | Per-tracker settings and the mapping from `ready`, `inProgress`, `inReview`, `reviewed`, `done` to its own status names                                                                                            |
-| `git.agentAttribution`                                      | `false` (default): every commit and PR is the person's own; the guard refuses `Co-Authored-By`, `--author` and "generated with" text, and `qa.mjs verify` refuses a branch that has them                           |
-| `runtime.mode`, `runtime.scheduler`                         | `auto` detects local or cloud; the scheduler is `auto`, `launchd`, `github-actions`, `routine` or `none`                                                                                                           |
-| `git.worktreeRoot`                                          | Folder worktrees are created in (default `../.worktrees`)                                                                                                                                                          |
-| `git.baseBranch`, `git.branchTypes`                         | Branch to build on (`null` = the repository's default branch); task type to branch prefix, matched case-insensitively                                                                                              |
-| `pr.sizeLabels`, `pr.areaLabels`, `pr.categoryByBranchType` | PR labels. Area labels are path prefix to label, none by default                                                                                                                                                   |
-| `environment.*`                                             | `type` `none` (tests run on the host, the default) or `compose`, with `readyTimeout` and `preCommit`; see [Environments](#environments)                                                                            |
-| `mobile.*`                                                  | `appDir` enables the device lane; `install`, `pods`, `start`, `build`, `nativeInputs` are the commands it runs                                                                                                     |
-| `caps.*`, `models.*`                                        | Concurrency, open PRs, budget, stall and resume limits; model and effort per role                                                                                                                                  |
-| `environments.<name>`                                       | Optional: Sentry org/projects and Axiom datasets the debugger may read in that environment                                                                                                                         |
-| `telemetry.*`, `debug.*`, `validation.*`                    | Result caps and scrub patterns; debug budget; wait before post-merge validation                                                                                                                                    |
-| `improvement.*`                                             | Label, optional project, per-scan caps, and `factoryRepo`: a local checkout of the plugin repository so the scan can change the factory itself (see [Improving the factory itself](#improving-the-factory-itself)) |
-| `review.specialistAxes`                                     | Globs that trigger the extra `data`, `infra` and `security` review steps                                                                                                                                           |
-| `sandbox.enabled`, `sandbox.extraDomains`                   | `true`/`false` overrides the base sandbox switch of the scheduled pass (`null` keeps it); extra hosts it may reach                                                                                                 |
+What config cannot change: the guards, the hooks, the stop gate, the base sandbox and permissions, and the rule that a person merges. Those live in the plugin's code on purpose, so a repository's file cannot loosen them. To change one, change the plugin itself (see [Improving the factory itself](#improving-the-factory-itself)).
+
+### Complete reference
+
+Every setting, with its default. `see config.json` means the default is a longer list or map.
+
+#### Tasks
+
+| Key                    | Default              | What it does                                                                                                                    |
+| ---------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `tasks.source`         | `"local"`            | Where tasks live: `local`, `github`, `notion` or `jira`.                                                                        |
+| `tasks.label`          | `"dev-factory"`      | The label that marks a task as the factory's. A task without it is invisible to the factory.                                    |
+| `tasks.blockedLabel`   | `"factory-blocked"`  | The label the factory adds to park a task it cannot continue; a person removes it.                                              |
+| `tasks.fixComment`     | `"/dev-factory fix"` | A comment with this text asks for a fix pass on an open PR.                                                                     |
+| `tasks.placeholderKey` | `"TASK-000"`         | The key `/dev-factory:quick` puts in branch names and PR titles when there is no task. Set it to one your CI accepts.           |
+| `tasks.bugTypes`       | `["bug"]`            | Task types (case-insensitive) that count as bugs: triaged by the debugger first, and the stop gate wants a recorded root cause. |
+
+#### Task sources
+
+| Key                          | Default            | What it does                                                                                                               |
+| ---------------------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------- |
+| `sources.local.dir`          | `".factory/tasks"` | Folder of task files, relative to the repository.                                                                          |
+| `sources.local.keyPrefix`    | `"TASK"`           | Prefix of new local task keys (`TASK-3`).                                                                                  |
+| `sources.local.states`       | `see config.json`  | Status words in the task files for each factory state.                                                                     |
+| `sources.github.repo`        | `null`             | `owner/name` of the issues repository; `null` is the current repository.                                                   |
+| `sources.github.assignee`    | `null`             | Only issues assigned to this user qualify (for example `@me`); `null` means any labelled issue.                            |
+| `sources.github.keyPrefix`   | `"GH"`             | Prefix of GitHub task keys (`GH-12`).                                                                                      |
+| `sources.github.states`      | `see config.json`  | The labels that mean in progress, in review and reviewed; closed means done.                                               |
+| `sources.notion.databaseId`  | `null`             | The task database. Required for Notion.                                                                                    |
+| `sources.notion.properties`  | `see config.json`  | The database's property names: title, status, labels, type, id, and the optional branch, pullRequest, evidence, qaVerdict. |
+| `sources.notion.states`      | `see config.json`  | Status names for each factory state.                                                                                       |
+| `sources.jira.site`          | `null`             | Your Jira host, for example `yourteam.atlassian.net`. Required for Jira.                                                   |
+| `sources.jira.cloudId`       | `null`             | The Atlassian cloud id. Required for Jira.                                                                                 |
+| `sources.jira.projects`      | `[]`               | Project keys to watch (upper case). Required for Jira.                                                                     |
+| `sources.jira.requireSprint` | `false`            | `true` limits the queue to issues in an open sprint.                                                                       |
+| `sources.jira.states`        | `see config.json`  | Your workflow's status names for each factory state; put every post-review status you want treated as finished in `done`.  |
+
+#### Runtime
+
+| Key                 | Default  | What it does                                                                          |
+| ------------------- | -------- | ------------------------------------------------------------------------------------- |
+| `runtime.mode`      | `"auto"` | `auto` detects local or cloud; `local` or `cloud` forces it.                          |
+| `runtime.scheduler` | `"auto"` | What runs scheduled passes: `auto`, `launchd`, `github-actions`, `routine` or `none`. |
+
+#### Git
+
+| Key                    | Default           | What it does                                                                                                                                              |
+| ---------------------- | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `git.baseBranch`       | `null`            | Branch a run builds on and PRs target. `null` is the repository's default branch.                                                                         |
+| `git.agentAttribution` | `false`           | `false`: commits and PRs are always the person's own (no Co-Authored-By, no author override, no "generated with" text). `true` switches those checks off. |
+| `git.branchTypes`      | `see config.json` | Task type (lower case) to branch prefix. An unlisted type is `task`.                                                                                      |
+| `git.worktreeRoot`     | `"../.worktrees"` | Folder worktrees are created in, relative to the repository. Set it somewhere writable in the cloud.                                                      |
+
+#### Pull requests
+
+| Key                       | Default                                        | What it does                                                                                                  |
+| ------------------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `pr.sizeLabels`           | `{"small": 100, "medium": 500, "large": null}` | PR size label to its upper bound in changed lines (`null` is unbounded).                                      |
+| `pr.areaLabels`           | `[]`                                           | List of `{ "path": "services/api", "label": "api" }`: a PR touching the path gets the label. None by default. |
+| `pr.categoryByBranchType` | `see config.json`                              | Branch prefix to the category label on the PR.                                                                |
+
+#### Caps and budgets
+
+| Key                        | Default | What it does                                                                                 |
+| -------------------------- | ------- | -------------------------------------------------------------------------------------------- |
+| `caps.maxOpenPrs`          | `3`     | Factory PRs open at once; a pass stops claiming at this number.                              |
+| `caps.maxConcurrent`       | `1`     | Tasks built in one pass. Raise it only after checking your plan's usage limits.              |
+| `caps.breakerThreshold`    | `2`     | This many blocked tasks within the window stop new claims until a person looks.              |
+| `caps.breakerWindowHours`  | `6`     | The window for the breaker.                                                                  |
+| `caps.stallMinutes`        | `90`    | An in-progress task quiet for this long with no driver is a stray and is resumed or blocked. |
+| `caps.maxFixRounds`        | `2`     | How many times Critical or High review findings go back to the builder.                      |
+| `caps.maxQaFixAttempts`    | `5`     | Fix attempts after failed QA per task.                                                       |
+| `caps.maxBudgetUsd`        | `40`    | Spend cap for one scheduled session.                                                         |
+| `caps.maxResumes`          | `2`     | Resumes of an orphaned task before it is blocked.                                            |
+| `caps.frontierRepeatHours` | `6`     | Hours before an unchanged queue is looked at again by a paid session.                        |
+
+#### Models
+
+| Key                   | Default           | What it does                                                                        |
+| --------------------- | ----------------- | ----------------------------------------------------------------------------------- |
+| `models.orchestrator` | `"sonnet"`        | Model of the scheduled pass.                                                        |
+| `models.builder`      | `"sonnet"`        | Model of the builder agent.                                                         |
+| `models.reviewer`     | `"sonnet"`        | Model of the reviewers.                                                             |
+| `models.debugger`     | `"sonnet"`        | Model of the debugger.                                                              |
+| `models.researcher`   | `"haiku"`         | Model of the researcher.                                                            |
+| `models.improver`     | `"sonnet"`        | Model of the improver.                                                              |
+| `models.effort`       | `"high"`          | Default effort level.                                                               |
+| `models.efforts`      | `see config.json` | Effort per role (`debugger`, `researcher`, `improver`), overriding `models.effort`. |
+
+#### Environment
+
+| Key                        | Default                              | What it does                                                                                                                                           |
+| -------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `environment.type`         | `"none"`                             | `none` (tests run on the host) or `compose` (an isolated docker compose project per task).                                                             |
+| `environment.composeFile`  | `".devcontainer/docker-compose.yml"` | The compose file, relative to the worktree (compose only).                                                                                             |
+| `environment.service`      | `"app"`                              | The service the repository is mounted in; setup commands, checks and tests run here (compose only).                                                    |
+| `environment.user`         | `null`                               | User to run commands as inside the service.                                                                                                            |
+| `environment.setup`        | `[]`                                 | Commands run inside the service after `up` (empty when the container already installs and starts the app).                                             |
+| `environment.processCheck` | `null`                               | A command inside the service that must exit 0 for the stack to count as healthy.                                                                       |
+| `environment.readyTimeout` | `900`                                | Seconds to wait for a fresh stack. The first start installs dependencies, so raise it.                                                                 |
+| `environment.pingUrl`      | `null`                               | A URL polled from inside the service until it answers.                                                                                                 |
+| `environment.webBaseUrl`   | `null`                               | The address a browser walk opens (canonical-ports mode).                                                                                               |
+| `environment.submodules`   | `[]`                                 | Submodule paths to populate in a fresh worktree from your main checkout.                                                                               |
+| `environment.preCommit`    | `null`                               | A command run in the container before each commit, for repositories whose commit hook needs the container's tools; the builder then commits with `-n`. |
+
+#### Mobile lane
+
+| Key                   | Default                                  | What it does                                                      |
+| --------------------- | ---------------------------------------- | ----------------------------------------------------------------- |
+| `mobile.appDir`       | `null`                                   | The mobile app folder. Setting it enables the device lane.        |
+| `mobile.hints`        | `["mobile app", "iOS", "Android"]`       | Words in a task that mark it as a mobile task.                    |
+| `mobile.metroPort`    | `8081`                                   | Port of the app's dev server.                                     |
+| `mobile.prepare`      | `null`                                   | Command run in the app folder before anything else.               |
+| `mobile.install`      | `"yarn install --frozen-lockfile"`       | Installs the app's dependencies when `node_modules` is missing.   |
+| `mobile.pods`         | `"yarn pods"`                            | Installs native pods when `ios/Pods` is missing.                  |
+| `mobile.start`        | `"yarn start --port {port}"`             | Starts the dev server; `{port}` is filled in.                     |
+| `mobile.build`        | `"yarn ios --udid {udid} --port {port}"` | Builds and installs the app; `{port}` and `{udid}` are filled in. |
+| `mobile.nativeInputs` | `see config.json`                        | Globs (relative to the app) whose change means a native rebuild.  |
+
+#### Telemetry environments
+
+| Key            | Default           | What it does                                                                                                                            |
+| -------------- | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `environments` | `see config.json` | Per telemetry environment (`dev`, `staging`...): `sentry` (`org`, `environment`, `projects`) and `axiomDatasets` the debugger may read. |
+
+#### Telemetry limits
+
+| Key                       | Default | What it does                                                                 |
+| ------------------------- | ------- | ---------------------------------------------------------------------------- |
+| `telemetry.maxRows`       | `200`   | Largest result a telemetry query may ask for.                                |
+| `telemetry.maxWindowDays` | `14`    | Longest time window a telemetry query may span.                              |
+| `telemetry.scrubPatterns` | `[]`    | Extra regular expressions the scrub check refuses in comments and PR bodies. |
+
+#### Debug budget
+
+| Key                    | Default | What it does                                                          |
+| ---------------------- | ------- | --------------------------------------------------------------------- |
+| `debug.maxDebugRounds` | `2`     | Debugger rounds per task; a third is refused and the task is blocked. |
+| `debug.debugMinutes`   | `20`    | Minutes one debug command may run.                                    |
+
+#### Validation
+
+| Key                             | Default | What it does                                     |
+| ------------------------------- | ------- | ------------------------------------------------ |
+| `validation.minHoursAfterMerge` | `24`    | Wait after a merge before post-merge validation. |
+
+#### Self-improvement
+
+| Key                                | Default                     | What it does                                                                                        |
+| ---------------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------- |
+| `improvement.project`              | `null`                      | Project key or database for improvement tasks, when the task source needs one.                      |
+| `improvement.factoryRepo`          | `null`                      | A local checkout of the plugin repository, so `/dev-factory:improve` can change the factory itself. |
+| `improvement.label`                | `"dev-factory-improvement"` | Label of improvement tasks (never the factory label).                                               |
+| `improvement.maxTicketsPerScan`    | `5`                         | New improvement tasks per scan.                                                                     |
+| `improvement.maxPrsPerScan`        | `2`                         | Improvement PRs per scan.                                                                           |
+| `improvement.minEvidence`          | `2`                         | Occurrences across different tasks before a finding counts.                                         |
+| `improvement.maxPromotionsPerScan` | `3`                         | Learnings promoted into `AGENTS.md` per scan.                                                       |
+| `improvement.agentsRuleCap`        | `15`                        | Learned rules allowed per `AGENTS.md` section.                                                      |
+
+#### Review
+
+| Key                     | Default           | What it does                                                              |
+| ----------------------- | ----------------- | ------------------------------------------------------------------------- |
+| `review.specialistAxes` | `see config.json` | Globs that trigger the extra `data`, `infra` and `security` review steps. |
+
+#### Sandbox
+
+| Key                    | Default | What it does                                                                                |
+| ---------------------- | ------- | ------------------------------------------------------------------------------------------- |
+| `sandbox.enabled`      | `null`  | `true` or `false` overrides the base sandbox switch of the scheduled pass; `null` keeps it. |
+| `sandbox.extraDomains` | `[]`    | Extra hosts the scheduled pass may reach.                                                   |
 
 QA surface rules (which paths need a browser or device walk) are in `qa/profiles.yaml`; a repository replaces them with its own `dev-factory.qa.yaml` of the same shape.
 
