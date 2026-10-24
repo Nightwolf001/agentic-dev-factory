@@ -28,6 +28,7 @@ Each case names its assertions up front (a testID, a text, an element). The walk
 4. Record: `qa.mjs record --run N --case SLUG --status pass|fail --assertion "what you observed in this walk" --screenshot <file>`.
    A pass needs an assertion of 8 or more characters and a fresh PNG or JPEG of at least 1 KB that is not byte-identical to another case's. If a capture is refused as a duplicate, frame a different state; never copy or edit a file to get past the check.
 5. `qa.mjs done --run N` closes the run. Every case must be recorded, HEAD unmoved, tree clean.
+6. Close what the walk opened: call `browser_close` on the `playwright` MCP, and let a Maestro flow finish (do not leave `maestro studio` or a recording running). A browser or flow left open holds the next run's ports and devices; `scripts/cleanup.mjs` stops any that remain, but the walk ends cleanly first.
 
 ## 4. Failures
 

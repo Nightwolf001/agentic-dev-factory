@@ -54,3 +54,7 @@ test('plan sizes the work from a quick change to an initiative and keeps blocker
 	const plan = read('plan.md');
 	for (const word of ['Quick change', 'Single task', 'Feature', 'Initiative', 'Blocked by:']) assert.match(plan, new RegExp(word), word);
 });
+
+test('every run that starts an environment ends with the clean-up script, whatever the outcome', () => {
+	for (const f of ['tick.md', 'build.md', 'quick.md']) assert.match(read(f), /scripts\/cleanup\.mjs" --worktree <worktree>/, f);
+});

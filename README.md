@@ -318,6 +318,7 @@ dev-factory config validate                   # lists every problem; also part o
 | `mobile.metroPort`          | `DF_METRO_PORT`            |
 | `runtime.scheduler`         | `DF_SCHEDULER`             |
 | `improvement.factoryRepo`   | `DF_FACTORY_REPO`          |
+| `cleanup.takeover`          | `DF_TAKEOVER`              |
 
 A list setting such as `DF_JIRA_PROJECTS` takes a comma-separated value. Other variables are not settings but switches for one run: `DF_RUNTIME`, `DF_REPO`, `DF_STATE_DIR`, `DF_LOG`, `DF_CONFIG`, `DF_PREFLIGHT=off`, `DF_READY_TIMEOUT`, `DF_PLUGIN_DIR`, `DF_MCP_FILE`.
 
@@ -353,6 +354,7 @@ A list setting such as `DF_JIRA_PROJECTS` takes a comma-separated value. Other v
 | Which paths need extra reviews             | `review.specialistAxes`                                                                    |
 | Which paths need a browser or device walk  | `dev-factory.qa.yaml` (same shape as `qa/profiles.yaml`)                                   |
 | A stack per task                           | `environment.*` (see [Environments](#environments))                                        |
+| Agents may stop whatever blocks a run      | `cleanup.takeover` (see [Clean-up after every run](#clean-up-after-every-run))             |
 | Where and how it is scheduled              | `runtime.scheduler`; `dev-factory scheduler on` and `off`                                  |
 
 What config cannot change: the guards, the hooks, the stop gate, the base sandbox and permissions, and the rule that a person merges. Those live in the plugin's code on purpose, so a repository's file cannot loosen them. To change one, change the plugin itself (see [Improving the factory itself](#improving-the-factory-itself)).
@@ -459,6 +461,13 @@ Every setting, with its default. `see config.json` means the default is a longer
 | `environment.webBaseUrl`   | `null`                               | The address a browser walk opens (canonical-ports mode).                                                                                               |
 | `environment.submodules`   | `[]`                                 | Submodule paths to populate in a fresh worktree from your main checkout.                                                                               |
 | `environment.preCommit`    | `null`                               | A command run in the container before each commit, for repositories whose commit hook needs the container's tools; the builder then commits with `-n`. |
+
+#### Clean-up and takeover
+
+| Key                | Default | What it does                                                                                                                                                                                                                                                   |
+| ------------------ | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cleanup.takeover` | `false` | Lets a run stop, kill and quit whatever blocks it: processes and containers on the ports it needs, leftover Playwright and Maestro sessions, simulators. Off, a run tears down only what it started. Also `DF_TAKEOVER=1` for one run. Only the owner sets it. |
+| `cleanup.ports`    | `[]`    | Extra host ports a takeover frees before a run (the compose file's published ports, `mobile.metroPort` and the port of `environment.webBaseUrl` are always included).                                                                                          |
 
 #### Mobile lane
 
@@ -674,6 +683,21 @@ Isolated mode (`--ports none`) publishes no host ports so several worktrees can 
 
 A canonical-ports start first checks that the compose file's published host ports are free and refuses with exit 75 and the port numbers (and the process holding them, when `lsof` can tell) before building anything, so your own copy of the stack running on the same ports is reported in seconds rather than after a long build. Other settings: `environment.readyTimeout` (seconds to wait for a fresh stack, default 900; the first start installs dependencies, so raise it, or set `DF_READY_TIMEOUT`), and `environment.preCommit` (a command to run inside the container before each commit, for repositories whose commit hook needs the container's tools: the builder runs it, then commits with `git commit -n`; unset means commit normally and let the hooks run). The isolated environments need Docker Compose 2.24 or newer; `dev-factory doctor` checks.
 
+### Clean-up after every run
+
+A finished run leaves nothing running, whatever its outcome (shipped, blocked or abandoned). The scheduled pass, `/dev-factory:build` and `/dev-factory:quick` end with `dev-factory cleanup --worktree <worktree>`, which:
+
+-   runs `e2e-env.sh down` for the ticket's stack and `mobile-env.sh down` for its dev server;
+-   shuts the simulator down again when the run booted it (a simulator you already had open stays open);
+-   closes leftover Playwright browsers and Maestro sessions (never the MCP servers themselves);
+-   removes the machine-wide ports lock when its owner is gone, and sweeps `df-*` projects with no live owner.
+
+It prints JSON: `done` lists what it stopped, `left` lists what it found and did not touch, with the reason. By default it touches only what the run started.
+
+Set `cleanup.takeover` to `true` (or export `DF_TAKEOVER=1` for one run) when the machine is dedicated to the factory and you want a run to clear its own way: before a canonical-ports start it stops whatever process or container holds the stack's ports (instead of refusing with exit 75), and at the end it also stops those holding `cleanup.ports`, the dev server's port and any browser or Maestro session. The sandbox then lets `kill`, `pkill`, `killall`, `lsof`, `ps` and `pgrep` run, and the guard lets a builder use them and `docker stop`/`rm`/`kill` and `xcrun simctl shutdown` directly.
+
+Takeover never reaches the shell, Claude, the terminal, launchd, window-server or other system processes, the parent of the run, `kill` of pid 0, 1 or -1, `docker prune`, mass `docker stop $(docker ps -q)` forms, `simctl erase` or `delete`, or the factory's own scheduler job. Agents cannot switch it on: `--takeover`, `DF_TAKEOVER` and edits to `dev-factory.config.json` are refused inside a run, so the toggle is only ever the owner's. `dev-factory doctor` warns while it is on.
+
 ## QA evidence
 
 `dev-factory qa` is the only thing that can mark a case as passed.
@@ -784,7 +808,7 @@ The improver cannot edit what enforces the factory's own limits (the guards, the
 | `scripts/factory-settings.mjs` | Builds the scheduled pass's sandbox and permissions from what is enabled                              |
 | `hooks/hooks.json`             | Shell guard, edit guard, telemetry guard and stop gate; active only inside a factory run              |
 | `plugins.json`                 | Plugins the factory relies on and the one it disables                                                 |
-| `scripts/`                     | `e2e-env.sh`, `mobile-env.sh`, `tick.sh`, `install.sh`, `doctor.sh`, hook scripts                     |
+| `scripts/`                     | `e2e-env.sh`, `mobile-env.sh`, `cleanup.mjs`, `tick.sh`, `install.sh`, `doctor.sh`, hook scripts      |
 | `bin/qa.mjs`                   | QA, review, debug, scrub, ticket and learnings CLI                                                    |
 | `qa/profiles.yaml`             | Default web and mobile QA profiles                                                                    |
 | `config.json`                  | Defaults; the repository's `dev-factory.config.json` merges over them                                 |

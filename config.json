@@ -141,6 +141,10 @@
 		"submodules": [],
 		"preCommit": null
 	},
+	"cleanup": {
+		"takeover": false,
+		"ports": []
+	},
 	"mobile": {
 		"appDir": null,
 		"hints": ["mobile app", "iOS", "Android"],

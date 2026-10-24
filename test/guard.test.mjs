@@ -642,3 +642,66 @@ test('tasks.mjs link is refused to a factory agent like every other tracker writ
 	assert.equal(evaluate(link, { role: 'builder', branch: 'task/APP-1-x' }).deny, true);
 	assert.equal(evaluate(link, { branch: 'task/APP-1-x' }).deny, false, 'the scheduler may');
 });
+
+test('stopping other processes, containers and simulators is the takeover toggle’s', () => {
+	const off = (c) => evaluate(c, { role: 'builder' });
+	const on = (c) => evaluate(c, { role: 'builder', takeover: true });
+	for (const c of [
+		'kill 4242',
+		'pkill -f metro',
+		'killall node-server',
+		'docker stop web',
+		'docker container rm -f web',
+		'xcrun simctl shutdown all',
+		'launchctl bootout gui/501/com.example.job',
+	]) {
+		assert.equal(off(c).deny, true, `${c} is refused by default`);
+		assert.match(off(c).reason, /cleanup\.mjs|cleanup\.takeover/);
+		assert.equal(on(c).deny, false, `${c} is allowed with takeover`);
+	}
+	assert.equal(off('kill %1').deny, false, 'a job of the same shell');
+	assert.equal(off('docker compose -p df-x down').deny, false);
+	assert.equal(off('node "/p/scripts/cleanup.mjs" --worktree .').deny, false, 'the run’s own tear-down is always allowed');
+	assert.equal(evaluate('kill 4242', { role: 'reviewer' }).deny, true, 'read-only roles stay read-only');
+	assert.equal(evaluate('kill 4242', {}).deny, false, 'outside a factory run nothing changes');
+});
+
+test('takeover never reaches the session, system processes, devices or the scheduler', () => {
+	const on = (c) => evaluate(c, { role: 'builder', takeover: true });
+	for (const c of [
+		'kill 1',
+		'kill -9 -1',
+		'kill $PPID',
+		'kill -9 $$',
+		'pkill claude',
+		'pkill -u me',
+		'killall zsh',
+		'killall Terminal',
+		'pkill node',
+		'docker stop $(docker ps -q)',
+		'docker ps -q | xargs docker kill',
+		'docker system prune -af',
+		'xcrun simctl erase all',
+		'xcrun simctl delete unavailable',
+		'launchctl bootout gui/501/com.dev-factory.app.tick',
+	])
+		assert.equal(on(c).deny, true, `${c} stays refused`);
+});
+
+test('an agent cannot switch takeover on for itself, nor edit the repository config that holds it', () => {
+	for (const c of [
+		'DF_TAKEOVER=1 node "/p/scripts/cleanup.mjs" --worktree .',
+		'node "/p/scripts/cleanup.mjs" --takeover',
+		'export DF_TAKEOVER=1',
+		'dev-factory cleanup --takeover',
+	])
+		assert.equal(evaluate(c, { role: 'builder' }).deny, true, c);
+	assert.equal(evaluate('DF_TAKEOVER=1 node x.mjs', { role: 'builder', takeover: true }).deny, false, 'already on: nothing to escalate');
+	assert.equal(evaluate('echo \'{"cleanup":{"takeover":true}}\' > dev-factory.config.json', { role: 'builder' }).deny, true);
+	assert.equal(evaluate('sed -i s/false/true/ dev-factory.config.json', { role: 'builder' }).deny, true);
+	assert.equal(evaluateEdit({ filePath: 'dev-factory.config.json', root: '/w', active: true, run: { role: 'builder', key: 'APP-1' } }).deny, true);
+	assert.equal(
+		evaluateEdit({ filePath: 'services/dev-factory.config.json.md', root: '/w', active: true, run: { role: 'builder', key: 'APP-1' } }).deny,
+		false,
+	);
+});

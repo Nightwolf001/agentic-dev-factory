@@ -172,3 +172,47 @@ test('the wait for a fresh stack is a config setting, with an env override', () 
 	});
 	assert.equal(out.stdout.trim(), '1234');
 });
+
+test('with takeover on, a canonical-ports start frees the busy host port instead of refusing, and without it still refuses', async () => {
+	const { spawn } = await import('node:child_process');
+	const child = spawn(
+		process.execPath,
+		['-e', "require('net').createServer().listen(0,function(){console.log(this.address().port)});setInterval(()=>{},1000)"],
+		{ stdio: ['ignore', 'pipe', 'ignore'] },
+	);
+	try {
+		const port = await new Promise((res) => child.stdout.once('data', (d) => res(Number(String(d).trim()))));
+		const f = fixture({ environment: { type: 'compose', composeFile: '.devcontainer/docker-compose.yml', service: 'app' } });
+		fs.writeFileSync(
+			path.join(f.base, 'bin/docker'),
+			`#!/bin/bash
+echo "$@" >> "${f.base}/docker.log"
+case "$*" in
+  *"config --format json"*) echo '{"services":{"app":{"ports":[{"published":"${port}","target":3000}]}}}' ;;
+  *"config --services"*) echo app ;;
+  *"ps --filter"*) exit 0 ;;
+  *) exit 0 ;;
+esac
+`,
+			{ mode: 0o755 },
+		);
+		const refused = f.run('up', '--key', 'APP-1', '--ports', 'canonical');
+		assert.equal(refused.status, 75, refused.stderr);
+		assert.match(refused.stderr, /cleanup\.takeover/, 'the refusal names the toggle');
+		assert.equal(child.exitCode, null, 'nothing was stopped');
+		const env = {
+			...process.env,
+			PATH: `${path.join(f.base, 'bin')}:${process.env.PATH}`,
+			DF_STATE_DIR: f.state,
+			DF_OWNER_PID: String(process.pid),
+			DF_TAKEOVER: '1',
+		};
+		const r = spawnSync('bash', [SCRIPT, 'up', '--key', 'APP-1', '--ports', 'canonical'], { env, encoding: 'utf8', cwd: f.worktree });
+		assert.match(r.stderr, /takeover is on: freeing host port/, r.stderr);
+		assert.doesNotMatch(r.stderr, /already in use/);
+		await new Promise((res) => (child.exitCode !== null || child.signalCode ? res() : child.once('exit', res)));
+		assert.ok(child.exitCode !== null || child.signalCode, 'the process holding the port was stopped');
+	} finally {
+		child.kill('SIGKILL');
+	}
+});

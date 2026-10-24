@@ -195,3 +195,16 @@ test('the CLI skips duplicates and says so; --force writes them', async () => {
 	assert.match(run('connect').stdout, /skip\s+playwright\s+already available as "playwright"/);
 	assert.match(run('doctor').stdout, /playwright .* without --isolated/);
 });
+
+test('takeover lets the sandbox run the commands that stop host processes, and only then', async () => {
+	const { load, merge } = await import('../scripts/config.mjs');
+	const { TAKEOVER_EXCLUDED } = await import('../scripts/factory-settings.mjs');
+	const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'df-takeover-')), '.mcp.json');
+	const off = build({ cfg: load(), mcpFile: file }).sandbox.excludedCommands;
+	const on = build({ cfg: merge(load(), { cleanup: { takeover: true } }), mcpFile: file }).sandbox.excludedCommands;
+	for (const c of TAKEOVER_EXCLUDED) {
+		assert.ok(!off.includes(c), `${c} is not excluded by default`);
+		assert.ok(on.includes(c), `${c} is excluded with takeover`);
+	}
+	assert.ok(on.includes('docker *'), 'the base list is kept');
+});
