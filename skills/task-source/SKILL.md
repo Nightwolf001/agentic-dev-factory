@@ -38,7 +38,7 @@ Dependencies are written in the description as a `Blocked by:` line (`Blocked by
 | `BLOCK key reason decision`             | Adds `tasks.blockedLabel`, comments `[dev-factory] blocked: <reason>. Decision needed: <decision>`, returns the task to `ready`. Never retry alone.                                                                                                                    |
 | `CREATE ...`                            | Makes a task with title, body, type, label `tasks.label`, blockers. Used by `/dev-factory:plan` and the improvement scan.                                                                                                                                              |
 
-Phase comments are the resume position: every phase exit writes `[dev-factory] phase: <name> <state> run=<run-id> head=<sha>`. The latest one says where to continue; a comment `tasks.fixComment` (default `/dev-factory fix`) asks for a fix pass.
+Phase comments are the resume position: every phase exit writes `[dev-factory] phase: <name> <state> run=<run-id> head=<sha>`. The latest one says where to continue; a comment starting with `tasks.fixComment` (default `dev-factory fix`, the slash is optional; the rest of the comment is the instruction) asks for a fix pass.
 
 ## Scripted sources (`local`, `github`)
 

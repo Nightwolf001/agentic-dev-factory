@@ -285,6 +285,33 @@ test('notion: list filters on the tag and status, derives keys from the unique I
 	assert.deepEqual(query.and[1], { or: [{ property: 'Status', status: { equals: 'Ready' } }] });
 });
 
+test("notion: with a project set, only that repository's tasks are listed, whatever type the Project property has", async () => {
+	for (const type of ['select', 'rich_text']) {
+		const cfg = cfgFor({ tasks: { source: 'notion' }, sources: { notion: { databaseId: 'db1', project: 'acme/sa-weddings' } } });
+		let filter;
+		const fetchImpl = async (url, init) => ({
+			ok: true,
+			json: async () =>
+				url.endsWith('/databases/db1')
+					? { properties: { Status: { type: 'status' }, Project: { type } } }
+					: ((filter = JSON.parse(init.body).filter), { results: [] }),
+		});
+		await notionSource(cfg, { env: { NOTION_TOKEN: 's' }, fetchImpl }).list({ states: ['ready'] });
+		assert.deepEqual(filter.and[2], { property: 'Project', [type]: { equals: 'acme/sa-weddings' } }, type);
+	}
+});
+
+test('notion: without a project the query has no Project clause, so a database without the property still works', async () => {
+	const cfg = cfgFor({ tasks: { source: 'notion' }, sources: { notion: { databaseId: 'db1' } } });
+	let filter;
+	const fetchImpl = async (url, init) => ({
+		ok: true,
+		json: async () => (url.endsWith('/databases/db1') ? { properties: {} } : ((filter = JSON.parse(init.body).filter), { results: [] })),
+	});
+	await notionSource(cfg, { env: { NOTION_TOKEN: 's' }, fetchImpl }).list({ states: ['ready'] });
+	assert.equal(JSON.stringify(filter).includes('Project'), false);
+});
+
 // ---- choosing a source ----
 
 test('makeSource picks the configured source; tokens are required only where a script must call an API', () => {

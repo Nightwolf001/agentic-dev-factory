@@ -98,11 +98,24 @@ For each worktree whose builder finished:
 
 Independently, for every labelled task `inReview` (LIST): find its PR (`gh pr list --state all --search "<KEY> in:title" --json number`) and read `gh pr view <N> --json state,reviewDecision,author,commits,reviews,comments`.
 
--   Merged, or `reviewDecision` APPROVED: SET it `reviewed` and COMMENT `[dev-factory] phase: review passed pr=<url>`. If the source refuses the move, comment and leave it `inReview`.
--   A `CHANGES_REQUESTED` review by someone other than the PR author, newer than the latest commit (a comment alone, from a bot, CI, or a person asking a question or approving, is not a request): this is a fix pass. SET it `inProgress`, COMMENT `[dev-factory] phase: fix started`, and continue at section 4 for it in this same pass (fix pass hygiene in section 3 applies, and the PR's review threads go into the builder prompt). When it ships, section 5 moves it back to `inReview`.
+Read the settings once: `pr.reviewedOnMergeInto`, `pr.doneOnMergeInto`, `review.bugbot`, `review.bugbotAuthor`, `review.bugbotComment`, `caps.maxBugbotRounds`.
+
+-   Reviewed: with `pr.reviewedOnMergeInto` unset, the PR is merged or `reviewDecision` is APPROVED. With it set, only a merge counts, and only one whose `baseRefName` equals it (an approval, or a merge into another branch, leaves the task `inReview`). SET it `reviewed` and COMMENT `[dev-factory] phase: review passed pr=<url>`. If the source refuses the move, comment and leave it `inReview`.
+-   Done: when `pr.doneOnMergeInto` is set, also LIST `reviewed` tasks. A task is done when its PR merged into that branch, or when the merge commit has reached it (`gh pr view <N> --json mergeCommit,baseRefName`, then `gh api repos/{owner}/{repo}/compare/<doneBranch>...<oid> --jq .status` is `behind` or `identical`; a release that squashes its commits cannot be seen this way, so a person moves that task). SET it `done` and COMMENT `[dev-factory] phase: done pr=<url> branch=<doneBranch>`. With it unset, `done` stays a person's move.
+-   A fix request, any of these, newer than the PR's latest commit: a `CHANGES_REQUESTED` review by someone other than the PR author; a PR or task comment by a person (not a `[bot]`) with a line starting `tasks.fixComment` (default `dev-factory fix`, no slash needed; a leading `/` is also read) and the rest of the line or comment as the instruction; or, when `review.bugbot` is true, an unresolved review thread opened by `review.bugbotAuthor`. A plain comment, a question, CI or an approval is not a request. This is a fix pass: SET it `inProgress`, COMMENT `[dev-factory] phase: fix started`, and continue at section 4 for it in this same pass (fix pass hygiene in section 3 applies, and the review threads and the fix comment's instruction go into the builder prompt). When it ships, section 5 moves it back to `inReview`.
 -   PR closed without merge: section 6 with reason `PR closed unmerged`.
 
+### Bugbot (only when `review.bugbot` is true)
+
+After a PR is opened or a fix is pushed, `skills/ship` has posted the `review.bugbotComment` comment (default `bugbot run`), which starts the review. Then, for each `inReview` task:
+
+1. Watch: the review is finished when the `Cursor Bugbot` check on the head commit is no longer pending (`gh pr checks <N>`); keep to the pass, never wait more than a few minutes, and pick it up next pass if it is still running.
+2. Read its unresolved threads (`gh api graphql` with a `reviewThreads` query, each thread's id, path, line and first comment, by `review.bugbotAuthor`). None: COMMENT `[dev-factory] phase: bugbot clean` and go on.
+3. Some: count the earlier `[dev-factory] phase: bugbot fix` comments; at `caps.maxBugbotRounds` go to section 6 with reason `bugbot not clean after <n> rounds`. Otherwise COMMENT `[dev-factory] phase: bugbot fix round=<n>` and run a fix pass (as above) with the threads verbatim; if a finding needs diagnosis (a bug, a failing behaviour), the builder debugs it as in section 4 step 5 first.
+4. When the fix has shipped (section 4 step 7 posts the Bugbot comment again), resolve each thread the commit answered: `gh api graphql -f query='mutation{resolveReviewThread(input:{threadId:"<id>"}){thread{isResolved}}}'`. Resolve only threads the fix actually addressed; leave one that was disputed or not fixed, and say why in the task comment. The next pass reads Bugbot's new findings.
+
 After `reviewed`, QA, UAT and release belong to people. A task whose state is in `done` counts as done for the factory (blockers resolved, validation eligible). A person may park a task at any stage by adding `tasks.blockedLabel` or moving it to a status the factory does not know: leave it alone. A task a person moves back to `ready`, or comments `tasks.fixComment` on, is a fix pass as before.
+The Notion upload in LINK is the scheduler's own `curl` (see `skills/task-source/notion.md`); the guard allows that one shape.
 
 ## 5b. Validation of merged work
 

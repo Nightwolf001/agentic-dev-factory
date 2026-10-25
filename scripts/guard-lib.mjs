@@ -247,6 +247,38 @@ function ghApiWrites(args) {
 	return false;
 }
 
+// The one request to a tracker the scheduler makes with curl: Notion hands out an upload URL for each QA screenshot
+// (notion-create-file-upload) and the file goes there as multipart. Only an evidence image, only to a file-upload URL.
+const NOTION_UPLOAD_URL = /^https:\/\/api\.notion\.com\/v1\/file_uploads\/[0-9a-f-]{32,36}\/send$/i;
+const EVIDENCE_FILE = /^file=@(?:[^\s"']*\/)?\.dev-factory\/evidence\/[\w.-]+\/run-\d+\/[\w.-]+$/;
+const unquote = (t) => t.replace(/^(["'])(.*)\1$/, '$2');
+function notionUpload(cmd, args) {
+	if (cmd !== 'curl') return false;
+	let urls = 0;
+	for (let i = 0; i < args.length; i++) {
+		const a = unquote(args[i]);
+		const next = unquote(args[i + 1] ?? '');
+		if (/^-[sSf]+$/.test(a) || /^--(fail|silent|show-error)$/.test(a)) continue;
+		if (a === '-X' && next === 'POST') i++;
+		else if (a === '-H' && next && !/[$`]/.test(next)) i++;
+		else if (a === '-F' && EVIDENCE_FILE.test(next) && !next.includes('..')) i++;
+		else if (NOTION_UPLOAD_URL.test(a)) urls++;
+		else return false;
+	}
+	return urls === 1;
+}
+
+// The scheduler resolves the review threads it has answered, and reads them; a graphql mutation is allowed only for that.
+function schedulerGraphql(args) {
+	if (ghPositionals(args)[1] !== 'graphql') return false;
+	if (args.some((a) => /^(--input|-X|--method)(=|$)/.test(a))) return false;
+	const q = args.map((a, i) => (/^(-f|-F|--field|--raw-field)$/.test(args[i - 1] ?? '') ? unquote(a) : '')).find((a) => a.startsWith('query='));
+	if (!q) return false;
+	if (!/\bmutation\b/.test(q)) return true;
+	const fields = [...q.matchAll(/(\w+)\s*\(\s*input\s*:/g)].map((m) => m[1]);
+	return fields.length === 1 && fields[0] === 'resolveReviewThread';
+}
+
 const FACTORY_ROLES = new Set(['builder', 'reviewer', 'debugger', 'researcher', 'improver', 'promoter']);
 const ISSUE_WRITES = ['create', 'edit', 'close', 'reopen', 'comment', 'delete', 'transfer', 'lock', 'unlock', 'pin', 'unpin', 'develop'];
 
@@ -257,7 +289,8 @@ function denyGh(args, ctx = {}, seg = '') {
 	if (ctx.noAttribution && p[0] === 'pr' && ['create', 'edit', 'comment'].includes(p[1]) && AGENT_MARK.test(seg))
 		return 'PR text carries no Co-Authored-By or generated-by line (git.agentAttribution is false)';
 	if (p[0] === 'pr' && ['merge', 'review', 'ready', 'close', 'reopen'].includes(p[1])) return `gh pr ${p[1]} is reserved for people`;
-	if (p[0] === 'api' && ghApiWrites(args)) return 'gh api writes are not allowed: no -X other than GET, no body field, no --input';
+	if (p[0] === 'api' && ghApiWrites(args) && (FACTORY_ROLES.has(ctx.role) || !schedulerGraphql(args)))
+		return 'gh api writes are not allowed: no -X other than GET, no body field, no --input';
 	if (['release', 'alias', 'secret', 'variable'].includes(p[0]) || (p[0] === 'repo' && ['delete', 'edit', 'archive'].includes(p[1])))
 		return `gh ${p[0]} is not allowed`;
 	return null;
@@ -416,8 +449,12 @@ export function evaluate(command, ctx = {}) {
 		let reason = null;
 		if (cmd === 'git') reason = denyGit(args, ctx, seg);
 		else if (cmd === 'gh') reason = denyGh(args, ctx, seg);
-		if (!reason && /\b(curl|wget|http|https)\b.*(atlassian\.net|api\.notion\.com|notion\.so)/.test(seg))
-			reason = 'direct task-tracker access is reserved for the scheduler';
+		if (
+			!reason &&
+			/\b(curl|wget|http|https)\b.*(atlassian\.net|api\.notion\.com|notion\.so)/.test(seg) &&
+			(FACTORY_ROLES.has(ctx.role) || !notionUpload(cmd, args))
+		)
+			reason = 'direct task-tracker access is reserved for the scheduler, which sends only QA screenshots to a Notion upload URL';
 		if (!reason && FACTORY_ROLES.has(ctx.role) && /^node\s+\S*tasks\.mjs"?\s+(set-state|comment|label|link|block|create|init)\b/.test(seg))
 			reason = 'the task tracker is written only by the scheduler, not by a factory agent (tasks.mjs ' + seg.split(/\s+/)[2] + ')';
 		if (!reason && /^docker\s+(system|volume|image|builder|network|container)\s+prune/.test(body)) reason = 'docker prune is not allowed';

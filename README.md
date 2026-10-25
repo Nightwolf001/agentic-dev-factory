@@ -264,7 +264,7 @@ OAuth servers need one login that no script can do for you: start `claude` and r
 4. The `factory-builder` agent works test-first, then QA walks each case and records it with `bin/qa.mjs`.
 5. Two fresh-context reviewers run in order: **spec** (does it do what the task asks, nothing more) and **standards** (does it follow the repository's rules and is it safe). Critical or High findings send the builder back; QA runs again and review restarts, at most `caps.maxFixRounds` times. Triggered `data`, `infra` and `security` steps follow.
 6. The builder ships: pushes the branch, opens the draft PR with the evidence attached. The pass then records where the work is on the task (`LINK`): the branch and PR links, the QA verdict and the screenshots, as properties and files in Notion, remote links in Jira, a comment on a GitHub issue, or frontmatter and a copy of the images in the local task files. The pass re-verifies the QA manifest and both review records against the PR head, comments on the task, sets it `inReview`, and tears the environment down.
-7. You review the PR. A change request (not a plain comment) from someone other than the PR author sends the task back for a fix pass; an approval or merge sets it `reviewed`. After that, QA, release and anything else belong to people.
+7. You review the PR. Two optional settings shape what comes next: `pr.reviewedOnMergeInto` / `pr.doneOnMergeInto` say which merge makes a task reviewed and which makes it done (for a develop-then-main flow, `"develop"` and `"main"`), and `review.bugbot` has Bugbot review each push and the factory fix what it finds. A comment starting `dev-factory fix` (no slash needed), followed by what to change, asks for a fix pass on any PR. A change request (not a plain comment) from someone other than the PR author sends the task back for a fix pass; an approval or merge sets it `reviewed`. After that, QA, release and anything else belong to people.
 
 When the factory cannot continue it labels the task `factory-blocked`, comments the reason and the decision it needs, and returns it to `ready` (the label keeps it out of the queue). Answer in a comment and remove the label. If `caps.breakerThreshold` tasks were blocked within `caps.breakerWindowHours` the pass stops claiming until you look.
 
@@ -308,6 +308,7 @@ dev-factory config validate                   # lists every problem; also part o
 | `tasks.label`               | `DF_TASK_LABEL`            |
 | `sources.github.repo`       | `DF_GITHUB_REPO`           |
 | `sources.notion.databaseId` | `DF_NOTION_DATABASE_ID`    |
+| `sources.notion.project`    | `DF_NOTION_PROJECT`        |
 | `sources.jira.cloudId`      | `DF_JIRA_CLOUD_ID`         |
 | `sources.jira.projects`     | `DF_JIRA_PROJECTS`         |
 | `models.orchestrator`       | `DF_MODEL`                 |
@@ -365,34 +366,35 @@ Every setting, with its default. `see config.json` means the default is a longer
 
 #### Tasks
 
-| Key                    | Default              | What it does                                                                                                                    |
-| ---------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `tasks.source`         | `"local"`            | Where tasks live: `local`, `github`, `notion` or `jira`.                                                                        |
-| `tasks.label`          | `"dev-factory"`      | The label that marks a task as the factory's. A task without it is invisible to the factory.                                    |
-| `tasks.blockedLabel`   | `"factory-blocked"`  | The label the factory adds to park a task it cannot continue; a person removes it.                                              |
-| `tasks.fixComment`     | `"/dev-factory fix"` | A comment with this text asks for a fix pass on an open PR.                                                                     |
-| `tasks.placeholderKey` | `"TASK-000"`         | The key `/dev-factory:quick` puts in branch names and PR titles when there is no task. Set it to one your CI accepts.           |
-| `tasks.bugTypes`       | `["bug"]`            | Task types (case-insensitive) that count as bugs: triaged by the debugger first, and the stop gate wants a recorded root cause. |
+| Key                    | Default             | What it does                                                                                                                      |
+| ---------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `tasks.source`         | `"local"`           | Where tasks live: `local`, `github`, `notion` or `jira`.                                                                          |
+| `tasks.label`          | `"dev-factory"`     | The label that marks a task as the factory's. A task without it is invisible to the factory.                                      |
+| `tasks.blockedLabel`   | `"factory-blocked"` | The label the factory adds to park a task it cannot continue; a person removes it.                                                |
+| `tasks.fixComment`     | `"dev-factory fix"` | A comment on the PR or task starting with this text (a leading `/` is optional) asks for a fix pass; the rest is the instruction. |
+| `tasks.placeholderKey` | `"TASK-000"`        | The key `/dev-factory:quick` puts in branch names and PR titles when there is no task. Set it to one your CI accepts.             |
+| `tasks.bugTypes`       | `["bug"]`           | Task types (case-insensitive) that count as bugs: triaged by the debugger first, and the stop gate wants a recorded root cause.   |
 
 #### Task sources
 
-| Key                          | Default            | What it does                                                                                                               |
-| ---------------------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------- |
-| `sources.local.dir`          | `".factory/tasks"` | Folder of task files, relative to the repository.                                                                          |
-| `sources.local.keyPrefix`    | `"TASK"`           | Prefix of new local task keys (`TASK-3`).                                                                                  |
-| `sources.local.states`       | `see config.json`  | Status words in the task files for each factory state.                                                                     |
-| `sources.github.repo`        | `null`             | `owner/name` of the issues repository; `null` is the current repository.                                                   |
-| `sources.github.assignee`    | `null`             | Only issues assigned to this user qualify (for example `@me`); `null` means any labelled issue.                            |
-| `sources.github.keyPrefix`   | `"GH"`             | Prefix of GitHub task keys (`GH-12`).                                                                                      |
-| `sources.github.states`      | `see config.json`  | The labels that mean in progress, in review and reviewed; closed means done.                                               |
-| `sources.notion.databaseId`  | `null`             | The task database. Required for Notion.                                                                                    |
-| `sources.notion.properties`  | `see config.json`  | The database's property names: title, status, labels, type, id, and the optional branch, pullRequest, evidence, qaVerdict. |
-| `sources.notion.states`      | `see config.json`  | Status names for each factory state.                                                                                       |
-| `sources.jira.site`          | `null`             | Your Jira host, for example `yourteam.atlassian.net`. Required for Jira.                                                   |
-| `sources.jira.cloudId`       | `null`             | The Atlassian cloud id. Required for Jira.                                                                                 |
-| `sources.jira.projects`      | `[]`               | Project keys to watch (upper case). Required for Jira.                                                                     |
-| `sources.jira.requireSprint` | `false`            | `true` limits the queue to issues in an open sprint.                                                                       |
-| `sources.jira.states`        | `see config.json`  | Your workflow's status names for each factory state; put every post-review status you want treated as finished in `done`.  |
+| Key                          | Default            | What it does                                                                                                                        |
+| ---------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `sources.local.dir`          | `".factory/tasks"` | Folder of task files, relative to the repository.                                                                                   |
+| `sources.local.keyPrefix`    | `"TASK"`           | Prefix of new local task keys (`TASK-3`).                                                                                           |
+| `sources.local.states`       | `see config.json`  | Status words in the task files for each factory state.                                                                              |
+| `sources.github.repo`        | `null`             | `owner/name` of the issues repository; `null` is the current repository.                                                            |
+| `sources.github.assignee`    | `null`             | Only issues assigned to this user qualify (for example `@me`); `null` means any labelled issue.                                     |
+| `sources.github.keyPrefix`   | `"GH"`             | Prefix of GitHub task keys (`GH-12`).                                                                                               |
+| `sources.github.states`      | `see config.json`  | The labels that mean in progress, in review and reviewed; closed means done.                                                        |
+| `sources.notion.databaseId`  | `null`             | The task database. Required for Notion.                                                                                             |
+| `sources.notion.project`     | `null`             | `owner/name` of the repository. When set, only pages whose Project property is this are listed, and the factory writes it.          |
+| `sources.notion.properties`  | `see config.json`  | The database's property names: title, status, labels, type, id, and the optional branch, pullRequest, evidence, qaVerdict, project. |
+| `sources.notion.states`      | `see config.json`  | Status names for each factory state.                                                                                                |
+| `sources.jira.site`          | `null`             | Your Jira host, for example `yourteam.atlassian.net`. Required for Jira.                                                            |
+| `sources.jira.cloudId`       | `null`             | The Atlassian cloud id. Required for Jira.                                                                                          |
+| `sources.jira.projects`      | `[]`               | Project keys to watch (upper case). Required for Jira.                                                                              |
+| `sources.jira.requireSprint` | `false`            | `true` limits the queue to issues in an open sprint.                                                                                |
+| `sources.jira.states`        | `see config.json`  | Your workflow's status names for each factory state; put every post-review status you want treated as finished in `done`.           |
 
 #### Runtime
 
@@ -412,11 +414,13 @@ Every setting, with its default. `see config.json` means the default is a longer
 
 #### Pull requests
 
-| Key                       | Default                                        | What it does                                                                                                  |
-| ------------------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `pr.sizeLabels`           | `{"small": 100, "medium": 500, "large": null}` | PR size label to its upper bound in changed lines (`null` is unbounded).                                      |
-| `pr.areaLabels`           | `[]`                                           | List of `{ "path": "services/api", "label": "api" }`: a PR touching the path gets the label. None by default. |
-| `pr.categoryByBranchType` | `see config.json`                              | Branch prefix to the category label on the PR.                                                                |
+| Key                       | Default                                        | What it does                                                                                                                |
+| ------------------------- | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `pr.reviewedOnMergeInto`  | `null`                                         | `null`: a merged or approved PR makes the task reviewed. A branch (`"develop"`): only a merge into it does.                 |
+| `pr.doneOnMergeInto`      | `null`                                         | A branch (`"main"`): the task is done once its PR, or a release carrying it, reached that branch. `null`: a person does it. |
+| `pr.sizeLabels`           | `{"small": 100, "medium": 500, "large": null}` | PR size label to its upper bound in changed lines (`null` is unbounded).                                                    |
+| `pr.areaLabels`           | `[]`                                           | List of `{ "path": "services/api", "label": "api" }`: a PR touching the path gets the label. None by default.               |
+| `pr.categoryByBranchType` | `see config.json`                              | Branch prefix to the category label on the PR.                                                                              |
 
 #### Caps and budgets
 
@@ -428,6 +432,7 @@ Every setting, with its default. `see config.json` means the default is a longer
 | `caps.breakerWindowHours`  | `6`     | The window for the breaker.                                                                  |
 | `caps.stallMinutes`        | `90`    | An in-progress task quiet for this long with no driver is a stray and is resumed or blocked. |
 | `caps.maxFixRounds`        | `2`     | How many times Critical or High review findings go back to the builder.                      |
+| `caps.maxBugbotRounds`     | `3`     | How many fix rounds Bugbot findings get before the task is blocked for a person.             |
 | `caps.maxQaFixAttempts`    | `5`     | Fix attempts after failed QA per task.                                                       |
 | `caps.maxBudgetUsd`        | `40`    | Spend cap for one scheduled session.                                                         |
 | `caps.maxResumes`          | `2`     | Resumes of an orphaned task before it is blocked.                                            |
@@ -525,9 +530,12 @@ Every setting, with its default. `see config.json` means the default is a longer
 
 #### Review
 
-| Key                     | Default           | What it does                                                              |
-| ----------------------- | ----------------- | ------------------------------------------------------------------------- |
-| `review.specialistAxes` | `see config.json` | Globs that trigger the extra `data`, `infra` and `security` review steps. |
+| Key                     | Default           | What it does                                                                                                                                            |
+| ----------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `review.specialistAxes` | `see config.json` | Globs that trigger the extra `data`, `infra` and `security` review steps.                                                                               |
+| `review.bugbot`         | `false`           | `true`: after every push the factory comments `review.bugbotComment`, watches Bugbot's review, fixes its findings and resolves the threads it answered. |
+| `review.bugbotComment`  | `"bugbot run"`    | The comment that starts a Bugbot review.                                                                                                                |
+| `review.bugbotAuthor`   | `"cursor[bot]"`   | The login Bugbot's review comments come from.                                                                                                           |
 
 #### Sandbox
 

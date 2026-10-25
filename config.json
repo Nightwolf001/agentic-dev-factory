@@ -3,7 +3,7 @@
 		"source": "local",
 		"label": "dev-factory",
 		"blockedLabel": "factory-blocked",
-		"fixComment": "/dev-factory fix",
+		"fixComment": "dev-factory fix",
 		"placeholderKey": "TASK-000",
 		"bugTypes": ["bug"]
 	},
@@ -33,6 +33,7 @@
 		},
 		"notion": {
 			"databaseId": null,
+			"project": null,
 			"properties": {
 				"title": "Name",
 				"status": "Status",
@@ -42,7 +43,8 @@
 				"branch": "Branch",
 				"pullRequest": "Pull request",
 				"evidence": "Evidence",
-				"qaVerdict": "QA verdict"
+				"qaVerdict": "QA verdict",
+				"project": "Project"
 			},
 			"states": {
 				"ready": ["Ready"],
@@ -87,6 +89,8 @@
 		"worktreeRoot": "../.worktrees"
 	},
 	"pr": {
+		"reviewedOnMergeInto": null,
+		"doneOnMergeInto": null,
 		"sizeLabels": {
 			"small": 100,
 			"medium": 500,
@@ -109,6 +113,7 @@
 		"breakerWindowHours": 6,
 		"stallMinutes": 90,
 		"maxFixRounds": 2,
+		"maxBugbotRounds": 3,
 		"maxQaFixAttempts": 5,
 		"maxBudgetUsd": 40,
 		"maxResumes": 2,
@@ -186,6 +191,9 @@
 		"agentsRuleCap": 15
 	},
 	"review": {
+		"bugbot": false,
+		"bugbotComment": "bugbot run",
+		"bugbotAuthor": "cursor[bot]",
 		"specialistAxes": {
 			"data": ["**/migrations/**", "**/schema.prisma"],
 			"infra": [".github/workflows/**", "Dockerfile*", "docker-compose*.yml", ".devcontainer/**", "**/*.tf"],

@@ -24,6 +24,7 @@ export const ENV_OVERRIDES = {
 	'tasks.label': 'DF_TASK_LABEL',
 	'sources.github.repo': 'DF_GITHUB_REPO',
 	'sources.notion.databaseId': 'DF_NOTION_DATABASE_ID',
+	'sources.notion.project': 'DF_NOTION_PROJECT',
 	'sources.jira.cloudId': 'DF_JIRA_CLOUD_ID',
 	'sources.jira.projects': 'DF_JIRA_PROJECTS',
 	'models.orchestrator': 'DF_MODEL',
@@ -91,6 +92,7 @@ const STATE_KEYS = ['ready', 'inProgress', 'inReview', 'reviewed', 'done'];
 
 const AXES = ['data', 'infra', 'security'];
 const NUMERIC = [
+	'caps.maxBugbotRounds',
 	'caps.maxResumes',
 	'caps.stallMinutes',
 	'caps.frontierRepeatHours',
@@ -207,6 +209,15 @@ export function validate(config = load()) {
 		problems.push('improvement.factoryRepo must be a folder path or null');
 	const attribution = dig(config, 'git.agentAttribution');
 	if (attribution !== undefined && typeof attribution !== 'boolean') problems.push('git.agentAttribution must be true or false');
+	for (const k of ['pr.reviewedOnMergeInto', 'pr.doneOnMergeInto', 'sources.notion.project']) {
+		const v = dig(config, k);
+		if (v != null && (typeof v !== 'string' || !v)) problems.push(`${k} must be a name or null`);
+	}
+	const bugbot = dig(config, 'review.bugbot');
+	if (bugbot !== undefined && typeof bugbot !== 'boolean') problems.push('review.bugbot must be true or false');
+	if (bugbot === true)
+		for (const k of ['review.bugbotComment', 'review.bugbotAuthor'])
+			if (typeof dig(config, k) !== 'string' || !dig(config, k)) problems.push(`${k} is required when review.bugbot is true`);
 	const takeover = dig(config, 'cleanup.takeover');
 	if (takeover !== undefined && typeof takeover !== 'boolean') problems.push('cleanup.takeover must be true or false');
 	const cports = dig(config, 'cleanup.ports');

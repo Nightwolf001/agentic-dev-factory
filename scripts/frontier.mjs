@@ -1,6 +1,6 @@
 // Cheap preflight for a scheduled pass. It asks the configured task source, from a script and without a model,
 // whether a paid `claude -p` session has anything to do: a claimable task, an orphaned in-progress task, or an
-// in-review task whose PR was approved, merged or has fresh requested changes. When not, tick.sh logs one line and
+// in-review task whose PR was approved, merged or has fresh requested changes, a fix comment or open Bugbot threads. When not, tick.sh logs one line and
 // exits without spawning.
 //
 //   frontier.mjs check     exit 0 = run the session; 20 = nothing to do; anything else = could not tell, no session
@@ -21,28 +21,64 @@ export const UNKNOWN = 21;
 
 export { isBuildable, fingerprintOf };
 
-// What a task in review needs from the factory. pr: { state, reviewDecision, author, headCommittedAt,
-// reviews: [{state, submittedAt, author}] }. Returns 'advance' (merged or approved), 'fix' (a change request from
-// someone other than the PR author, after the latest commit) or null. A comment is never a fix request: the text
-// goes into a builder prompt, and a bot, CI, a question or an LGTM would all start a paid pass.
-export function prNeedsAction(pr) {
+// The settings prNeedsAction reads, from the merged config.
+export function actionOptions(cfg) {
+	const g = (k) => get(k, { config: cfg });
+	return {
+		reviewedOn: g('pr.reviewedOnMergeInto') ?? null,
+		doneOn: g('pr.doneOnMergeInto') ?? null,
+		fixComment: g('tasks.fixComment'),
+		bugbot: g('review.bugbot') === true,
+		bugbotAuthor: g('review.bugbotAuthor'),
+	};
+}
+
+const escapeRe = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// A comment asks for a fix pass when a line starts with the fix phrase, with or without the leading slash
+// ("dev-factory fix", "/dev-factory fix rename the helper").
+export function isFixComment(body, fixComment) {
+	const phrase = String(fixComment ?? '').replace(/^\//, '');
+	return !!phrase && new RegExp(`^\\s*/?${escapeRe(phrase)}(?![\\w-])`, 'im').test(String(body ?? ''));
+}
+
+// What a task in review needs from the factory. pr: { state, reviewDecision, author, baseRefName, headCommittedAt,
+// reviews: [{state, submittedAt, author}], comments: [{createdAt, author, body}], bugbotOpen, reachedDone }.
+// Returns 'done' (merged into pr.doneOnMergeInto, or into something that has since reached it), 'advance' (merged
+// into pr.reviewedOnMergeInto, or, when that is unset, merged or approved), 'fix' (a change request from someone
+// other than the PR author after the latest commit, a comment with the fix phrase after it, or open Bugbot threads)
+// or null. Any other comment is never a fix request: the text goes into a builder prompt, and a bot, CI, a question
+// or an LGTM would all start a paid pass.
+export function prNeedsAction(pr, { reviewedOn = null, doneOn = null, fixComment = null, bugbot = false } = {}) {
 	if (!pr) return null;
-	if (pr.state === 'MERGED' || pr.reviewDecision === 'APPROVED') return 'advance';
-	const requested = (pr.reviews ?? []).some(
-		(r) => r.state === 'CHANGES_REQUESTED' && r.author !== pr.author && Date.parse(r.submittedAt) > Date.parse(pr.headCommittedAt),
-	);
-	return requested ? 'fix' : null;
+	if (pr.state === 'MERGED') {
+		if (doneOn && (pr.baseRefName === doneOn || pr.reachedDone)) return 'done';
+		if (!reviewedOn || pr.baseRefName === reviewedOn) return 'advance';
+		return null;
+	}
+	if (!reviewedOn && pr.reviewDecision === 'APPROVED') return 'advance';
+	const after = (at) => Date.parse(at) > Date.parse(pr.headCommittedAt);
+	const requested = (pr.reviews ?? []).some((r) => r.state === 'CHANGES_REQUESTED' && r.author !== pr.author && after(r.submittedAt));
+	const asked = (pr.comments ?? []).some((c) => !/\[bot\]$/.test(c.author ?? '') && after(c.createdAt) && isFixComment(c.body, fixComment));
+	return requested || asked || (bugbot && pr.bugbotOpen > 0) ? 'fix' : null;
 }
 
 // deps: { list({states, staleMinutes}) -> tasks[], prState(key) -> pr data for prNeedsAction }, state: { fingerprint, at } | null
 export async function decide({ cfg, deps, state, now = Date.now() }) {
 	const repeatMs = get('caps.frontierRepeatHours', { config: cfg }) * 3600_000;
 	const stall = get('caps.stallMinutes', { config: cfg });
+	const opts = actionOptions(cfg);
 	const strays = await deps.list({ states: ['inProgress'], staleMinutes: stall });
 	if (strays.length) return { run: true, reason: `${strays.length} orphaned in-progress task(s)` };
 	for (const t of await deps.list({ states: ['inReview'] })) {
-		const action = prNeedsAction(await deps.prState(t.key));
-		if (action) return { run: true, reason: `${t.key} PR ${action === 'advance' ? 'approved or merged' : 'has review feedback'}` };
+		const action = prNeedsAction(await deps.prState(t.key, opts), opts);
+		if (action) return { run: true, reason: `${t.key} PR ${action === 'fix' ? 'has review feedback' : 'is merged or approved'}` };
+	}
+	// reviewed is the people's stage unless a merge into a later branch is what finishes a task
+	if (opts.doneOn) {
+		for (const t of await deps.list({ states: ['reviewed'] })) {
+			if (prNeedsAction(await deps.prState(t.key, opts), opts) === 'done') return { run: true, reason: `${t.key} reached ${opts.doneOn}` };
+		}
 	}
 	const frontier = (await deps.list({ states: ['ready'] })).filter(isBuildable);
 	if (!frontier.length) return { run: false, reason: 'frontier empty' };
@@ -74,18 +110,56 @@ export function discardPending(dir) {
 	fs.rmSync(pendingFile(dir), { force: true });
 }
 
-// The PR a task produced, found by its key in the title (every factory PR title ends in [KEY]).
-export function prStateFor(key, run = (args) => execFileSync('gh', args, { encoding: 'utf8' })) {
+const THREADS_QUERY =
+	'query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){reviewThreads(first:100){nodes{isResolved comments(first:1){nodes{author{login}}}}}}}}';
+
+// The PR a task produced, found by its key in the title (every factory PR title ends in [KEY]). opts adds the reads the
+// review settings need: Bugbot's unresolved threads (bugbotAuthor) and whether a merge reached the done branch (doneOn).
+export function prStateFor(
+	key,
+	run = (args) => execFileSync('gh', args, { encoding: 'utf8' }),
+	{ doneOn = null, bugbot = false, bugbotAuthor = null } = {},
+) {
 	const list = JSON.parse(run(['pr', 'list', '--state', 'all', '--search', `${key} in:title`, '--json', 'number', '--limit', '1']));
 	if (!list.length) return null;
-	const pr = JSON.parse(run(['pr', 'view', String(list[0].number), '--json', 'state,reviewDecision,author,commits,reviews']));
+	const number = String(list[0].number);
+	const pr = JSON.parse(run(['pr', 'view', number, '--json', 'state,reviewDecision,author,commits,reviews,comments,baseRefName,mergeCommit']));
 	const last = pr.commits?.[pr.commits.length - 1];
+	let bugbotOpen = 0;
+	if (bugbot && bugbotAuthor && pr.state === 'OPEN') {
+		const repo = JSON.parse(run(['repo', 'view', '--json', 'owner,name']));
+		const threads = JSON.parse(
+			run([
+				'api',
+				'graphql',
+				'-f',
+				`query=${THREADS_QUERY}`,
+				'-F',
+				`owner=${repo.owner.login}`,
+				'-F',
+				`name=${repo.name}`,
+				'-F',
+				`n=${number}`,
+			]),
+		).data.repository.pullRequest.reviewThreads.nodes;
+		bugbotOpen = threads.filter((t) => !t.isResolved && t.comments.nodes[0]?.author?.login === bugbotAuthor).length;
+	}
+	let reachedDone = false;
+	if (doneOn && pr.state === 'MERGED' && pr.mergeCommit?.oid && pr.baseRefName !== doneOn) {
+		// the merge is on the done branch when that branch is ahead of it or level with it
+		const status = run(['api', `repos/{owner}/{repo}/compare/${doneOn}...${pr.mergeCommit.oid}`, '--jq', '.status']).trim();
+		reachedDone = status === 'behind' || status === 'identical';
+	}
 	return {
 		state: pr.state,
 		reviewDecision: pr.reviewDecision,
 		author: pr.author?.login,
+		baseRefName: pr.baseRefName,
 		headCommittedAt: last?.committedDate ?? last?.authoredDate,
 		reviews: (pr.reviews ?? []).map((r) => ({ state: r.state, submittedAt: r.submittedAt, author: r.author?.login })),
+		comments: (pr.comments ?? []).map((c) => ({ createdAt: c.createdAt, author: c.author?.login, body: c.body })),
+		bugbotOpen,
+		reachedDone,
 	};
 }
 
@@ -111,7 +185,7 @@ async function main() {
 		/* first pass */
 	}
 	const source = makeSource(cfg);
-	const d = await decide({ cfg, deps: { list: (f) => source.list(f), prState: (k) => prStateFor(k) }, state });
+	const d = await decide({ cfg, deps: { list: (f) => source.list(f), prState: (k, o) => prStateFor(k, undefined, o) }, state });
 	if (d.run && d.fingerprint) savePending(dir, d.fingerprint);
 	console.log(`frontier: ${d.run ? 'run' : 'skip'}: ${d.reason}`);
 	process.exit(d.run ? 0 : SKIP);
