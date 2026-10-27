@@ -1,6 +1,6 @@
 {
 	"name": "dev-factory",
-	"version": "0.6.0",
+	"version": "0.6.1",
 	"description": "Plans, builds, verifies and ships tasks to draft PRs. Takes tasks from GitHub Issues, Notion, Jira or local files; builds each in an isolated worktree, records QA evidence, reviews in two steps, and opens a draft PR. Every MCP server is optional.",
 	"author": {
 		"name": "dev-factory contributors"

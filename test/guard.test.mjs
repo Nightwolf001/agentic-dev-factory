@@ -746,6 +746,15 @@ test('the scheduler may read review threads and resolve one; no other graphql wr
 		assert.equal(evaluate(c, {}).deny, true, c);
 });
 
+test('the upload URL the Notion MCP server returns is allowed, with its lower-case authorization header', () => {
+	const url = 'https://api.notion.com/v1/mcp/file_uploads/40682a3e-9a5b-81c4-814a-00b27bb31b58/send';
+	const file = '/w/.worktrees/TASK-26/.dev-factory/evidence/TASK-26/run-1/pencil-card-nav-hover-1.png';
+	const curl = `curl -sS -X POST -H "authorization: Bearer eyJ.a+b/c=" -F file=@${file} ${url}`;
+	assert.equal(evaluate(curl, {}).deny, false);
+	assert.equal(evaluate(curl, { role: 'builder' }).deny, true);
+	assert.equal(evaluate(curl.replace('/mcp/', '/mcp/x/'), {}).deny, true);
+});
+
 test('the Notion upload helper and a curl with an image type are allowed for the scheduler only', () => {
 	const file = '.dev-factory/evidence/TASK-12/run-1/home.png';
 	const helper = `node /p/dev-factory/0.5.0/scripts/notion-upload.mjs --file ${file} --url ${UPLOAD} --header "Authorization: Bearer ntn_x"`;
