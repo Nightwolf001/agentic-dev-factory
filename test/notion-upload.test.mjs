@@ -56,6 +56,14 @@ test('upload posts multipart with the returned headers and reports the id', asyn
 	assert.equal(seen.init.body.get('file').name, 'home.png');
 });
 
+test('the MCP flavour of the upload URL, with a lower-case authorization header, is accepted', () => {
+	const file = evidenceFile();
+	const url = 'https://api.notion.com/v1/mcp/file_uploads/40682a3e-9a5b-81c4-814a-00b27bb31b58/send';
+	assert.equal(checkTarget({ file, url }), file);
+	assert.deepEqual(parseHeaders(['authorization: Bearer eyJ.a+b/c=']), { authorization: 'Bearer eyJ.a+b/c=' });
+	assert.throws(() => checkTarget({ file, url: url.replace('/mcp/', '/mcp/x/') }));
+});
+
 test('a failed upload carries the status and a short error', async () => {
 	const fetchImpl = async () => ({ ok: false, status: 400, text: async () => 'nope' });
 	const r = await upload({ file: evidenceFile(), url: URL_OK }, fetchImpl);

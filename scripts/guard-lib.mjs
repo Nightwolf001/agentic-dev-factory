@@ -249,7 +249,7 @@ function ghApiWrites(args) {
 
 // The one request to a tracker the scheduler makes with curl: Notion hands out an upload URL for each QA screenshot
 // (notion-create-file-upload) and the file goes there as multipart. Only an evidence image, only to a file-upload URL.
-const NOTION_UPLOAD_URL = /^https:\/\/api\.notion\.com\/v1\/file_uploads\/[0-9a-f-]{32,36}\/send$/i;
+const NOTION_UPLOAD_URL = /^https:\/\/api\.notion\.com\/v1\/(?:mcp\/)?file_uploads\/[0-9a-f-]{32,36}\/send$/i;
 const EVIDENCE_FILE = /^file=@(?:[^\s"']*\/)?\.dev-factory\/evidence\/[\w.-]+\/run-\d+\/[\w.-]+(;type=image\/[\w.+-]+)?$/;
 const unquote = (t) => t.replace(/^(["'])(.*)\1$/, '$2');
 function notionUpload(cmd, args) {

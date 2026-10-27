@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 export const MAX_BYTES = 20 * 1024 * 1024;
-const UPLOAD_URL = /^https:\/\/api\.notion\.com\/v1\/file_uploads\/[0-9a-f-]{32,36}\/send$/i;
+const UPLOAD_URL = /^https:\/\/api\.notion\.com\/v1\/(?:mcp\/)?file_uploads\/[0-9a-f-]{32,36}\/send$/i;
 const EVIDENCE = /(^|\/)\.dev-factory\/evidence\/[\w.-]+\/run-\d+\/[\w.-]+\.(png|jpe?g|gif|webp)$/i;
 const TYPES = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' };
 
@@ -23,7 +23,8 @@ export function parseHeaders(list) {
 }
 
 export function checkTarget({ file, url }) {
-	if (!UPLOAD_URL.test(url ?? '')) throw new Error('url must be https://api.notion.com/v1/file_uploads/<id>/send');
+	if (!UPLOAD_URL.test(url ?? ''))
+		throw new Error('url must be the upload_url notion-create-file-upload returned (https://api.notion.com/v1/[mcp/]file_uploads/<id>/send)');
 	const resolved = path.resolve(file ?? '');
 	if (!EVIDENCE.test(resolved.split(path.sep).join('/'))) throw new Error('file must be an image under .dev-factory/evidence/<KEY>/run-<N>/');
 	if (!EVIDENCE.test(fs.realpathSync(resolved).split(path.sep).join('/'))) throw new Error('file resolves outside .dev-factory/evidence');
