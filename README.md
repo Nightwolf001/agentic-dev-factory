@@ -320,6 +320,7 @@ dev-factory config validate                   # lists every problem; also part o
 | `runtime.scheduler`         | `DF_SCHEDULER`             |
 | `improvement.factoryRepo`   | `DF_FACTORY_REPO`          |
 | `cleanup.takeover`          | `DF_TAKEOVER`              |
+| `blocked.agentDecides`      | `DF_AGENT_DECIDES`         |
 
 A list setting such as `DF_JIRA_PROJECTS` takes a comma-separated value. Other variables are not settings but switches for one run: `DF_RUNTIME`, `DF_REPO`, `DF_STATE_DIR`, `DF_LOG`, `DF_CONFIG`, `DF_PREFLIGHT=off`, `DF_READY_TIMEOUT`, `DF_PLUGIN_DIR`, `DF_MCP_FILE`.
 
@@ -424,19 +425,26 @@ Every setting, with its default. `see config.json` means the default is a longer
 
 #### Caps and budgets
 
-| Key                        | Default | What it does                                                                                 |
-| -------------------------- | ------- | -------------------------------------------------------------------------------------------- |
-| `caps.maxOpenPrs`          | `3`     | Factory PRs open at once; a pass stops claiming at this number.                              |
-| `caps.maxConcurrent`       | `1`     | Tasks built in one pass. Raise it only after checking your plan's usage limits.              |
-| `caps.breakerThreshold`    | `2`     | This many blocked tasks within the window stop new claims until a person looks.              |
-| `caps.breakerWindowHours`  | `6`     | The window for the breaker.                                                                  |
-| `caps.stallMinutes`        | `90`    | An in-progress task quiet for this long with no driver is a stray and is resumed or blocked. |
-| `caps.maxFixRounds`        | `2`     | How many times Critical or High review findings go back to the builder.                      |
-| `caps.maxBugbotRounds`     | `3`     | How many fix rounds Bugbot findings get before the task is blocked for a person.             |
-| `caps.maxQaFixAttempts`    | `5`     | Fix attempts after failed QA per task.                                                       |
-| `caps.maxBudgetUsd`        | `40`    | Spend cap for one scheduled session.                                                         |
-| `caps.maxResumes`          | `2`     | Resumes of an orphaned task before it is blocked.                                            |
-| `caps.frontierRepeatHours` | `6`     | Hours before an unchanged queue is looked at again by a paid session.                        |
+| Key                        | Default | What it does                                                                                        |
+| -------------------------- | ------- | --------------------------------------------------------------------------------------------------- |
+| `caps.maxOpenPrs`          | `3`     | Factory PRs open at once; a pass stops claiming at this number.                                     |
+| `caps.maxConcurrent`       | `1`     | Tasks built in one pass. Raise it only after checking your plan's usage limits.                     |
+| `caps.breakerThreshold`    | `2`     | This many blocked tasks within the window stop new claims until a person looks.                     |
+| `caps.breakerWindowHours`  | `6`     | The window for the breaker.                                                                         |
+| `caps.stallMinutes`        | `90`    | An in-progress task quiet for this long with no driver is a stray and is resumed or blocked.        |
+| `caps.maxFixRounds`        | `2`     | How many times Critical or High review findings go back to the builder.                             |
+| `caps.maxBugbotRounds`     | `3`     | How many fix rounds Bugbot findings get before the task is blocked for a person.                    |
+| `caps.maxQaFixAttempts`    | `5`     | Fix attempts after failed QA per task.                                                              |
+| `caps.maxBudgetUsd`        | `40`    | Spend cap for one scheduled session.                                                                |
+| `caps.maxResumes`          | `2`     | Resumes of an orphaned task before it is blocked.                                                   |
+| `caps.maxDecisions`        | `1`     | Decisions an agent may make on one task (`blocked.agentDecides`) before it is blocked for a person. |
+| `caps.frontierRepeatHours` | `6`     | Hours before an unchanged queue is looked at again by a paid session.                               |
+
+#### Blocked tasks
+
+| Key                    | Default | What it does                                                                                                                                                                                                                                                                                            |
+| ---------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `blocked.agentDecides` | `false` | When a build stops on a question (a choice between options, an ambiguity in scope), a fresh-context agent settles it and the build continues, so one open question does not hold up every task that waits on it. Off, the task is labelled and waits for a person. See [Blocked tasks](#blocked-tasks). |
 
 #### Models
 
@@ -545,6 +553,15 @@ Every setting, with its default. `see config.json` means the default is a longer
 | `sandbox.extraDomains` | `[]`    | Extra hosts the scheduled pass may reach.                                                   |
 
 QA surface rules (which paths need a browser or device walk) are in `qa/profiles.yaml`; a repository replaces them with its own `dev-factory.qa.yaml` of the same shape.
+
+### Blocked tasks
+
+By default a build that hits a question it cannot answer (two ways to meet the criteria, a backend change the ticket does not cover) is labelled `factory-blocked`, and every task that waits on it waits too. With `blocked.agentDecides` on, the pass first sends the question to a read-only, fresh-context agent (the researcher agent, run on the builder's model). It reads the ticket's acceptance criteria and the code and answers with one of two lines:
+
+-   `DECISION: <option> because <reason>`: it prefers the option that stays inside the ticket's stated scope, can be undone, and loses no safety; the option it passed over is recorded as a follow-up. The pass comments the decision on the task, commits the notes to `docs/plans/<KEY>/research.md`, and hands the decision to the builder as part of the acceptance criteria. The PR body lists it under "Decisions made without a person" so a reviewer can overrule it.
+-   `ESCALATE: <reason>`: every option is destructive or irreversible, or involves credentials, production data, spend or a product or legal call only a person can make. The task is blocked as before, with the agent's reason added.
+
+At most `caps.maxDecisions` decisions are made per task. Environment failures, spent budgets, stalls and a task with no acceptance criteria are never decided by an agent; they block as before.
 
 ## Starting a session
 
