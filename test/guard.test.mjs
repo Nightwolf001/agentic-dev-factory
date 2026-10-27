@@ -745,3 +745,13 @@ test('the scheduler may read review threads and resolve one; no other graphql wr
 	])
 		assert.equal(evaluate(c, {}).deny, true, c);
 });
+
+test('the Notion upload helper and a curl with an image type are allowed for the scheduler only', () => {
+	const file = '.dev-factory/evidence/TASK-12/run-1/home.png';
+	const helper = `node /p/dev-factory/0.5.0/scripts/notion-upload.mjs --file ${file} --url ${UPLOAD} --header "Authorization: Bearer ntn_x"`;
+	assert.equal(evaluate(helper, {}).deny, false);
+	assert.equal(evaluate(helper, { role: 'builder', branch: 'task/APP-12-x' }).deny, true);
+	assert.equal(evaluate(`curl -sS -X POST -H "Authorization: Bearer ntn_x" -F "file=@${file};type=image/png" ${UPLOAD}`, {}).deny, false);
+	assert.equal(evaluate(`curl -sS -X POST -F "file=@${file};type=text/html" ${UPLOAD}`, {}).deny, true);
+	assert.equal(evaluate('node /p/scripts/other.mjs https://api.notion.com/v1/pages', {}).deny, true);
+});

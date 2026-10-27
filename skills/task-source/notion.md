@@ -30,9 +30,9 @@ Operations through the MCP server:
 -   `COMMENT`: `notion-create-comment` on the page.
 -   `LINK`: `notion-update-page` with `Branch` (the branch URL), `Pull request`, `QA verdict` and, when `sources.notion.project` is set, `Project` set. For each screenshot, one file at a time:
     1. `notion-create-file-upload` with the file name. It returns `upload_url` and `upload_headers`.
-    2. Send the file with one plain command, typed out in full (the shell guard allows exactly this shape and nothing broader):
-       `curl -sS -X POST -H "<header: value>" … -F file=@<worktree>/.dev-factory/evidence/<KEY>/run-<N>/<name>.png <upload_url>`
-       Every returned header becomes one `-H`. No variables, `$(…)`, `-o` or other flags, and no second URL: the guard refuses a command that has them. The file must be under `.dev-factory/evidence/`, and the URL must be a Notion `file_uploads/<id>/send` URL.
+    2. Send the file with the helper, one command per file, typed out in full:
+       `node "${CLAUDE_PLUGIN_ROOT}/scripts/notion-upload.mjs" --file <worktree>/.dev-factory/evidence/<KEY>/run-<N>/<name>.png --url <upload_url> --header "<name: value>" …`
+       Every returned header becomes one `--header`. It prints `{"ok":true,"id":"<id>",…}` and exits 1 with an `error` otherwise; the `id` is the file upload's id. It refuses a file outside `.dev-factory/evidence/` and a URL that is not a Notion `file_uploads/<id>/send` URL. Run it; do not assume the guard refuses it. If the helper cannot run, the same upload as one plain `curl -sS -X POST -H "<header: value>" … -F file=@<path>.png <upload_url>` (an optional `;type=image/png` after the path) is allowed, and nothing broader.
     3. Set `Evidence` to the array of `{"type":"file_upload","file_upload":{"id":"<id>"}}` objects (keep any files already there). If the tool refuses a file property value, put the upload's `markdown_source` into the page body with `notion-update-page` instead and say so in the comment.
        Files over 20 MiB or an upload that fails: leave `Evidence` as it is and say why in the comment; the screenshots are on the PR either way. Screenshots are walked in a test environment, but look at one before attaching if the task touched personal data.
 -   `BLOCK`: add the tag, comment, set Status back to the first `ready` name.

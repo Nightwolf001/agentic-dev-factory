@@ -85,7 +85,7 @@ Per claimed task, sequentially when `DF_MAX_CONCURRENT` is 1:
     2. If `node "${CLAUDE_PLUGIN_ROOT}/bin/qa.mjs" review status --worktree <worktree>` shows blocking findings for `spec`, go to the fix step. Otherwise do step 2 the same way with `axis` `standards` (the recorder refuses it until step 1 is clean). After standards is clean, read `triggered` from `node "${CLAUDE_PLUGIN_ROOT}/bin/qa.mjs" review status --worktree <worktree>` and run each triggered specialist axis (`data`, `infra`, `security`) the same way, one at a time.
     3. All required steps clean: keep the Medium and Low findings from `.dev-factory/review/*.json` for the PR body, comment `review done`, and continue to step 7.
     4. Fix step: if `r` equals `caps.maxFixRounds` plus one, go to section 6 with reason `review not clean after <n> rounds` and the open findings. Otherwise set `role` `builder`, `until` `build`, delete `build.done`, dispatch the `factory-builder` agent with the open Critical and High findings (file, line, note) and the instruction to fix, commit and run QA again from `start`. Wait for `build.done` as in step 5, increment `r`, return to step 6.1.
-7. Ship: set `role` `builder`, `until` `ship`, dispatch the `factory-builder` agent for the ship phase only, passing the Medium and Low findings for the PR body, and wait with the same loop over `ship.done` or `blocked.json`. Comment `ship done`.
+7. Ship: set `role` `builder`, `until` `ship`, dispatch the `factory-builder` agent for the ship phase only, passing the Medium and Low findings for the PR body and the task's URL (the GitHub issue URL, the Notion page URL or the Jira browse URL; none for a local task) for its Task link, and wait with the same loop over `ship.done` or `blocked.json`. Comment `ship done`.
 
 ## 5. Post-run and advancing finished work
 
@@ -109,13 +109,14 @@ Read the settings once: `pr.reviewedOnMergeInto`, `pr.doneOnMergeInto`, `review.
 
 After a PR is opened or a fix is pushed, `skills/ship` has posted the `review.bugbotComment` comment (default `bugbot run`), which starts the review. Then, for each `inReview` task:
 
+0. A reply from `review.bugbotAuthor` saying Bugbot is disabled for this repository means there will be no review: treat the PR as clean, do not wait, and say once in the exit summary that `review.bugbot` is on for a repository where Bugbot is off.
 1. Watch: the review is finished when the `Cursor Bugbot` check on the head commit is no longer pending (`gh pr checks <N>`); keep to the pass, never wait more than a few minutes, and pick it up next pass if it is still running.
 2. Read its unresolved threads (`gh api graphql` with a `reviewThreads` query, each thread's id, path, line and first comment, by `review.bugbotAuthor`). None: COMMENT `[dev-factory] phase: bugbot clean` and go on.
 3. Some: count the earlier `[dev-factory] phase: bugbot fix` comments; at `caps.maxBugbotRounds` go to section 6 with reason `bugbot not clean after <n> rounds`. Otherwise COMMENT `[dev-factory] phase: bugbot fix round=<n>` and run a fix pass (as above) with the threads verbatim; if a finding needs diagnosis (a bug, a failing behaviour), the builder debugs it as in section 4 step 5 first.
 4. When the fix has shipped (section 4 step 7 posts the Bugbot comment again), resolve each thread the commit answered: `gh api graphql -f query='mutation{resolveReviewThread(input:{threadId:"<id>"}){thread{isResolved}}}'`. Resolve only threads the fix actually addressed; leave one that was disputed or not fixed, and say why in the task comment. The next pass reads Bugbot's new findings.
 
 After `reviewed`, QA, UAT and release belong to people. A task whose state is in `done` counts as done for the factory (blockers resolved, validation eligible). A person may park a task at any stage by adding `tasks.blockedLabel` or moving it to a status the factory does not know: leave it alone. A task a person moves back to `ready`, or comments `tasks.fixComment` on, is a fix pass as before.
-The Notion upload in LINK is the scheduler's own `curl` (see `skills/task-source/notion.md`); the guard allows that one shape.
+The Notion upload in LINK is the scheduler's own `scripts/notion-upload.mjs` (see `skills/task-source/notion.md`); the guard allows it, and one plain `curl` shape as a fallback. Attempt the upload before saying it cannot be done, and quote the helper's `error` if it fails.
 
 ## 5b. Validation of merged work
 
@@ -128,6 +129,13 @@ For one task: `git worktree add --detach <worktrees>/validate-<KEY> origin/<base
 Write each comment or PR body to a temp file and run `node "${CLAUDE_PLUGIN_ROOT}/bin/qa.mjs" scrub --file <file>` before posting it. A failure means raw data slipped in: replace it with ids, queries and aggregate counts and run it again. Never post a text that has not passed. The same applies to the run-record comment.
 
 ## 6. Blocked path
+
+Read `blocked.agentDecides` (`node "${CLAUDE_PLUGIN_ROOT}/scripts/config.mjs" get blocked.agentDecides`). When it is true and `<worktree>/.dev-factory/blocked.json` was written by the builder as a question (its `decision` asks which of several options to take, or how to read an ambiguity; not an environment failure, `debug budget spent`, `stalled after <n> resumes`, `needs acceptance criteria`, `bugbot not clean after <n> rounds` or a missing credential), settle it instead of blocking:
+
+1. Count the task's comments of the form `[dev-factory] decision:`. At `caps.maxDecisions` or more, block as below.
+2. Set `role` to `researcher` in run.json, move `blocked.json` to `.dev-factory/blocked.prev.json`, and dispatch the `factory-researcher` agent with `model` set to `models.builder`, the key, the worktree, the task description, the `reason` and `decision` from the block, and this instruction: the single question is the block's decision; read the acceptance criteria and the code; choose the option that stays inside the ticket's stated scope, can be undone, and loses no safety, and name the option passed over as a follow-up; begin the Summary with `DECISION: <option> because <reason>`; begin it with `ESCALATE: <reason>` instead when every option is destructive or irreversible, or needs credentials, production data, spend, or a product or legal call only a person can make. Wait with the same foreground loop as the research wait.
+3. `DECISION:` in `docs/plans/<KEY>/research.md`: commit it (`Add decision notes [<KEY>]`, no trailer), COMMENT `[dev-factory] decision: <reason>. Chose: <option>. Why: <reason>. Follow-up: <option passed over>` (scrub rule), set `role` back to `builder`, delete `blocked.prev.json`, and re-dispatch the builder with its earlier prompt plus: "A decision was made for you: <option>. Treat it as part of the acceptance criteria. Put the decision and the follow-up in the PR body under Decisions made without a person." Continue from the build wait in section 4; this is not a resume and does not count as blocked.
+4. `ESCALATE:`, a researcher `blocked.json`, a stall or no file: restore `blocked.prev.json` to `blocked.json` and block as below, adding the agent's reason to the BLOCK decision text.
 
 BLOCK the task (the label keeps it out of the queue until a person removes it) and tear down its environment. Never retry on your own.
 

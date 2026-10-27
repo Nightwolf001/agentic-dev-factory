@@ -106,6 +106,9 @@
 			"ai-tooling": "ai-tooling"
 		}
 	},
+	"blocked": {
+		"agentDecides": false
+	},
 	"caps": {
 		"maxOpenPrs": 3,
 		"maxConcurrent": 1,
@@ -117,6 +120,7 @@
 		"maxQaFixAttempts": 5,
 		"maxBudgetUsd": 40,
 		"maxResumes": 2,
+		"maxDecisions": 1,
 		"frontierRepeatHours": 6
 	},
 	"models": {

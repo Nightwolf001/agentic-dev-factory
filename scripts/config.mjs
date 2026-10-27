@@ -38,6 +38,7 @@ export const ENV_OVERRIDES = {
 	'improvement.factoryRepo': 'DF_FACTORY_REPO',
 	'runtime.scheduler': 'DF_SCHEDULER',
 	'cleanup.takeover': 'DF_TAKEOVER',
+	'blocked.agentDecides': 'DF_AGENT_DECIDES',
 };
 
 // Keys every source needs; the active source's own keys are added by requiredFor().
@@ -94,6 +95,7 @@ const AXES = ['data', 'infra', 'security'];
 const NUMERIC = [
 	'caps.maxBugbotRounds',
 	'caps.maxResumes',
+	'caps.maxDecisions',
 	'caps.stallMinutes',
 	'caps.frontierRepeatHours',
 	'telemetry.maxRows',
@@ -220,6 +222,8 @@ export function validate(config = load()) {
 			if (typeof dig(config, k) !== 'string' || !dig(config, k)) problems.push(`${k} is required when review.bugbot is true`);
 	const takeover = dig(config, 'cleanup.takeover');
 	if (takeover !== undefined && typeof takeover !== 'boolean') problems.push('cleanup.takeover must be true or false');
+	const agentDecides = dig(config, 'blocked.agentDecides');
+	if (agentDecides !== undefined && typeof agentDecides !== 'boolean') problems.push('blocked.agentDecides must be true or false');
 	const cports = dig(config, 'cleanup.ports');
 	if (cports !== undefined && !(Array.isArray(cports) && cports.every((p) => Number.isInteger(p) && p > 0 && p < 65536)))
 		problems.push('cleanup.ports must be a list of port numbers');

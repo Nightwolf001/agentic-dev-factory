@@ -173,3 +173,12 @@ test('environment.readyTimeout and environment.preCommit are validated, and defa
 	assert.ok(p.includes('environment.readyTimeout must be a non-negative integer'));
 	assert.ok(p.includes('environment.preCommit must be a command or null'));
 });
+
+test('blocked.agentDecides is off by default, is a boolean, and DF_AGENT_DECIDES switches it for one run', () => {
+	assert.equal(get('blocked.agentDecides', { config: load(), env: {} }), false);
+	assert.equal(get('blocked.agentDecides', { config: load(), env: { DF_AGENT_DECIDES: '1' } }), true);
+	assert.equal(get('caps.maxDecisions', { config: load(), env: {} }), 1);
+	assert.deepEqual(validate(merge(load(), { blocked: { agentDecides: true } })), []);
+	assert.ok(validate(merge(load(), { blocked: { agentDecides: 'yes' } })).some((p) => p.includes('blocked.agentDecides')));
+	assert.ok(validate(merge(load(), { caps: { maxDecisions: -1 } })).some((p) => p.includes('caps.maxDecisions')));
+});
