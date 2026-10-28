@@ -14,6 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { get, load } from './config.mjs';
 import { isMain } from './is-main.mjs';
+import { isStacked, planStack, parseStackNote, stackAction, stackSettings } from './stack-lib.mjs';
 import { fingerprintOf, isBuildable, makeSource, missingCredentials } from './sources/index.mjs';
 
 export const SKIP = 20;
@@ -30,6 +31,7 @@ export function actionOptions(cfg) {
 		fixComment: g('tasks.fixComment'),
 		bugbot: g('review.bugbot') === true,
 		bugbotAuthor: g('review.bugbotAuthor'),
+		...stackSettings(cfg),
 	};
 }
 
@@ -47,10 +49,15 @@ export function isFixComment(body, fixComment) {
 // Returns 'done' (merged into pr.doneOnMergeInto, or into something that has since reached it), 'advance' (merged
 // into pr.reviewedOnMergeInto, or, when that is unset, merged or approved), 'fix' (a change request from someone
 // other than the PR author after the latest commit, a comment with the fix phrase after it, or open Bugbot threads)
-// or null. Any other comment is never a fix request: the text goes into a builder prompt, and a bot, CI, a question
+// or null. A PR stacked on a blocker's PR also answers 'retarget' (the blocker merged), 'restack' (the blocker has new
+// commits) or 'abandoned' (the blocker was closed unmerged), all before a fix. A stacked PR merged into its blocker's
+// branch is neither reviewed nor done: only a later merge that reached pr.doneOnMergeInto counts. Any other comment is never a fix request: the text goes into a builder prompt, and a bot, CI, a question
 // or an LGTM would all start a paid pass.
 export function prNeedsAction(pr, { reviewedOn = null, doneOn = null, fixComment = null, bugbot = false } = {}) {
 	if (!pr) return null;
+	const stackStep = stackAction(pr);
+	if (stackStep) return stackStep;
+	if (pr.state === 'MERGED' && isStacked(pr)) return doneOn && pr.reachedDone ? 'done' : null;
 	if (pr.state === 'MERGED') {
 		if (doneOn && (pr.baseRefName === doneOn || pr.reachedDone)) return 'done';
 		if (!reviewedOn || pr.baseRefName === reviewedOn) return 'advance';
@@ -64,6 +71,29 @@ export function prNeedsAction(pr, { reviewedOn = null, doneOn = null, fixComment
 }
 
 // deps: { list({states, staleMinutes}) -> tasks[], prState(key) -> pr data for prNeedsAction }, state: { fingerprint, at } | null
+const ACTION_TEXT = {
+	fix: 'has review feedback',
+	retarget: 'is stacked on a PR that merged: retarget it',
+	restack: 'is stacked on a PR that has new commits',
+	abandoned: 'is stacked on a PR that was closed unmerged',
+};
+
+// Whether a ready task whose blockers are not all done can be built on a blocker's open PR (tasks.unblockOnPr). The
+// preflight skips the scope check, which needs the ticket text: the session applies it and may still leave the task.
+async function stackable(t, deps, opts, reviewing) {
+	const blockers = [];
+	for (const b of t.blockedBy ?? []) {
+		const taskState = b.done ? 'done' : reviewing.get(b.key) ?? 'other';
+		blockers.push({
+			key: b.key,
+			done: b.done,
+			taskState,
+			pr: b.done || !['inReview', 'reviewed'].includes(taskState) ? null : await deps.prState(b.key, opts),
+		});
+	}
+	return planStack({ blockers, enabled: opts.enabled, maxDepth: opts.maxDepth, checkScope: false }).action === 'stack';
+}
+
 export async function decide({ cfg, deps, state, now = Date.now() }) {
 	const repeatMs = get('caps.frontierRepeatHours', { config: cfg }) * 3600_000;
 	const stall = get('caps.stallMinutes', { config: cfg });
@@ -72,7 +102,7 @@ export async function decide({ cfg, deps, state, now = Date.now() }) {
 	if (strays.length) return { run: true, reason: `${strays.length} orphaned in-progress task(s)` };
 	for (const t of await deps.list({ states: ['inReview'] })) {
 		const action = prNeedsAction(await deps.prState(t.key, opts), opts);
-		if (action) return { run: true, reason: `${t.key} PR ${action === 'fix' ? 'has review feedback' : 'is merged or approved'}` };
+		if (action) return { run: true, reason: `${t.key} PR ${ACTION_TEXT[action] ?? 'is merged or approved'}` };
 	}
 	// reviewed is the people's stage unless a merge into a later branch is what finishes a task
 	if (opts.doneOn) {
@@ -80,7 +110,12 @@ export async function decide({ cfg, deps, state, now = Date.now() }) {
 			if (prNeedsAction(await deps.prState(t.key, opts), opts) === 'done') return { run: true, reason: `${t.key} reached ${opts.doneOn}` };
 		}
 	}
-	const frontier = (await deps.list({ states: ['ready'] })).filter(isBuildable);
+	const ready = await deps.list({ states: ['ready'] });
+	const reviewing = new Map();
+	if (opts.enabled && ready.some((t) => !isBuildable(t)))
+		for (const state of ['inReview', 'reviewed']) for (const t of await deps.list({ states: [state] })) reviewing.set(t.key, state);
+	const frontier = [];
+	for (const t of ready) if (isBuildable(t) || (opts.enabled && (await stackable(t, deps, opts, reviewing)))) frontier.push(t);
 	if (!frontier.length) return { run: false, reason: 'frontier empty' };
 	const fp = fingerprintOf(frontier);
 	if (state?.fingerprint === fp && now - Date.parse(state.at) < repeatMs) {
@@ -110,6 +145,33 @@ export function discardPending(dir) {
 	fs.rmSync(pendingFile(dir), { force: true });
 }
 
+const cmp = (run, base, head) => run(['api', `repos/{owner}/{repo}/compare/${base}...${head}`, '--jq', '.status']).trim();
+
+// The PR this one is stacked on (from its note) and the branches below it. containsHead and containsMerge come from
+// GitHub's compare: the dependent contains a commit when it is ahead of it or level with it.
+function readStack(pr, run) {
+	const chain = pr.headRefName ? [pr.headRefName] : [];
+	const note = parseStackNote(pr.body);
+	if (!note) return { stack: undefined, chain };
+	const view = (n) => JSON.parse(run(['pr', 'view', String(n), '--json', 'number,state,headRefName,headRefOid,baseRefName,mergeCommit,body']));
+	const parent = view(note.number);
+	const contains = (oid) => !!oid && ['ahead', 'identical'].includes(cmp(run, oid, pr.headRefOid));
+	const stack = {
+		number: note.number,
+		branch: note.branch,
+		state: parent.state,
+		baseRefName: parent.baseRefName,
+		containsHead: parent.state === 'OPEN' ? contains(parent.headRefOid) : true,
+		containsMerge: parent.state === 'MERGED' ? contains(parent.mergeCommit?.oid) : false,
+	};
+	for (let p = parent, i = 0; p && p.state === 'OPEN' && i < 10; i++) {
+		chain.push(p.headRefName);
+		const up = parseStackNote(p.body);
+		p = up ? view(up.number) : null;
+	}
+	return { stack, chain };
+}
+
 const THREADS_QUERY =
 	'query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){reviewThreads(first:100){nodes{isResolved comments(first:1){nodes{author{login}}}}}}}}';
 
@@ -123,7 +185,15 @@ export function prStateFor(
 	const list = JSON.parse(run(['pr', 'list', '--state', 'all', '--search', `${key} in:title`, '--json', 'number', '--limit', '1']));
 	if (!list.length) return null;
 	const number = String(list[0].number);
-	const pr = JSON.parse(run(['pr', 'view', number, '--json', 'state,reviewDecision,author,commits,reviews,comments,baseRefName,mergeCommit']));
+	const pr = JSON.parse(
+		run([
+			'pr',
+			'view',
+			number,
+			'--json',
+			'number,state,reviewDecision,author,commits,reviews,comments,baseRefName,headRefName,headRefOid,isCrossRepository,mergeCommit,body',
+		]),
+	);
 	const last = pr.commits?.[pr.commits.length - 1];
 	let bugbotOpen = 0;
 	if (bugbot && bugbotAuthor && pr.state === 'OPEN') {
@@ -150,7 +220,13 @@ export function prStateFor(
 		const status = run(['api', `repos/{owner}/{repo}/compare/${doneOn}...${pr.mergeCommit.oid}`, '--jq', '.status']).trim();
 		reachedDone = status === 'behind' || status === 'identical';
 	}
+	const { stack, chain } = readStack(pr, run);
 	return {
+		number: pr.number ?? Number(number),
+		headRefName: pr.headRefName,
+		onOrigin: pr.state === 'OPEN' && pr.isCrossRepository !== true,
+		stack,
+		chain,
 		state: pr.state,
 		reviewDecision: pr.reviewDecision,
 		author: pr.author?.login,
