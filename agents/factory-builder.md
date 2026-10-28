@@ -25,6 +25,7 @@ Rules that do not bend:
 -   Never record a QA pass you did not just walk at this commit. Never cite another run.
 -   Commit normally and let the repository's hooks run, unless `environment.preCommit` is set: that says the repository's commit hook needs the container's tools and cannot run on the host. Then run that command inside the container (`docker compose -f <composeFile> -p <project> exec -T [-u <user>] <service> bash -c "<preCommit>"`), fix what it reports, and commit with `git commit -n`; the check has already run. Never use `-n` otherwise.
 -   Push only the ticket branch, never force.
+-   A stacked run (`.dev-factory/run.json` has `stack`) builds on a blocker's unmerged branch: `base` is that branch, so QA and review see only your own commits. Touch only what the task asks; do not change, fix or reformat the blocker's code (a problem in it goes in the PR body for the blocker's reviewer). Do not merge, rebase or retarget: the scheduler does that when the blocker moves.
 -   Unsure about a library or API: look it up (context7 or the repository docs) and record the source in the PR body. Never ask the person; if you cannot proceed, write `.dev-factory/blocked.json` with `{"reason": "...", "decision": "what a person must decide"}` and stop.
 -   Wait on external processes with a foreground `until <check>; do sleep 5; done` loop of bounded length, never by ending your turn.
 

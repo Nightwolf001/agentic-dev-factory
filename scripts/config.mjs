@@ -220,6 +220,10 @@ export function validate(config = load()) {
 	if (bugbot === true)
 		for (const k of ['review.bugbotComment', 'review.bugbotAuthor'])
 			if (typeof dig(config, k) !== 'string' || !dig(config, k)) problems.push(`${k} is required when review.bugbot is true`);
+	const unblock = dig(config, 'tasks.unblockOnPr');
+	if (unblock !== undefined && typeof unblock !== 'boolean') problems.push('tasks.unblockOnPr must be true or false');
+	const depth = dig(config, 'caps.maxStackDepth');
+	if (depth !== undefined && !(Number.isInteger(depth) && depth >= 1)) problems.push('caps.maxStackDepth must be a positive integer');
 	const takeover = dig(config, 'cleanup.takeover');
 	if (takeover !== undefined && typeof takeover !== 'boolean') problems.push('cleanup.takeover must be true or false');
 	const agentDecides = dig(config, 'blocked.agentDecides');

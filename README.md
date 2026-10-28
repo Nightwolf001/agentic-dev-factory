@@ -258,7 +258,7 @@ OAuth servers need one login that no script can do for you: start `claude` and r
 
 ## How a task flows
 
-1. A task is `ready`: labelled for the factory (`tasks.label`, default `dev-factory`), not parked with `factory-blocked`, and with every blocker `done`.
+1. A task is `ready`: labelled for the factory (`tasks.label`, default `dev-factory`), not parked with `factory-blocked`, and with every blocker `done` (or, with `tasks.unblockOnPr` on, every blocker `done` or in review with an open PR the task can [stack on](#stacked-prs)).
 2. `/dev-factory:tick` checks the caps, then claims one by setting it `inProgress`. A source that refuses a stale change means two passes cannot claim the same task.
 3. A worktree and branch (`<type>/<KEY>-<slug>`) are created, and `scripts/e2e-env.sh up` starts the environment, if the repository has one.
 4. The `factory-builder` agent works test-first, then QA walks each case and records it with `bin/qa.mjs`.
@@ -375,6 +375,7 @@ Every setting, with its default. `see config.json` means the default is a longer
 | `tasks.fixComment`     | `"dev-factory fix"` | A comment on the PR or task starting with this text (a leading `/` is optional) asks for a fix pass; the rest is the instruction. |
 | `tasks.placeholderKey` | `"TASK-000"`        | The key `/dev-factory:quick` puts in branch names and PR titles when there is no task. Set it to one your CI accepts.             |
 | `tasks.bugTypes`       | `["bug"]`           | Task types (case-insensitive) that count as bugs: triaged by the debugger first, and the stop gate wants a recorded root cause.   |
+| `tasks.unblockOnPr`    | `false`             | `true`: a task whose blockers are in review with an open PR is built on the blocker's branch ([Stacked PRs](#stacked-prs)).       |
 
 #### Task sources
 
@@ -439,6 +440,7 @@ Every setting, with its default. `see config.json` means the default is a longer
 | `caps.maxResumes`          | `2`     | Resumes of an orphaned task before it is blocked.                                                   |
 | `caps.maxDecisions`        | `1`     | Decisions an agent may make on one task (`blocked.agentDecides`) before it is blocked for a person. |
 | `caps.frontierRepeatHours` | `6`     | Hours before an unchanged queue is looked at again by a paid session.                               |
+| `caps.maxStackDepth`       | `3`     | PRs in one stack, the new one included; a task that would be deeper waits for a merge.              |
 
 #### Blocked tasks
 
@@ -678,6 +680,30 @@ Both dispatch the same agents with the same guards.
 
 Every run builds on a branch and opens its PR into it. The base is the first of: `--base <branch>`, a `Base branch: <branch>` line in the task, `git.baseBranch`, the repository's default branch. The worktree is cut from `origin/<base>`. A base must be on `origin` and your local copy must not be ahead of it, because the factory never pushes a base branch. When a base cannot be used it says why and stops (a scheduled pass blocks the task).
 
+### Stacked PRs
+
+Off by default (`tasks.unblockOnPr`). Without it a task waits in `ready` until every blocker is merged and `done`, which means a person merges each PR by hand before the next can start. With it on, a task whose blockers are not `done` but are in `inReview` (or `reviewed`) with an open PR on `origin` is built on the blocker's branch, and its draft PR targets that branch.
+
+**Which tasks stack.** Every blocker must be `done`, or in review with an open PR whose branch is on `origin` (a fork's branch is not). A blocker still `ready` or `inProgress`, with no PR, or whose PR is closed keeps the task in `ready`. The task must also depend on the blocker's code: its description has a `Blocked by:` line naming the blocker, or mentions a file the blocker's PR changes. A blocker that only orders the work (a native link, nothing shared) does not stack. A `Base branch:` line naming the blocker's branch is an explicit choice and skips that check.
+
+**Which base.** No unmerged blocker: `git.baseBranch` as before. One: that blocker's branch. Several: the one whose branch contains the others (a chain: `B` is stacked on `A`, the task is blocked by both, so it stacks on `B`). Blockers that are independent siblings: the task waits (it is skipped, not blocked) until one of them merges and the rest form a chain with it. This is a decision for the people who run the factory, taken as the safe default, and the alternative is open: building on a temporary integration branch that merges the siblings, which this version does not do because it would be a branch no person reviewed. A stack is at most `caps.maxStackDepth` PRs deep, the new PR included, and every stacked PR counts against `caps.maxOpenPrs`.
+
+**What the run does.** The worktree is cut from `origin/<blocker branch>`, `run.json` records `base` as that branch (so `bin/qa.mjs` measures the diff, review and the size label against it and only the task's own commits are judged) and a `stack` entry with the blocker's PR. The draft PR targets the blocker's branch and its body starts with `This PR is stacked on PR #N (branch ...)`. That line is how later passes find the stack.
+
+**When the blocker moves.** A pass checks every stacked PR's blocker first:
+
+| The blocker's PR | The pass                                                                                                                           |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| has new commits  | merges them into the dependent branch (`scripts/stack.mjs sync`), then QA and review run again before building on                  |
+| merged           | points the PR at the branch the blocker merged into (`gh pr edit --base`) and merges that branch in (`scripts/stack.mjs retarget`) |
+| closed unmerged  | blocks the dependent with the reason `blocker PR #N closed unmerged`                                                               |
+
+The update is a merge, not a rebase. After a squash merge the blocker's original commits are gone from the target, but the squashed commit holds the same changes, so merging the target into the dependent applies cleanly and the PR diff shrinks to the dependent's own commits. `git rebase --onto` would give the same result but needs a force-push, which the factory never does. A conflict is never resolved by the factory: the merge is aborted and the task is blocked with the file names.
+
+**Reviewed and done stay tied to a real merge.** A stacked PR that is merged into its blocker's branch is not `reviewed` and not `done`, whatever `pr.reviewedOnMergeInto` is: nothing has reached the base yet. Once the PR is retargeted, or a merge of it reaches `pr.doneOnMergeInto`, the usual rules apply. When both are unset, a person moves a task whose PR was merged into a blocker's branch.
+
+Open design questions: independent sibling blockers (above); whether a long-lived stack should ever be merged bottom-up by the factory (it does not: a person merges); and a stack whose middle PR is closed (its dependents block, and a person rewires them).
+
 ### `/dev-factory:quick`
 
 Runs the whole flow (worktree, environment, test-first build, QA walk, two reviews) for work with no task. A description starts a new change on `<type>/<tasks.placeholderKey>-<slug>`; `--pr <number>` fixes the open review threads and change requests of an existing PR and pushes to its branch (it asks first when the PR is someone else's). It never posts, resolves threads, marks ready or merges; at the end it offers one summary comment, scrubbed first. A change too big for one slice is sent to `/dev-factory:plan`.
@@ -829,6 +855,7 @@ The improver cannot edit what enforces the factory's own limits (the guards, the
 | `skills/`                      | `task-source`, `implement`, `qa`, `review`, `ship`, `environment`, `diagnose`, `telemetry`, `improve` |
 | `scripts/sources/`             | One file per task source (`local`, `github`, `jira`, `notion`) and their shared model                 |
 | `scripts/tasks.mjs`            | List, read, create and move tasks for the sources a script can drive                                  |
+| `scripts/stack.mjs`            | Stacked PRs: plan a base, write the PR note, merge a moved blocker (rules in `stack-lib.mjs`)         |
 | `scripts/mcp.mjs`, `mcp/`      | The optional MCP catalog and the commands that enable it                                              |
 | `scripts/factory-settings.mjs` | Builds the scheduled pass's sandbox and permissions from what is enabled                              |
 | `hooks/hooks.json`             | Shell guard, edit guard, telemetry guard and stop gate; active only inside a factory run              |

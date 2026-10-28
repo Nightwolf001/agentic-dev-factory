@@ -5,7 +5,8 @@
 		"blockedLabel": "factory-blocked",
 		"fixComment": "dev-factory fix",
 		"placeholderKey": "TASK-000",
-		"bugTypes": ["bug"]
+		"bugTypes": ["bug"],
+		"unblockOnPr": false
 	},
 	"sources": {
 		"local": {
@@ -121,7 +122,8 @@
 		"maxBudgetUsd": 40,
 		"maxResumes": 2,
 		"maxDecisions": 1,
-		"frontierRepeatHours": 6
+		"frontierRepeatHours": 6,
+		"maxStackDepth": 3
 	},
 	"models": {
 		"orchestrator": "sonnet",
