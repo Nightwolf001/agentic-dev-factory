@@ -3,13 +3,19 @@
 // behind the user's local copy of it: the factory never pushes a base branch, and a PR needs the same commits on both sides.
 //
 //   worktree.mjs resolve [--base NAME] [--repo DIR]                          print {name, ref, usedDefault}; exit 3 when the base cannot be used
-//   worktree.mjs add --branch NEW --path DIR [--base NAME] [--repo DIR]      resolve, then git worktree add -b NEW DIR <ref>
+//   worktree.mjs add --branch NEW --path DIR [--base NAME] [--repo DIR]      resolve, then git worktree add -b NEW DIR <ref>. A second pass over a ticket
+//                                                                            finds what the first left: a worktree whose commits are pushed is reused (stale
+//                                                                            done/blocked markers cleared), an empty one is made again (its diff is backed up
+//                                                                            under <state>/backups first), real unpushed work is refused with exit 3.
+//                                                                            The prints include settled: new|adopted|recreated. The repository's
+//                                                                            dev-factory.config.json and dev-factory.qa.yaml are copied in, kept out of git.
 //   worktree.mjs attach --branch EXISTING --path DIR [--repo DIR]            worktree on an existing remote branch (fix passes)
 //   worktree.mjs root [--repo DIR]                                           print the folder worktrees are created in (git.worktreeRoot)
 //   worktree.mjs default-branch [--repo DIR]                                 print the branch a run builds on when no base is named
 //   worktree.mjs parse --file F                                              print the "Base branch:" name from a ticket, or nothing
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { get } from './config.mjs';
 import { isMain } from './is-main.mjs';
@@ -80,19 +86,171 @@ export function resolveBase({ repo, name, defaultBase, fetch = true }) {
 }
 
 // The ignore rule for .dev-factory/ only exists on branches that carry the plugin. info/exclude is shared by every worktree of a clone, so this is written once per clone.
-function exclude(worktree) {
+function exclude(worktree, names = ['.dev-factory/']) {
 	const file = path.resolve(worktree, git(worktree, 'rev-parse', '--git-path', 'info/exclude'));
 	fs.mkdirSync(path.dirname(file), { recursive: true });
-	const have = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
-	if (!/^\.dev-factory\/$/m.test(have)) fs.appendFileSync(file, `${have && !have.endsWith('\n') ? '\n' : ''}.dev-factory/\n`);
+	let have = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+	for (const n of names) {
+		if (new RegExp(`^${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm').test(have)) continue;
+		have += `${have && !have.endsWith('\n') ? '\n' : ''}${n}\n`;
+	}
+	fs.writeFileSync(file, have);
+}
+
+// The repository's own settings are not in git on a branch (the owner keeps them beside the checkout), so a fresh worktree
+// would run on the defaults. They are copied in and kept out of git: a ticket must never commit them. A file the branch
+// tracks is already there and is left alone.
+export const LOCAL_FILES = ['dev-factory.config.json', 'dev-factory.qa.yaml'];
+function copyLocalFiles(repo, dest) {
+	const copied = [];
+	for (const f of LOCAL_FILES) {
+		const from = path.join(repo, f);
+		if (!fs.existsSync(from) || !fs.statSync(from).isFile() || gitOk(dest, 'ls-files', '--error-unmatch', f)) continue;
+		fs.copyFileSync(from, path.join(dest, f));
+		copied.push(f);
+	}
+	if (copied.length) exclude(dest, copied);
+	return copied;
+}
+
+// Hand-off markers a finished or blocked pass leaves in .dev-factory/. Left in place, a builder started again after an
+// answer would find "blocked" or "done" and stop at once.
+const MARKERS = ['blocked.json', 'needs_debug.json', 'build.done', 'ship.done', 'improve.done', 'promote.done', 'stop-nudges'];
+function clearMarkers(worktree) {
+	const cleared = [];
+	for (const m of MARKERS) {
+		const f = path.join(worktree, '.dev-factory', m);
+		if (fs.existsSync(f)) {
+			fs.rmSync(f, { recursive: true, force: true });
+			cleared.push(m);
+		}
+	}
+	return cleared;
+}
+
+const stateDir = () => process.env.DF_STATE_DIR || path.join(os.homedir(), '.dev-factory');
+
+// The uncommitted changes of a worktree as one patch under <state>/backups, untracked files included, before anything is removed.
+function backupDiff(worktree, branch) {
+	const tracked = spawnSync('git', ['-C', worktree, 'diff', 'HEAD', '--binary'], { encoding: 'utf8', maxBuffer: 256 << 20 }).stdout ?? '';
+	const untracked = git(worktree, 'ls-files', '--others', '--exclude-standard')
+		.split('\n')
+		.filter((f) => f && !f.startsWith('.dev-factory/'))
+		.slice(0, 200);
+	let extra = '';
+	for (const f of untracked) {
+		const stat = fs.statSync(path.join(worktree, f));
+		if (!stat.isFile() || stat.size > 1 << 20) continue;
+		extra += spawnSync('git', ['-C', worktree, 'diff', '--no-index', '--binary', '--', '/dev/null', f], { encoding: 'utf8' }).stdout ?? '';
+	}
+	if (!tracked.trim() && !extra.trim()) return null;
+	const dir = path.join(stateDir(), 'backups');
+	fs.mkdirSync(dir, { recursive: true });
+	const file = path.join(dir, `${branch.replace(/[^\w.-]+/g, '-')}-${new Date().toISOString().replace(/[:.]/g, '-')}.patch`);
+	fs.writeFileSync(file, tracked + extra);
+	return file;
+}
+
+const realOrSelf = (p) => {
+	try {
+		return fs.realpathSync(p);
+	} catch {
+		return path.resolve(p);
+	}
+};
+
+// -> { branch, head } when `dest` is a worktree of this repository
+function registered(repo, dest) {
+	const want = realOrSelf(dest);
+	let cur = null;
+	for (const line of git(repo, 'worktree', 'list', '--porcelain').split('\n')) {
+		if (line.startsWith('worktree ')) cur = { path: line.slice(9), branch: null };
+		else if (line.startsWith('branch ') && cur) cur.branch = line.slice(7).replace(/^refs\/heads\//, '');
+		else if (line === '' && cur) {
+			if (realOrSelf(cur.path) === want) return cur;
+			cur = null;
+		}
+	}
+	return cur && realOrSelf(cur.path) === want ? cur : null;
+}
+
+// Commits of `branch` that exist nowhere else: ahead of its own remote branch, or ahead of the base when it was never pushed.
+function unpushed(repo, branch, baseRef) {
+	const remote = gitOk(repo, 'rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`);
+	const count = Number(git(repo, 'rev-list', '--count', `${remote ? `origin/${branch}` : baseRef}..${branch}`));
+	return { remote, count };
+}
+
+// A second pass finds what the first left. Reuse a worktree whose commits are pushed, drop an empty one, and never touch
+// real unpushed work. -> { settled: 'new' | 'adopted' | 'recreated', backup, cleared }
+function settle({ repo, branch, dest, baseRef }) {
+	git(repo, 'worktree', 'prune');
+	gitOk(repo, 'fetch', '--quiet', 'origin', branch);
+	const abs = path.resolve(dest);
+	const wt = registered(repo, abs);
+	if (!wt) {
+		if (fs.existsSync(abs) && fs.readdirSync(abs).length)
+			throw new BaseError(`${dest} exists and is not a worktree of this repository; move it away, nothing was changed`);
+		if (!gitOk(repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`)) return { settled: 'new' };
+		// a branch left behind with no worktree
+		const { remote, count } = unpushed(repo, branch, baseRef);
+		if (count > 0)
+			throw new BaseError(
+				`branch ${branch} has ${count} commit${count === 1 ? '' : 's'} that ${count === 1 ? 'is' : 'are'} not pushed and no worktree; push it or move it first, nothing was changed`,
+			);
+		if (remote) return { settled: 'adopted', attach: true };
+		git(repo, 'branch', '-D', branch);
+		return { settled: 'new' };
+	}
+	if (wt.branch !== branch) throw new BaseError(`${dest} is a worktree of ${wt.branch ?? 'a detached head'}, not ${branch}; nothing was changed`);
+	const { remote, count } = unpushed(repo, branch, baseRef);
+	if (count > 0)
+		throw new BaseError(
+			`${dest} holds ${count} commit${count === 1 ? '' : 's'} of ${branch} that ${count === 1 ? 'is' : 'are'} not pushed; push ${count === 1 ? 'it' : 'them'} or move the worktree, nothing was changed`,
+		);
+	const backup = backupDiff(abs, branch);
+	if (!remote && Number(git(repo, 'rev-list', '--count', `${baseRef}..${branch}`)) === 0) {
+		// nothing committed anywhere: start clean
+		git(repo, 'worktree', 'remove', '--force', abs);
+		git(repo, 'branch', '-D', branch);
+		return { settled: 'recreated', backup };
+	}
+	return { settled: 'adopted', backup, cleared: clearMarkers(abs), existing: true };
 }
 
 export function addWorktree({ repo, branch, name, defaultBase, dest, fetch = true }) {
 	if (!validName(branch)) throw new BaseError(`'${branch}' is not a usable branch name`, 2);
 	const r = resolveBase({ repo, name, defaultBase, fetch });
-	git(repo, 'worktree', 'add', '-q', '-b', branch, dest, r.ref);
+	const s = settle({ repo, branch, dest, baseRef: r.ref });
+	if (s.existing) {
+		const copied = copyLocalFiles(repo, dest);
+		exclude(dest);
+		return {
+			worktree: path.resolve(dest),
+			branch,
+			base: r.name,
+			baseRef: r.ref,
+			usedDefault: r.usedDefault,
+			settled: s.settled,
+			backup: s.backup ?? null,
+			cleared: s.cleared,
+			copied,
+		};
+	}
+	if (s.attach) git(repo, 'worktree', 'add', '-q', '-B', branch, dest, `origin/${branch}`);
+	else git(repo, 'worktree', 'add', '-q', '-b', branch, dest, r.ref);
 	exclude(dest);
-	return { worktree: path.resolve(dest), branch, base: r.name, baseRef: r.ref, usedDefault: r.usedDefault };
+	const copied = copyLocalFiles(repo, dest);
+	return {
+		worktree: path.resolve(dest),
+		branch,
+		base: r.name,
+		baseRef: r.ref,
+		usedDefault: r.usedDefault,
+		settled: s.settled,
+		backup: s.backup ?? null,
+		copied,
+	};
 }
 
 export function attachWorktree({ repo, branch, dest }) {
@@ -100,7 +258,7 @@ export function attachWorktree({ repo, branch, dest }) {
 	git(repo, 'fetch', '--quiet', 'origin', branch);
 	git(repo, 'worktree', 'add', '-q', '-B', branch, dest, `origin/${branch}`);
 	exclude(dest);
-	return { worktree: path.resolve(dest), branch };
+	return { worktree: path.resolve(dest), branch, copied: copyLocalFiles(repo, dest) };
 }
 
 function args(argv) {

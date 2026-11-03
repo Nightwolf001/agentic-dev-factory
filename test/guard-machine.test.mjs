@@ -370,3 +370,18 @@ test('the scheduler may still send QA screenshots to a Notion upload URL, and no
 	assert.equal(evaluate('curl https://api.notion.com/v1/pages', { ...base, role: undefined }).deny, true);
 	assert.equal(evaluate('node -e "x"  https://api.notion.com/v1/pages', { ...base, role: undefined }).deny, true);
 });
+
+test('the sealed-build-file record is run state: a ticket cannot seal its own edits to hide them from the clean-tree check', () => {
+	denied('echo "{}" > .dev-factory/env-sealed.json');
+	denied('node -e x .dev-factory/env-sealed.json'.replace('node -e x', 'cp /tmp/x'));
+	const e = evaluateEdit({
+		filePath: '.dev-factory/env-sealed.json',
+		root: '/work/app',
+		active: true,
+		run: { role: 'builder', key: 'APP-1' },
+		home: HOME,
+		stateDir: STATE,
+	});
+	assert.equal(e.deny, true);
+	allowed('cat .dev-factory/env-sealed.json');
+});

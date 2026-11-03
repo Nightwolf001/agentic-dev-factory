@@ -119,3 +119,147 @@ test('the CLI prints json and exits 3 with the reason when the base is not on or
 	assert.equal(bad.status, 3);
 	assert.match(bad.stderr, /not on origin/);
 });
+
+// ---- a second pass over the same ticket ----
+
+function ticket() {
+	const r = repos();
+	const state = path.join(r.dir, 'state');
+	process.env.DF_STATE_DIR = state;
+	const dest = path.join(r.dir, 'wt', 'APP-1');
+	const branch = 'task/APP-1-thing';
+	const add = () => addWorktree({ repo: r.clone, branch, defaultBase: 'develop', dest });
+	const commit = (file = 'work.txt') => {
+		fs.writeFileSync(path.join(dest, file), 'w\n');
+		g(dest, 'add', file);
+		g(dest, 'commit', '-q', '-m', 'work');
+	};
+	return { ...r, state, dest, branch, add, commit };
+}
+
+test('a first pass creates the worktree and copies the repository’s own settings in, out of git', () => {
+	const t = ticket();
+	fs.writeFileSync(path.join(t.clone, 'dev-factory.config.json'), '{"tasks":{"source":"local"}}\n');
+	fs.writeFileSync(path.join(t.clone, 'dev-factory.qa.yaml'), 'profiles: {}\n');
+	const r = t.add();
+	assert.equal(r.settled, 'new');
+	assert.deepEqual(r.copied.sort(), ['dev-factory.config.json', 'dev-factory.qa.yaml']);
+	assert.equal(fs.readFileSync(path.join(t.dest, 'dev-factory.config.json'), 'utf8'), '{"tasks":{"source":"local"}}\n');
+	assert.equal(g(t.dest, 'status', '--porcelain'), '', 'untracked and ignored: a ticket cannot commit them');
+});
+
+test('a file the branch tracks is left alone, and nothing is copied when the checkout has none', () => {
+	const t = ticket();
+	assert.deepEqual(t.add().copied, []);
+	const u = ticket();
+	fs.writeFileSync(path.join(u.clone, 'dev-factory.config.json'), '{"tracked":true}\n');
+	g(u.clone, 'add', '.');
+	g(u.clone, 'commit', '-q', '-m', 'config');
+	g(u.clone, 'push', '-q', 'origin', 'develop');
+	fs.writeFileSync(path.join(u.clone, 'dev-factory.config.json'), '{"tracked":false}\n');
+	const r = u.add();
+	assert.deepEqual(r.copied, []);
+	assert.equal(fs.readFileSync(path.join(u.dest, 'dev-factory.config.json'), 'utf8'), '{"tracked":true}\n');
+});
+
+test('a second pass adopts a worktree whose commits are pushed, and clears the markers that would stop the builder at once', () => {
+	const t = ticket();
+	t.add();
+	t.commit();
+	g(t.dest, 'push', '-q', '-u', 'origin', t.branch);
+	fs.mkdirSync(path.join(t.dest, '.dev-factory'), { recursive: true });
+	for (const m of ['blocked.json', 'build.done', 'ship.done', 'needs_debug.json', 'run.json'])
+		fs.writeFileSync(path.join(t.dest, '.dev-factory', m), '{}');
+	const r = t.add();
+	assert.equal(r.settled, 'adopted');
+	assert.deepEqual(r.cleared.sort(), ['blocked.json', 'build.done', 'needs_debug.json', 'ship.done']);
+	assert.ok(fs.existsSync(path.join(t.dest, '.dev-factory/run.json')), 'run.json is not a marker');
+	assert.ok(fs.existsSync(path.join(t.dest, 'work.txt')), 'the pushed work is still there');
+	assert.equal(r.backup, null);
+});
+
+test('an empty worktree is removed and made again, with a clean tree backed up first', () => {
+	const t = ticket();
+	t.add();
+	assert.equal(t.add().settled, 'recreated');
+	fs.writeFileSync(path.join(t.dest, 'half-done.txt'), 'wip\n');
+	fs.writeFileSync(path.join(t.dest, 'a.txt'), 'edited\n');
+	const r = t.add();
+	assert.equal(r.settled, 'recreated');
+	assert.ok(r.backup && fs.existsSync(r.backup), 'the diff was kept');
+	assert.ok(r.backup.startsWith(t.state));
+	const patch = fs.readFileSync(r.backup, 'utf8');
+	assert.match(patch, /half-done\.txt/, 'untracked files are in the backup');
+	assert.match(patch, /\+edited/);
+	assert.equal(fs.existsSync(path.join(t.dest, 'half-done.txt')), false, 'the new worktree is clean');
+});
+
+test('real unpushed work is never touched: the pass refuses and says what to do', () => {
+	const t = ticket();
+	t.add();
+	t.commit();
+	assert.throws(
+		() => t.add(),
+		(e) =>
+			e instanceof BaseError &&
+			e.code === 3 &&
+			/1 commit/.test(e.message) &&
+			/not pushed/.test(e.message) &&
+			/nothing was changed/.test(e.message),
+	);
+	assert.ok(fs.existsSync(path.join(t.dest, 'work.txt')));
+	// pushed once, then one more commit: still refused
+	g(t.dest, 'push', '-q', '-u', 'origin', t.branch);
+	t.commit('more.txt');
+	assert.throws(() => t.add(), /1 commit/);
+	assert.ok(fs.existsSync(path.join(t.dest, 'more.txt')));
+});
+
+test('a path that is not this ticket’s worktree is refused, not overwritten', () => {
+	const t = ticket();
+	fs.mkdirSync(t.dest, { recursive: true });
+	fs.writeFileSync(path.join(t.dest, 'precious.txt'), 'mine\n');
+	assert.throws(() => t.add(), /not a worktree of this repository/);
+	assert.equal(fs.readFileSync(path.join(t.dest, 'precious.txt'), 'utf8'), 'mine\n');
+	const u = ticket();
+	addWorktree({ repo: u.clone, branch: 'task/APP-2-other', defaultBase: 'develop', dest: u.dest });
+	assert.throws(() => u.add(), /worktree of task\/APP-2-other/);
+});
+
+test('a branch left behind without a worktree is reused when pushed, dropped when empty, refused when it holds unpushed work', () => {
+	const t = ticket();
+	t.add();
+	t.commit();
+	g(t.dest, 'push', '-q', '-u', 'origin', t.branch);
+	g(t.clone, 'worktree', 'remove', '--force', t.dest);
+	const r = t.add();
+	assert.equal(r.settled, 'adopted');
+	assert.ok(fs.existsSync(path.join(t.dest, 'work.txt')));
+
+	const e = ticket();
+	e.add();
+	g(e.clone, 'worktree', 'remove', '--force', e.dest);
+	assert.equal(e.add().settled, 'new');
+
+	const u = ticket();
+	u.add();
+	u.commit();
+	g(u.clone, 'worktree', 'remove', '--force', u.dest);
+	assert.throws(() => u.add(), /not pushed and no worktree/);
+	assert.ok(g(u.clone, 'rev-parse', '--verify', u.branch), 'the branch is still there');
+});
+
+test('the CLI prints how the worktree was settled', () => {
+	const t = ticket();
+	const run = () =>
+		spawnSync('node', [SCRIPT, 'add', '--branch', t.branch, '--path', t.dest, '--repo', t.clone, '--default', 'develop'], {
+			encoding: 'utf8',
+			env: { ...process.env, DF_STATE_DIR: t.state },
+		});
+	assert.equal(JSON.parse(run().stdout).settled, 'new');
+	assert.equal(JSON.parse(run().stdout).settled, 'recreated');
+	t.commit();
+	const refused = run();
+	assert.equal(refused.status, 3);
+	assert.match(refused.stderr, /not pushed/);
+});

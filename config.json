@@ -150,6 +150,7 @@
 		"pingUrl": null,
 		"webBaseUrl": null,
 		"submodules": [],
+		"buildFiles": [],
 		"preCommit": null
 	},
 	"guard": {

@@ -32,6 +32,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as debugLib from '../scripts/debug-lib.mjs';
 import { load as loadConfig } from '../scripts/config.mjs';
+import { globToRegExp, readSealed, stillSealed } from '../scripts/env-build-files.mjs';
 import { isMain } from '../scripts/is-main.mjs';
 import { learningRequired, lintLearnings, parseLearnings } from '../scripts/learnings-lib.mjs';
 import { checkPromotion } from '../scripts/promote-lib.mjs';
@@ -66,6 +67,40 @@ export class QaError extends Error {
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 const sha256 = (file) => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
+// What a walk or a review judged is the ticket's own change against its base. When the base is merged into the branch the
+// head moves but that change does not, so a verdict made before the merge still holds. The change is hashed as zero-context
+// hunks without line numbers or blob ids, which are what a merge of unrelated base work shifts.
+export function diffHash(root, head, base) {
+	try {
+		const raw = execFileSync('git', ['diff', '--no-ext-diff', '--binary', '-U0', `${base}...${head}`], {
+			cwd: root,
+			encoding: 'utf8',
+			stdio: ['ignore', 'pipe', 'ignore'],
+			maxBuffer: 512 << 20,
+		});
+		const text = raw
+			.split('\n')
+			.filter((l) => !l.startsWith('index '))
+			.map((l) => (l.startsWith('@@') ? '@@' : l))
+			.join('\n');
+		return createHash('sha256').update(text).digest('hex');
+	} catch {
+		return null;
+	}
+}
+
+// Whether a record made at `fromHead` (with the change hash it recorded) still stands at `head`: the head is a descendant of
+// it and the change is the same.
+export function carried(root, { head: fromHead, diffHash: fromHash }, head, base) {
+	if (!fromHash || !fromHead || !head) return false;
+	try {
+		execFileSync('git', ['merge-base', '--is-ancestor', fromHead, head], { cwd: root, stdio: 'ignore' });
+	} catch {
+		return false;
+	}
+	return diffHash(root, head, base) === fromHash;
+}
+
 export function repoRoot(cwd = process.cwd()) {
 	return git(cwd, 'rev-parse', '--show-toplevel');
 }
@@ -79,14 +114,21 @@ const writeJson = (file, data) => {
 	fs.writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
 };
 
-// Untracked and modified files count, except the factory's own run state.
+// Untracked and modified files count, except the factory's own run state and the build files the environment step rewrote
+// (sealed by content hash: a ticket's own edit to one still counts).
 export function dirtyFiles(root) {
-	const out = git(root, 'status', '--porcelain', '--untracked-files=all');
+	// not trimmed: the first line of a porcelain listing starts with a space when the file is modified and unstaged
+	const out = execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], {
+		cwd: root,
+		encoding: 'utf8',
+		stdio: ['ignore', 'pipe', 'pipe'],
+	});
+	const sealed = readSealed(root);
 	return out
 		.split('\n')
 		.filter(Boolean)
 		.map((l) => l.slice(3))
-		.filter((f) => !f.startsWith('.dev-factory/'));
+		.filter((f) => !f.startsWith('.dev-factory/') && !stillSealed(root, f, sealed));
 }
 
 function nextRun(root) {
@@ -132,6 +174,7 @@ export function start({ root, key, profile }) {
 		key,
 		profile,
 		head: git(root, 'rev-parse', 'HEAD'),
+		diffHash: diffHash(root, 'HEAD', baseFor(root)),
 		startedAt: new Date().toISOString(),
 		env: fs.existsSync(envFile) ? readJson(envFile) : null,
 		cases: cases.map((slug) => ({ slug, status: null })),
@@ -239,20 +282,7 @@ export const uiGlobsFor = (root, profile) => globListFor(profile, 'uiGlobs', roo
 // Files under a UI folder that are still not UI surface (documentation), so a docs-only diff does not need a walk.
 export const nonUiGlobsFor = (root, profile) => globListFor(profile, 'nonUiGlobs', root);
 
-export function globToRegExp(glob) {
-	let re = '';
-	for (let i = 0; i < glob.length; i++) {
-		const ch = glob[i];
-		if (ch === '*') {
-			if (glob[i + 1] === '*') {
-				re += '.*';
-				i++;
-				if (glob[i + 1] === '/') i++;
-			} else re += '[^/]*';
-		} else re += ch.replace(/[.+^${}()|[\]\\?]/g, '\\$&');
-	}
-	return new RegExp(`^${re}$`);
-}
+export { globToRegExp };
 
 export function markNa({ root, key, profile, reason, base = baseFor(root) }) {
 	if (!key || !profile || !reason) throw new QaError('mark-na needs --key, --profile and --reason');
@@ -267,6 +297,7 @@ export function markNa({ root, key, profile, reason, base = baseFor(root) }) {
 		profile,
 		reason,
 		head: git(root, 'rev-parse', 'HEAD'),
+		diffHash: diffHash(root, 'HEAD', base),
 		files: files.length,
 		at: new Date().toISOString(),
 		verdict: 'not_applicable',
@@ -319,7 +350,7 @@ export function parseFindings(raw) {
 const countBy = (findings) => Object.fromEntries(SEVERITIES.map((sv) => [sv.toLowerCase(), findings.filter((f) => f.severity === sv).length]));
 const blocking = (c) => c.critical + c.high;
 
-export function reviewRecord({ root, axis, head, summary, findings, by = null }) {
+export function reviewRecord({ root, axis, head, summary, findings, by = null, base = baseFor(root) }) {
 	if (!ALL_AXES.includes(axis)) throw new QaError(`--axis must be one of ${ALL_AXES.join(', ')}`);
 	const full = git(root, 'rev-parse', 'HEAD');
 	if (!head || !(full.startsWith(head) || head.startsWith(full)))
@@ -352,6 +383,7 @@ export function reviewRecord({ root, axis, head, summary, findings, by = null })
 	const record = {
 		axis,
 		head: full,
+		diffHash: diffHash(root, full, base),
 		round: heads.size,
 		by,
 		summary: summary.trim(),
@@ -361,6 +393,22 @@ export function reviewRecord({ root, axis, head, summary, findings, by = null })
 	};
 	writeJson(reviewFile(root, full, axis), record);
 	return record;
+}
+
+// The record of one axis valid at `head`: the one made at exactly that commit, else the newest made earlier on this branch
+// for the same change (see diffHash). -> { record, carriedFrom } or null
+function reviewAt(root, head, axis, base) {
+	const exact = reviewFile(root, head, axis);
+	if (fs.existsSync(exact)) return { record: readJson(exact), carriedFrom: null };
+	const dir = reviewDir(root);
+	if (!fs.existsSync(dir)) return null;
+	const older = fs
+		.readdirSync(dir)
+		.filter((f) => f.endsWith(`-${axis}.json`))
+		.map((f) => readJson(path.join(dir, f)))
+		.filter((r) => r.head !== head && carried(root, r, head, base))
+		.sort((x, y) => String(y.at).localeCompare(String(x.at)));
+	return older.length ? { record: older[0], carriedFrom: older[0].head } : null;
 }
 
 export function reviewStatus({ root, head, specialistAxes = {}, base = baseFor(root) }) {
@@ -377,21 +425,28 @@ export function reviewStatus({ root, head, specialistAxes = {}, base = baseFor(r
 		).size;
 	const required = [...AXES, ...triggered];
 	for (const axis of ALL_AXES) {
-		if (!required.includes(axis) && !fs.existsSync(reviewFile(root, full, axis))) continue;
-		const f = reviewFile(root, full, axis);
-		if (!fs.existsSync(f)) {
+		const found = reviewAt(root, full, axis, base);
+		if (!required.includes(axis) && !found) continue;
+		if (!found) {
 			out.axes[axis] = null;
 			continue;
 		}
-		const r = readJson(f);
-		out.axes[axis] = { counts: r.counts, blocking: blocking(r.counts), by: r.by ?? null, at: r.at };
+		const r = found.record;
+		out.axes[axis] = {
+			counts: r.counts,
+			blocking: blocking(r.counts),
+			by: r.by ?? null,
+			at: r.at,
+			...(found.carriedFrom ? { carriedFrom: found.carriedFrom } : {}),
+		};
 	}
 	out.clean = required.every((a) => out.axes[a] && out.axes[a].blocking === 0);
 	return out;
 }
 
-// The newest finished run of this ticket made at the given head, so a caller never has to know the run number.
-export function runForKey(root, key, head) {
+// The newest finished run of this ticket made at the given head, so a caller never has to know the run number. With a base,
+// a run made earlier on the branch for the same change also counts (reported as carriedFrom).
+export function runForKey(root, key, head, base = null) {
 	const dir = stateDir(root);
 	if (!fs.existsSync(dir)) return null;
 	const runs = fs
@@ -399,9 +454,12 @@ export function runForKey(root, key, head) {
 		.map((f) => /^run-(\d+)\.json$/.exec(f))
 		.filter(Boolean)
 		.map((m) => ({ n: Number(m[1]), m: readJson(path.join(dir, m[0])) }))
-		.filter(({ m }) => m.key === key && m.verdict && (m.head.startsWith(head) || head.startsWith(m.head)))
+		.filter(({ m }) => m.key === key && m.verdict)
 		.sort((a, b) => b.n - a.n);
-	return runs.length ? runs[0].m : null;
+	const exact = runs.find(({ m }) => m.head.startsWith(head) || head.startsWith(m.head));
+	if (exact) return exact.m;
+	const older = base && runs.find(({ m }) => m.verdict === 'pass' && carried(root, m, head, base));
+	return older ? { ...older.m, carriedFrom: older.m.head } : null;
 }
 
 // Commits of a run belong to the person who ran it: an author, committer or trailer naming an agent is refused.
@@ -430,19 +488,28 @@ export function verify({ root, head, run, key, requireReview = false, specialist
 	if (!head) throw new QaError('verify needs --head');
 	if (run == null && !key) throw new QaError('verify needs --run or --key');
 	const problems = [];
+	let full = head;
+	try {
+		full = git(root, 'rev-parse', '--verify', `${head}^{commit}`);
+	} catch {
+		/* not a commit here: the prefix comparisons below report it */
+	}
 	let manifest;
 	if (run != null) {
 		manifest = loadRun(root, run);
 	} else {
-		manifest = runForKey(root, key, head);
+		manifest = runForKey(root, key, head, base);
 		if (!manifest) {
 			const na = naPath(root, key);
 			if (!fs.existsSync(na)) throw new QaError(`no QA run at ${head.slice(0, 9)} and no not-applicable record for ${key}`);
 			manifest = readJson(na);
 		}
 	}
-	if (!manifest.head.startsWith(head) && !head.startsWith(manifest.head))
-		problems.push(`manifest head ${manifest.head.slice(0, 9)} is not the PR head ${head.slice(0, 9)}`);
+	let carriedFrom = manifest.carriedFrom ?? null;
+	if (!manifest.head.startsWith(head) && !head.startsWith(manifest.head)) {
+		if (!carriedFrom && carried(root, manifest, full, base)) carriedFrom = manifest.head;
+		if (!carriedFrom) problems.push(`manifest head ${manifest.head.slice(0, 9)} is not the PR head ${head.slice(0, 9)}`);
+	}
 	if (manifest.verdict !== 'pass' && manifest.verdict !== 'not_applicable') problems.push(`verdict is ${manifest.verdict ?? 'open'}`);
 	for (const e of manifest.evidence ?? []) {
 		const f = path.join(root, e.file);
@@ -450,16 +517,16 @@ export function verify({ root, head, run, key, requireReview = false, specialist
 		else if (sha256(f) !== e.sha256) problems.push(`evidence changed since recorded: ${e.file}`);
 	}
 	if (requireReview) {
-		const st = reviewStatus({ root, head: manifest.head, specialistAxes, base });
+		const st = reviewStatus({ root, head: carriedFrom ? full : manifest.head, specialistAxes, base });
 		for (const axis of [...AXES, ...st.triggered]) {
-			if (!st.axes[axis]) problems.push(`review step ${axis} is not recorded at ${manifest.head.slice(0, 9)}`);
+			if (!st.axes[axis]) problems.push(`review step ${axis} is not recorded at ${st.head.slice(0, 9)}`);
 			else if (st.axes[axis].by !== 'reviewer') problems.push(`review step ${axis} was not recorded by a reviewer agent`);
 			else if (st.axes[axis].blocking > 0) problems.push(`review step ${axis} has ${st.axes[axis].blocking} open Critical or High finding(s)`);
 		}
 	}
-	if (noAttribution) problems.push(...attributionProblems(root, manifest.head, base));
+	if (noAttribution) problems.push(...attributionProblems(root, carriedFrom ? full : manifest.head, base));
 	if (problems.length) throw new QaError(`verify failed: ${problems.join('; ')}`);
-	return { ok: true, verdict: manifest.verdict, head: manifest.head };
+	return { ok: true, verdict: manifest.verdict, head: manifest.head, ...(carriedFrom ? { carriedFrom, prHead: full } : {}) };
 }
 
 export function learningsCheck({ root, key, bodyFile }) {

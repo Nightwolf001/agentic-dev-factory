@@ -414,3 +414,138 @@ test('verify refuses commits authored by an agent or carrying an agent trailer w
 	assert.match(problems.join(' '), /authored or committed by an agent identity/);
 	assert.deepEqual(attributionProblems(root, 'HEAD', 'origin/no-such-base'), [], 'an unknown base is not a verdict');
 });
+
+// ---- verdicts survive a merge of the base ----
+import { diffHash, dirtyFiles } from '../bin/qa.mjs';
+import { seal } from '../scripts/env-build-files.mjs';
+
+// develop (also origin/develop) plus a task branch with one commit of its own.
+function branchWithWork() {
+	const root = makeRepo();
+	g(root, 'update-ref', 'refs/remotes/origin/develop', 'HEAD');
+	g(root, 'checkout', '-qb', 'task/APP-1-x');
+	fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+	fs.writeFileSync(path.join(root, 'src/feature.js'), 'a\nb\nc\nd\ne\n');
+	g(root, 'add', '-A');
+	g(root, 'commit', '-qm', 'feature');
+	return root;
+}
+// The base moves on (an unrelated file, and a line above the ticket's own code), then is merged into the branch.
+function mergeBaseIn(root, { absorbTicketFile = false } = {}) {
+	g(root, 'checkout', '-q', 'develop');
+	fs.writeFileSync(path.join(root, 'other.txt'), 'base work\n');
+	if (absorbTicketFile) {
+		// the base lands the very same file: the ticket's change shrinks, so what was walked is no longer the change
+		fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+		fs.writeFileSync(path.join(root, 'src/feature.js'), 'a\nb\nc\nd\ne\n');
+	}
+	g(root, 'add', '-A');
+	g(root, 'commit', '-qm', 'base moved');
+	g(root, 'update-ref', 'refs/remotes/origin/develop', 'HEAD');
+	g(root, 'checkout', '-q', 'task/APP-1-x');
+	g(root, 'merge', '-q', '--no-edit', 'develop');
+}
+
+test('the change hash ignores a merged-in base and notices a different change', () => {
+	const root = branchWithWork();
+	const before = diffHash(root, 'HEAD', 'origin/develop');
+	assert.match(before, /^[0-9a-f]{64}$/);
+	mergeBaseIn(root);
+	assert.equal(diffHash(root, 'HEAD', 'origin/develop'), before, 'same change after the merge');
+	fs.appendFileSync(path.join(root, 'src/feature.js'), 'more\n');
+	g(root, 'commit', '-qam', 'more');
+	assert.notEqual(diffHash(root, 'HEAD', 'origin/develop'), before);
+	assert.equal(diffHash(root, 'HEAD', 'origin/nope'), null);
+});
+
+test('a QA verdict and the reviews survive a merge of the base, and verify reports where they came from', () => {
+	const root = branchWithWork();
+	const run = passedRun(root);
+	const h0 = head(root);
+	reviewRecord({ root, axis: 'spec', head: h0, summary: SUMMARY, findings: '[]' });
+	reviewRecord({ root, axis: 'standards', head: h0, summary: SUMMARY, findings: '[]' });
+	mergeBaseIn(root);
+	const h1 = head(root);
+	assert.notEqual(h0, h1);
+	const v = verify({ root, head: h1, key: 'APP-1', requireReview: true });
+	assert.equal(v.ok, true);
+	assert.equal(v.carriedFrom, h0);
+	assert.equal(v.prHead, h1);
+	const st = reviewStatus({ root, head: h1 });
+	assert.equal(st.clean, true);
+	assert.equal(st.axes.spec.carriedFrom, h0);
+	// by run number too
+	assert.equal(verify({ root, head: h1, run }).carriedFrom, h0);
+	// at its own head nothing is "carried"
+	assert.equal(verify({ root, head: h0, key: 'APP-1', requireReview: true }).carriedFrom, undefined);
+});
+
+test('a change to the ticket’s own diff, or a base merge that alters it, ends the carry', () => {
+	const root = branchWithWork();
+	passedRun(root);
+	const h0 = head(root);
+	reviewRecord({ root, axis: 'spec', head: h0, summary: SUMMARY, findings: '[]' });
+	reviewRecord({ root, axis: 'standards', head: h0, summary: SUMMARY, findings: '[]' });
+	fs.appendFileSync(path.join(root, 'src/feature.js'), 'f\n');
+	g(root, 'commit', '-qam', 'own change after QA');
+	refused(() => verify({ root, head: head(root), key: 'APP-1' }), /no QA run at|is not the PR head/);
+
+	const other = branchWithWork();
+	passedRun(other);
+	const o0 = head(other);
+	reviewRecord({ root: other, axis: 'spec', head: o0, summary: SUMMARY, findings: '[]' });
+	mergeBaseIn(other, { absorbTicketFile: true });
+	refused(() => verify({ root: other, head: head(other), key: 'APP-1' }), /no QA run at|is not the PR head/);
+	assert.equal(reviewStatus({ root: other, head: head(other) }).axes.spec, null);
+});
+
+test('a failed run is never carried, and a head that is not a descendant is not either', () => {
+	const root = branchWithWork();
+	const m = start({ root, key: 'APP-1', profile: 'web' });
+	record({ root, run: m.run, caseSlug: 'login', status: 'fail', assertion: 'login screen missing', screenshot: png(root, 'f1', 21) });
+	record({ root, run: m.run, caseSlug: 'arm', status: 'pass', assertion: 'armed banner visible', screenshot: png(root, 'f2', 22) });
+	done({ root, run: m.run });
+	mergeBaseIn(root);
+	refused(() => verify({ root, head: head(root), key: 'APP-1' }), /no QA run at/);
+});
+
+test('a not-applicable record is carried the same way', () => {
+	const root = branchWithWork();
+	markNa({ root, key: 'APP-1', profile: 'web', reason: 'backend only change here' });
+	mergeBaseIn(root);
+	const v = verify({ root, head: head(root), key: 'APP-1' });
+	assert.equal(v.verdict, 'not_applicable');
+	assert.ok(v.carriedFrom);
+});
+
+// ---- build files the environment step rewrote ----
+
+test('a build file the environment rewrote does not dirty the tree, but the ticket’s own edit to it does', () => {
+	const root = makeRepo();
+	fs.mkdirSync(path.join(root, 'ios'), { recursive: true });
+	fs.writeFileSync(path.join(root, 'ios/Podfile.lock'), 'PODS: []\n');
+	g(root, 'add', '-A');
+	g(root, 'commit', '-qm', 'pods');
+	fs.writeFileSync(path.join(root, 'ios/Podfile.lock'), 'PODS: [rewritten-by-install]\n');
+	assert.deepEqual(dirtyFiles(root), ['ios/Podfile.lock'], 'dirty before it is sealed');
+	assert.deepEqual(seal({ worktree: root, globs: ['ios/Podfile.lock'] }).sealed, ['ios/Podfile.lock']);
+	assert.deepEqual(dirtyFiles(root), [], 'sealed: the environment’s rewrite');
+	const m = start({ root, key: 'APP-1', profile: 'web' });
+	assert.equal(m.run, 1, 'a walk can start');
+	fs.appendFileSync(path.join(root, 'ios/Podfile.lock'), '# the ticket edited this\n');
+	assert.deepEqual(dirtyFiles(root), ['ios/Podfile.lock'], 'a ticket’s own edit is dirty again');
+	fs.writeFileSync(path.join(root, 'ios/Podfile.lock'), 'PODS: [rewritten-by-install]\n');
+	assert.deepEqual(dirtyFiles(root), [], 'back to what was sealed');
+});
+
+test('only files that match the globs and are changed are sealed', () => {
+	const root = makeRepo();
+	fs.writeFileSync(path.join(root, 'package-lock.json'), '{}\n');
+	g(root, 'add', '-A');
+	g(root, 'commit', '-qm', 'lock');
+	fs.writeFileSync(path.join(root, 'package-lock.json'), '{"a":1}\n');
+	fs.writeFileSync(path.join(root, 'src.js'), 'x\n');
+	assert.deepEqual(seal({ worktree: root, globs: ['package-lock.json'] }).sealed, ['package-lock.json']);
+	assert.deepEqual(dirtyFiles(root), ['src.js'], 'a file outside the globs stays dirty');
+	assert.deepEqual(seal({ worktree: root, globs: ['nothing/**'] }).sealed, []);
+});
