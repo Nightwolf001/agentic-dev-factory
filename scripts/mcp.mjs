@@ -12,7 +12,8 @@
 //   mcp.mjs disable ID [ID...]    remove them again
 //   mcp.mjs recommend             the ids worth enabling for tasks.source and this repository
 //   mcp.mjs connect [--all] [--force]   enable the recommended servers (or all), then show which still need a login
-//   mcp.mjs doctor                one line per server: connected, pending approval, needs login, or not isolated
+//   mcp.mjs doctor [--lenient]    one line per server: connected, pending approval, needs login, or not isolated; a server the catalog
+//                                 flags `required` is a FAIL while missing or down (a warning with --lenient)
 //   mcp.mjs allow                 the permission rules for the servers in use (used by the scheduler's settings)
 //
 // DF_MCP_LISTING names a file holding the output of `claude mcp list`, used instead of running it (tests, offline).
@@ -54,11 +55,13 @@ export function disable(ids, file) {
 	return removed;
 }
 
-// What this setup would use: the tracker's server for the chosen source, plus the ones flagged recommended.
+// What this setup would use: the tracker's server for the chosen source, the ones flagged recommended, and the ones flagged
+// required. A required server is part of what the factory needs on this machine, so setup always enables it and the doctor fails
+// while it is missing or down. The catalog flags none: which servers a deployment cannot do without is its own choice.
 export function recommend(cfg, cat = catalog()) {
 	const source = get('tasks.source', { config: cfg });
 	const ids = Object.entries(cat)
-		.filter(([, s]) => s.recommended || s.tracker === (source === 'jira' ? 'jira' : source === 'notion' ? 'notion' : null))
+		.filter(([, s]) => s.required === true || s.recommended || s.tracker === (source === 'jira' ? 'jira' : source === 'notion' ? 'notion' : null))
 		.map(([id]) => id);
 	return ids;
 }
@@ -160,11 +163,28 @@ export function connectReport(file, listOutput = '', cat = catalog()) {
 }
 
 // One line per server in use, for the doctor: { level: 'ok' | 'warn', text }.
-export function doctorLines(file, listing, cat = catalog()) {
+export function doctorLines(file, listing, cat = catalog(), { lenient = false } = {}) {
 	const entries = parseListing(listing);
 	const lines = [];
 	const mine = Object.keys(readProject(file).mcpServers ?? {});
+	// a required server fails the doctor while it is missing or not connected (a warning under --lenient or --ci)
+	const level = lenient ? 'warn' : 'fail';
+	const external = externalServers(file, listing, cat);
+	for (const [id, s] of Object.entries(cat)) {
+		if (s.required !== true) continue;
+		const own = connectReport(file, listing, cat).find((r) => r.id === id);
+		const ext = external.find((e) => e.id === id);
+		const state = own?.state ?? ext?.state ?? null;
+		if (state === 'connected') lines.push({ level: 'ok', text: `required MCP ${id} connected` });
+		else if (state === null) lines.push({ level, text: `required MCP ${id} is not enabled: dev-factory mcp enable ${id}` });
+		else
+			lines.push({
+				level,
+				text: `required MCP ${id} is ${state}: it must be connected before the factory can work (dev-factory mcp connect, then /mcp if it asks for a login)`,
+			});
+	}
 	for (const r of connectReport(file, listing, cat)) {
+		if (cat[r.id]?.required === true) continue; // reported above
 		if (r.state === 'connected') lines.push({ level: 'ok', text: `MCP ${r.id} connected (.mcp.json)` });
 		else if (r.state === 'pending approval')
 			lines.push({ level: 'warn', text: `MCP ${r.id} is waiting for your approval: run claude in this repository and approve it` });
@@ -176,6 +196,7 @@ export function doctorLines(file, listing, cat = catalog()) {
 			});
 	}
 	for (const s of externalServers(file, listing, cat)) {
+		if (cat[s.id]?.required === true) continue;
 		lines.push({
 			level: s.state === 'connected' ? 'ok' : 'warn',
 			text: `MCP ${s.id} comes from "${s.name}" (${s.state}); the factory uses it as it is and adds nothing to .mcp.json`,
@@ -238,7 +259,8 @@ if (isMain(import.meta.url)) {
 		} else if (cmd === 'disable') console.log(JSON.stringify({ removed: disable(ids, file) }));
 		else if (cmd === 'recommend') console.log(recommend(load()).join(' '));
 		else if (cmd === 'doctor')
-			for (const l of doctorLines(file, claudeListing())) console.log(`${l.level === 'ok' ? 'ok   ' : 'warn '} ${l.text}`);
+			for (const l of doctorLines(file, claudeListing(), catalog(), { lenient: process.argv.includes('--lenient') }))
+				console.log(`${{ ok: 'ok   ', warn: 'warn ', fail: 'FAIL ' }[l.level]} ${l.text}`);
 		else if (cmd === 'allow')
 			console.log(
 				JSON.stringify(

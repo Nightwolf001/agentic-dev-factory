@@ -5,7 +5,9 @@ description: The two-step review protocol for a ticket's commit, spec first then
 
 # Review
 
-Two steps, two fresh reviewers, in this order. Step 2 cannot be recorded until step 1 is clean at the same commit; `qa.mjs` refuses it.
+Repository skills: `node "${CLAUDE_PLUGIN_ROOT}/scripts/config.mjs" get repoSkills.review` prints the skills this repository adds to this phase (an error or `[]` means none). Invoke each one with the Skill tool before you start; they are the repository's own rules for review, and they add to the steps below, never replace them.
+
+Before the diff, read the files `node "${CLAUDE_PLUGIN_ROOT}/scripts/config.mjs" get review.readFirst` lists (a repository's conventions, an architecture note; `[]` or an error means none): a reviewer who has not read them judges against its own taste. Two steps, two fresh reviewers, in this order. Step 2 cannot be recorded until step 1 is clean at the same commit; `qa.mjs` refuses it.
 
 | Step | Axis        | Question                                                             | Blocks on                 |
 | ---- | ----------- | -------------------------------------------------------------------- | ------------------------- |

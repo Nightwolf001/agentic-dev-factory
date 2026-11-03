@@ -88,7 +88,8 @@
 			"chore": "task",
 			"improvement": "improvement"
 		},
-		"worktreeRoot": "../.worktrees"
+		"worktreeRoot": "../.worktrees",
+		"skipCommitHooks": false
 	},
 	"pr": {
 		"reviewedOnMergeInto": null,
@@ -230,7 +231,15 @@
 		"maxPromotionsPerScan": 3,
 		"agentsRuleCap": 15
 	},
+	"repoSkills": {
+		"implement": [],
+		"qa": [],
+		"review": [],
+		"ship": [],
+		"diagnose": []
+	},
 	"review": {
+		"readFirst": [],
 		"bugbot": false,
 		"bugbotComment": "bugbot run",
 		"bugbotAuthor": "cursor[bot]",

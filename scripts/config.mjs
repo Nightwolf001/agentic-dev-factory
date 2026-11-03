@@ -15,6 +15,7 @@ const FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'conf
 export const REPO_CONFIG = 'dev-factory.config.json';
 export const SOURCES = ['local', 'github', 'notion', 'jira'];
 export const SCHEDULERS = ['auto', 'launchd', 'github-actions', 'routine', 'none'];
+export const REPO_SKILL_PHASES = ['implement', 'qa', 'review', 'ship', 'diagnose'];
 export const ROLES = ['builder', 'reviewer', 'debugger', 'researcher', 'improver', 'promoter'];
 
 export const ENV_OVERRIDES = {
@@ -290,6 +291,25 @@ export function validate(config = load()) {
 			}
 		}
 	}
+	const skipHooks = dig(config, 'git.skipCommitHooks');
+	if (skipHooks !== undefined && typeof skipHooks !== 'boolean') problems.push('git.skipCommitHooks must be true or false');
+	const repoSkills = dig(config, 'repoSkills');
+	if (repoSkills !== undefined) {
+		if (!repoSkills || typeof repoSkills !== 'object' || Array.isArray(repoSkills))
+			problems.push('repoSkills must map phases to lists of skill names');
+		else
+			for (const [phase, list] of Object.entries(repoSkills)) {
+				if (!REPO_SKILL_PHASES.includes(phase)) problems.push(`repoSkills.${phase} is not a phase (${REPO_SKILL_PHASES.join(', ')})`);
+				else if (!(Array.isArray(list) && list.every((n) => typeof n === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(n))))
+					problems.push(`repoSkills.${phase} must be a list of skill names such as repo-rules or plugin:skill`);
+			}
+	}
+	const readFirst = dig(config, 'review.readFirst');
+	if (
+		readFirst !== undefined &&
+		!(Array.isArray(readFirst) && readFirst.every((f) => typeof f === 'string' && f && !path.isAbsolute(f) && !f.split('/').includes('..')))
+	)
+		problems.push('review.readFirst must be a list of file paths inside the repository (no absolute path, no ..)');
 	const questionLabel = dig(config, 'tasks.questionLabel');
 	if (questionLabel !== undefined && (typeof questionLabel !== 'string' || !/^[A-Za-z0-9._:-]+$/.test(questionLabel)))
 		problems.push('tasks.questionLabel must be a label name (letters, digits, . _ : -)');

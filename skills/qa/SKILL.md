@@ -5,6 +5,8 @@ description: Author QA cases for a ticket and walk them through Playwright or Ma
 
 # QA
 
+Repository skills: `node "${CLAUDE_PLUGIN_ROOT}/scripts/config.mjs" get repoSkills.qa` prints the skills this repository adds to this phase (an error or `[]` means none). Invoke each one with the Skill tool before you start; they are the repository's own rules for qa, and they add to the steps below, never replace them.
+
 Everything is committed before you start. `qa.mjs start` refuses a dirty tree and binds the run to HEAD; a later commit invalidates it.
 
 ## 1. Decide

@@ -223,3 +223,61 @@ test('the scheduled pass may write the state folder and runs e2e-env.sh outside 
 	const env = build({ cfg: load(), mcpFile: file, env: { DF_STATE_DIR: '/custom/state' } });
 	assert.deepEqual(env.sandbox.filesystem.allowWrite, ['/custom/state'], 'DF_STATE_DIR is where it is');
 });
+
+// ---- required servers ----
+
+const REQ_CAT = {
+	alpha: { title: 'Alpha', purpose: 'p', category: 'qa', recommended: false, required: true, config: { command: 'a' }, without: 'w', domains: [] },
+	beta: { title: 'Beta', purpose: 'p', category: 'docs', recommended: false, config: { command: 'b' }, without: 'w', domains: [] },
+};
+const mcpFile = (servers) => {
+	const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'df-req-')), '.mcp.json');
+	fs.writeFileSync(f, JSON.stringify({ mcpServers: servers }));
+	return f;
+};
+
+test('a server the catalog flags required is always recommended, and the doctor fails while it is missing or down', async () => {
+	const { load, merge } = await import('../scripts/config.mjs');
+	assert.deepEqual(recommend(merge(load(), {}), REQ_CAT), ['alpha'], 'required without being recommended');
+	assert.ok(!recommend(merge(load(), {}), REQ_CAT).includes('beta'));
+	const none = doctorLines(mcpFile({}), '', REQ_CAT);
+	assert.deepEqual(
+		none.find((l) => /alpha/.test(l.text)),
+		{ level: 'fail', text: 'required MCP alpha is not enabled: dev-factory mcp enable alpha' },
+	);
+	const down = doctorLines(mcpFile({ alpha: {} }), 'alpha: a - ✗ Failed to connect', REQ_CAT);
+	assert.equal(down.find((l) => /alpha/.test(l.text)).level, 'fail');
+	assert.match(down.find((l) => /alpha/.test(l.text)).text, /required MCP alpha is .*must be connected/);
+	const login = doctorLines(mcpFile({ alpha: {} }), 'alpha: a - ⚠ Needs authentication', REQ_CAT);
+	assert.equal(login.find((l) => /alpha/.test(l.text)).level, 'fail');
+	const up = doctorLines(mcpFile({ alpha: {} }), 'alpha: a - ✓ Connected', REQ_CAT);
+	assert.deepEqual(
+		up.filter((l) => /alpha/.test(l.text)),
+		[{ level: 'ok', text: 'required MCP alpha connected' }],
+		'reported once, not again as an ordinary server',
+	);
+	// from somewhere else (a user-scope server) it counts too
+	const external = doctorLines(mcpFile({}), 'alpha: a - ✓ Connected', REQ_CAT);
+	assert.equal(external.find((l) => /alpha/.test(l.text)).level, 'ok');
+	assert.equal(external.filter((l) => /alpha/.test(l.text)).length, 1);
+});
+
+test('--lenient and --ci turn the failure into a warning, and an ordinary server never fails the doctor', () => {
+	const lenient = doctorLines(mcpFile({}), '', REQ_CAT, { lenient: true });
+	assert.equal(lenient.find((l) => /alpha/.test(l.text)).level, 'warn');
+	const ordinary = doctorLines(mcpFile({ beta: {} }), '', REQ_CAT);
+	assert.equal(ordinary.find((l) => /MCP beta/.test(l.text)).level, 'warn');
+	assert.ok(ordinary.every((l) => l.level !== 'fail' || /required MCP alpha/.test(l.text)));
+	const doctor = fs.readFileSync(new URL('../scripts/doctor.sh', import.meta.url), 'utf8');
+	assert.match(doctor, /--lenient/);
+	assert.match(doctor, /FAIL\*\) bad/);
+	assert.match(doctor, /\[ "\$CI" = 1 \] && LENIENT=1/);
+});
+
+test('the shipped catalog flags no server required, and a required flag has to be a boolean', async () => {
+	const { catalog } = await import('../scripts/mcp.mjs');
+	for (const [id, s] of Object.entries(catalog())) {
+		assert.ok(s.required === undefined || typeof s.required === 'boolean', `${id}.required`);
+		assert.notEqual(s.required, true, `${id}: which servers a deployment cannot do without is its own choice`);
+	}
+});

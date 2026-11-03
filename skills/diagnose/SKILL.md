@@ -5,6 +5,8 @@ description: Root cause before any fix, with a red-capable feedback loop and the
 
 # Diagnose
 
+Repository skills: `node "${CLAUDE_PLUGIN_ROOT}/scripts/config.mjs" get repoSkills.diagnose` prints the skills this repository adds to this phase (an error or `[]` means none). Invoke each one with the Skill tool before you start; they are the repository's own rules for diagnose, and they add to the steps below, never replace them.
+
 Builds on `superpowers:systematic-debugging`; read it, do not restate it. What this adds:
 
 1. No fix and no fix plan before a feedback loop that can go red: a failing test in the ticket's environment, a curl against its stack, a replay of a captured Sentry event or Axiom log sample, a bisect over `git log`.
