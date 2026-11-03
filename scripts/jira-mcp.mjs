@@ -12,6 +12,7 @@
 //
 // uploadAttachmentToJiraIssue reads only .dev-factory/evidence/<KEY>/run-N/ of the same ticket's worktree, takes a bare file name,
 // refuses a link that leads out of that folder, and does not upload a file already attached with the same name and size.
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -26,7 +27,7 @@ const BARE_NAME = /^[A-Za-z0-9][A-Za-z0-9._ -]{0,119}$/;
 const text = (value) => ({ content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }] });
 const fail = (message) => ({ isError: true, content: [{ type: 'text', text: message }] });
 
-export function makeTools({ site, email, token, fetchImpl = fetch, roots = [] }) {
+export function makeTools({ site, email, token, fetchImpl = fetch, roots = null }) {
 	const auth = 'Basic ' + Buffer.from(`${email}:${token}`).toString('base64');
 	const base = `https://${site}/rest/api/3`;
 	const call = async (method, p, body, extra = {}) => {
@@ -113,11 +114,13 @@ export function makeTools({ site, email, token, fetchImpl = fetch, roots = [] })
 			},
 		},
 		addCommentToJiraIssue: {
-			description: 'Add a comment. commentBody is text: blank lines separate paragraphs and [~accountid:ID] is a real mention.',
+			description:
+				'Add a comment. commentBody is text (blank lines separate paragraphs, [~accountid:ID] is a real mention) or an Atlassian Document Format document ({ type: "doc", ... }), which is sent as it is.',
 			input: { issueIdOrKey: 'string', commentBody: 'string' },
 			async run({ issueIdOrKey, commentBody }) {
-				if (typeof commentBody !== 'string' || !commentBody.trim()) throw new Error('commentBody is required');
-				const r = await call('POST', `/issue/${issueKey(issueIdOrKey)}/comment`, { body: textToAdf(commentBody) });
+				const isDoc = commentBody && typeof commentBody === 'object' && commentBody.type === 'doc' && Array.isArray(commentBody.content);
+				if (!isDoc && (typeof commentBody !== 'string' || !commentBody.trim())) throw new Error('commentBody is required');
+				const r = await call('POST', `/issue/${issueKey(issueIdOrKey)}/comment`, { body: isDoc ? commentBody : textToAdf(commentBody) });
 				return { id: r?.id };
 			},
 		},
@@ -181,7 +184,7 @@ export function makeTools({ site, email, token, fetchImpl = fetch, roots = [] })
 				if (!BARE_NAME.test(fileName ?? '') || fileName.includes('..')) throw new Error('fileName must be a bare file name');
 				if (!Number.isInteger(run) || run < 1) throw new Error('run must be a QA run number');
 				const wt = fs.realpathSync(path.resolve(String(worktree ?? '')));
-				if (roots.length && !roots.some((r) => wt === r || wt.startsWith(r + path.sep)))
+				if (roots && !roots.some((r) => wt === r || wt.startsWith(r + path.sep)))
 					throw new Error('that worktree is not one of this repository’s');
 				let belongs = false;
 				try {
@@ -190,7 +193,11 @@ export function makeTools({ site, email, token, fetchImpl = fetch, roots = [] })
 					/* no run.json */
 				}
 				if (!belongs) throw new Error('that worktree is not the one for this issue');
-				const dir = fs.realpathSync(path.join(wt, '.dev-factory', 'evidence', k, `run-${run}`));
+				// the run's folder itself may be a link: it has to resolve to where it is written, inside this worktree's evidence
+				const evidence = path.join(wt, '.dev-factory', 'evidence', k);
+				const dir = fs.realpathSync(path.join(evidence, `run-${run}`));
+				if (dir !== path.join(fs.realpathSync(evidence), `run-${run}`))
+					throw new Error('the run’s evidence folder is a link out of the worktree');
 				const file = fs.realpathSync(path.join(dir, fileName));
 				if (!file.startsWith(dir + path.sep)) throw new Error('that file is not inside the run’s evidence folder');
 				const size = fs.statSync(file).size;
@@ -259,8 +266,27 @@ export function configFromEnv(env = process.env) {
 	return { site, email: env.JIRA_EMAIL, token: env.JIRA_API_TOKEN };
 }
 
+// The worktrees of the repository the server was started in: an upload can only come from one of them.
+export function worktreeRoots(cwd = process.cwd()) {
+	const out = new Set();
+	try {
+		const list = execFileSync('git', ['worktree', 'list', '--porcelain'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+		for (const line of list.split('\n'))
+			if (line.startsWith('worktree ')) {
+				try {
+					out.add(fs.realpathSync(line.slice(9)));
+				} catch {
+					/* a worktree that is gone */
+				}
+			}
+	} catch {
+		/* not a repository: nothing is allowed below */
+	}
+	return [...out];
+}
+
 if (isMain(import.meta.url)) {
-	const cfg = configFromEnv();
+	const cfg = { ...configFromEnv(), roots: worktreeRoots() };
 	const missing = ['site', 'email', 'token'].filter((k) => !cfg[k]);
 	if (missing.length) {
 		console.error(

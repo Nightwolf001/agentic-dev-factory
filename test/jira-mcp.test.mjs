@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { configFromEnv, handle, makeTools, MAX_UPLOAD_BYTES } from '../scripts/jira-mcp.mjs';
+import { configFromEnv, handle, makeTools, MAX_UPLOAD_BYTES, worktreeRoots } from '../scripts/jira-mcp.mjs';
 import { entry, merge } from '../scripts/jira-mcp-config.mjs';
 
 const ok = (body, status = 200) => new Response(body === null ? null : JSON.stringify(body), { status });
@@ -306,4 +306,28 @@ test('the server entry holds no secret, only the host, and starts the newest ins
 	const merged = merge({ mcpServers: { other: { command: 'x' } }, extra: 1 }, 'jira', e);
 	assert.deepEqual(Object.keys(merged.mcpServers), ['other', 'jira']);
 	assert.equal(merged.extra, 1);
+});
+
+test('a run folder that is a link out of the worktree is refused, and a comment can be a ready ADF document', async () => {
+	const w = worktree();
+	const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'df-outside-run-'));
+	fs.writeFileSync(path.join(outsideDir, 'secret.png'), 'not evidence');
+	fs.symlinkSync(outsideDir, path.join(w.dir, '.dev-factory', 'evidence', 'APP-1', 'run-7'));
+	const { tools } = server([attachments([]), [/attachments$/, () => assert.fail('must not upload')]]);
+	await assert.rejects(
+		tools.uploadAttachmentToJiraIssue.run({ issueIdOrKey: 'APP-1', worktree: w.dir, run: 7, fileName: 'secret.png' }),
+		/link out of the worktree/,
+	);
+	const sent = [];
+	const c = server([[/^POST \/issue\/APP-1\/comment$/, (m, init) => (sent.push(JSON.parse(init.body)), ok({ id: '1' }))]]);
+	const doc = { type: 'doc', version: 1, content: [{ type: 'paragraph', content: [{ type: 'text', text: 'hi' }] }] };
+	await c.tools.addCommentToJiraIssue.run({ issueIdOrKey: 'APP-1', commentBody: doc });
+	assert.deepEqual(sent[0].body, doc);
+	await assert.rejects(c.tools.addCommentToJiraIssue.run({ issueIdOrKey: 'APP-1', commentBody: { type: 'nope' } }), /commentBody is required/);
+});
+
+test('worktreeRoots lists the repository’s worktrees, and nothing outside a repository', () => {
+	const here = worktreeRoots(process.cwd());
+	assert.ok(here.length >= 1);
+	assert.deepEqual(worktreeRoots(fs.mkdtempSync(path.join(os.tmpdir(), 'df-norepo-'))), []);
 });
