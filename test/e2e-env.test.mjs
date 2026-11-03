@@ -344,3 +344,51 @@ esac
 		assert.doesNotMatch(f.log(), / up -d| build/);
 	}
 });
+
+// ---- values are data, not code ----
+
+test('down removes only a project this script started: env.json is written by the run and is not trusted to name one', () => {
+	const f = fixture({ environment: { type: 'compose', composeFile: '.devcontainer/docker-compose.yml', service: 'app' } });
+	for (const project of ['myapp-prod', 'df-', 'df-A b', 'DF-app-1', 'df-app;rm', '$(touch x)']) {
+		fs.writeFileSync(path.join(f.worktree, '.dev-factory/env.json'), JSON.stringify({ project, mode: 'isolated' }));
+		const r = f.run('down');
+		assert.equal(r.status, 1, `${project}: ${r.stderr}`);
+		assert.match(r.stderr, /refusing to take down/);
+	}
+	assert.doesNotMatch(f.log(), /down -v/, 'docker was never asked to remove anything');
+	assert.ok(fs.existsSync(path.join(f.worktree, '.dev-factory/env.json')), 'and the record is left for a person to look at');
+	fs.writeFileSync(path.join(f.worktree, '.dev-factory/env.json'), JSON.stringify({ project: 'df-app-1', mode: 'isolated' }));
+	assert.equal(f.run('down').status, 0, 'its own project goes');
+	assert.match(f.log(), /-p df-app-1 down -v/);
+});
+
+test('a setting or a path with a quote in it is recorded as text and never runs', () => {
+	const evil = "http://x/'+require('fs').writeFileSync('PWNED-SETTING','x')+'";
+	const f = fixture({ environment: { type: 'none', webBaseUrl: evil } });
+	const r = f.run('up', '--key', 'APP-1');
+	assert.equal(r.status, 0, r.stderr);
+	assert.equal(JSON.parse(fs.readFileSync(path.join(f.worktree, '.dev-factory/env.json'), 'utf8')).webBaseUrl, evil);
+	assert.equal(fs.existsSync(path.join(f.worktree, 'PWNED-SETTING')), false);
+	assert.equal(fs.existsSync(path.join(process.cwd(), 'PWNED-SETTING')), false);
+	// a worktree whose folder name holds a quote
+	const g = fixture({ environment: { type: 'none' } });
+	const odd = path.join(g.base, "it's a wt");
+	fs.mkdirSync(path.join(odd, '.dev-factory'), { recursive: true });
+	fs.writeFileSync(path.join(odd, 'dev-factory.config.json'), JSON.stringify({ environment: { type: 'none' } }));
+	const r2 = spawnSync('bash', [SCRIPT, 'up', '--key', 'APP-1', '--worktree', odd], {
+		env: { ...process.env, DF_STATE_DIR: g.state },
+		encoding: 'utf8',
+		cwd: odd,
+	});
+	assert.equal(r2.status, 0, r2.stderr);
+	assert.equal(
+		JSON.parse(fs.readFileSync(path.join(odd, '.dev-factory/env.json'), 'utf8')).worktree.replace(/^\/private/, ''),
+		fs.realpathSync(odd).replace(/^\/private/, ''),
+	);
+	const v = spawnSync('bash', [SCRIPT, 'verify', '--worktree', odd], {
+		env: { ...process.env, DF_STATE_DIR: g.state },
+		encoding: 'utf8',
+		cwd: odd,
+	});
+	assert.equal(v.status, 0, v.stderr);
+});

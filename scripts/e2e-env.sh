@@ -66,7 +66,15 @@ COMPOSE_FILE="$WORKTREE/$COMPOSE_REL"
 OVERRIDE="$RUN_DIR/compose.override.yml"
 
 project_for() { echo "df-$(echo "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/-/g')"; }
-env_get() { node -e "try{const j=require('$ENV_JSON');process.stdout.write(String(j['$1']??''))}catch(e){}"; }
+# Values reach node as arguments and environment, never as text inside the program: a path or a setting with a quote in it must not
+# become code. (A recorded value is data the run wrote; the script that reads it is the scheduler's.)
+env_get() { ENV_JSON="$ENV_JSON" node -e "try{const j=JSON.parse(require('fs').readFileSync(process.env.ENV_JSON,'utf8'));process.stdout.write(String(j[process.argv[1]]??''))}catch(e){}" "$1"; }
+# write_env key=value ...: the environment record, in the order given, with the time it was made
+write_env() {
+  ENV_JSON="$ENV_JSON" node -e 'const o={};for(const a of process.argv.slice(1)){const i=a.indexOf("=");o[a.slice(0,i)]=a.slice(i+1)}o.createdAt=new Date().toISOString();require("fs").writeFileSync(process.env.ENV_JSON,JSON.stringify(o,null,2))' "$@"
+}
+# a project name this script can have made: refuse to take down anything else, whatever env.json says
+valid_project() { printf '%s' "$1" | grep -Eq '^df-[a-z0-9_-]+$'; }
 
 compose() { # compose <args...> using the recorded project
   local project="$1"; shift
@@ -164,13 +172,13 @@ do_verify() {
     printf 'e2e-env: verify FAILED for %s\n%s' "$project" "$problems" >&2
     return 1
   fi
-  node -e "const f='$ENV_JSON';const j=require(f);j.verifiedAt=new Date().toISOString();require('fs').writeFileSync(f,JSON.stringify(j,null,2))"
+  ENV_JSON="$ENV_JSON" node -e "const f=process.env.ENV_JSON;const j=JSON.parse(require('fs').readFileSync(f,'utf8'));j.verifiedAt=new Date().toISOString();require('fs').writeFileSync(f,JSON.stringify(j,null,2))"
   log "verify ok: $project"
 }
 
 do_up_none() {
   mkdir -p "$RUN_DIR"
-  node -e "require('fs').writeFileSync('$ENV_JSON',JSON.stringify({project:'',key:'$KEY',worktree:'$WORKTREE',mode:'none',ports:'none',webBaseUrl:'$WEB_BASE_URL',createdAt:new Date().toISOString()},null,2))"
+  write_env project= key="$KEY" worktree="$WORKTREE" mode=none ports=none webBaseUrl="$WEB_BASE_URL"
   log "no environment configured (environment.type is none): tests run on the host"
 }
 
@@ -266,7 +274,9 @@ do_up() {
   fi
 
   write_override
-  node -e "require('fs').writeFileSync('$ENV_JSON',JSON.stringify({project:'$project',key:'$KEY',worktree:'$WORKTREE',composeFile:'$COMPOSE_FILE',override:'$OVERRIDE',mode:'$([ "$DEVICE" = 1 ] && echo device || { [ "$PORTS" = canonical ] && echo canonical || echo isolated; })',ports:'$PORTS',webBaseUrl:'$([ "$PORTS" = canonical ] && echo "$WEB_BASE_URL")',createdAt:new Date().toISOString()},null,2))"
+  write_env project="$project" key="$KEY" worktree="$WORKTREE" composeFile="$COMPOSE_FILE" override="$OVERRIDE" \
+    mode="$([ "$DEVICE" = 1 ] && echo device || { [ "$PORTS" = canonical ] && echo canonical || echo isolated; })" \
+    ports="$PORTS" webBaseUrl="$([ "$PORTS" = canonical ] && echo "$WEB_BASE_URL")"
   mark_live "$project"
 
   local ok=0
@@ -303,6 +313,8 @@ do_down() {
     [ -f "$ENV_JSON" ] && rm -f "$ENV_JSON"
     log "nothing to take down for this worktree"; return 0
   fi
+  # env.json is written by the run, so it is not trusted to name what to remove: only a project this script makes (df-<key>)
+  valid_project "$project" || die "refusing to take down '$(printf '%s' "$project" | cut -c1-40)': not a project this script started (df-<key>); env.json was not used"
   [ "$(env_get mode)" = "device" ] && bash "$SELF_DIR/mobile-env.sh" down --worktree "$WORKTREE"
   do_down_quiet "$project"
   rm -f "$ENV_JSON"
