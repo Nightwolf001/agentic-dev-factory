@@ -3,10 +3,11 @@
 // thing that turns that walk into a verdict, and it refuses anything that is not fresh evidence
 // for this run at this commit.
 //
-//   qa.mjs start   --key KEY --profile web|mobile
-//   qa.mjs record  --run N --case SLUG --status pass|fail --assertion TEXT [--screenshot FILE] [--step N]
+//   qa.mjs start   --key KEY --profile web|mobile|service
+//   qa.mjs record  --run N --case SLUG --status pass|fail --assertion TEXT [--screenshot FILE] [--video FILE] [--log FILE] [--kind worker --evidence-file FILE] [--step N]
+//   qa.mjs probe   --run N --case SLUG --url URL [--method GET] [--header 'Name: value']... [--body-file F | --body TEXT] [--expect-status 200] [--step N]   send an API request, keep the answer as evidence
 //   qa.mjs done    --run N
-//   qa.mjs mark-na --key KEY --profile web|mobile --reason TEXT
+//   qa.mjs mark-na --key KEY --profile web|mobile|service --reason TEXT   only when every changed file is documentation, a test or a formatting rule (noBehaviourGlobs)
 //   qa.mjs verify  --head SHA (--key KEY | --run N) [--require-review true]   --key finds the run made at that head, or the not-applicable record
 //   qa.mjs show    --run N
 //   qa.mjs review record --axis spec|standards --head SHA --summary TEXT --findings JSON   only as the reviewer run.json names for that axis
@@ -34,6 +35,8 @@ import * as debugLib from '../scripts/debug-lib.mjs';
 import { load as loadConfig } from '../scripts/config.mjs';
 import { globToRegExp, readSealed, stillSealed } from '../scripts/env-build-files.mjs';
 import { isMain } from '../scripts/is-main.mjs';
+import { ProbeError, probe as sendProbe } from '../scripts/probe-lib.mjs';
+import { redactText } from '../scripts/scrub-lib.mjs';
 import { learningRequired, lintLearnings, parseLearnings } from '../scripts/learnings-lib.mjs';
 import { checkPromotion } from '../scripts/promote-lib.mjs';
 import { lintTicket } from '../scripts/ticket-lib.mjs';
@@ -44,6 +47,7 @@ import { workRoot } from '../scripts/run-context.mjs';
 
 export const MIN_ASSERTION_CHARS = 8;
 export const MIN_IMAGE_BYTES = 1024;
+export const MIN_VIDEO_BYTES = 1024;
 export const MTIME_TOLERANCE_MS = 2000;
 // The ref a run's diff is measured against: DF_BASE_REF, else the base branch recorded in run.json, else origin/develop.
 export function baseFor(root) {
@@ -151,21 +155,47 @@ function loadRun(root, run) {
 // QA cases are committed with the change they verify, in the repository under test, not in the plugin.
 export const CASES_DIR = path.join('.factory', 'qa', 'cases');
 
-export function listCases(root, key) {
+// What kind of case a file is: a screen walked in a browser or on a device (ui), a request and its answer (api), or a job and
+// what it did (worker). A pass needs evidence of its own kind: an image, a probe or the worker's output.
+export const CASE_KINDS = ['ui', 'api', 'worker'];
+const CASE_FILE = [
+	['api', /\.api\.md$/],
+	['worker', /\.worker\.md$/],
+	['ui', /\.(ya?ml|spec\.ts)$/],
+];
+
+export function listCaseFiles(root, key) {
 	const dir = path.join(root, CASES_DIR, key);
 	if (!fs.existsSync(dir)) return [];
 	return fs
 		.readdirSync(dir)
-		.filter((f) => /\.(ya?ml|spec\.ts)$/.test(f))
-		.map((f) => f.replace(/\.(ya?ml|spec\.ts)$/, ''))
-		.sort();
+		.map((f) => {
+			const hit = CASE_FILE.find(([, re]) => re.test(f));
+			return hit ? { slug: f.replace(hit[0] === 'ui' ? /\.(ya?ml|spec\.ts)$/ : /\.md$/, ''), kind: hit[0] } : null;
+		})
+		.filter(Boolean)
+		.sort((x, y) => x.slug.localeCompare(y.slug));
+}
+
+export const listCases = (root, key) => listCaseFiles(root, key).map((c) => c.slug);
+
+// { ui: { total, passed, failed }, api: ..., worker: ... } for the kinds that are present
+export function caseSummary(cases) {
+	const out = {};
+	for (const c of cases) {
+		const k = (out[c.kind ?? 'ui'] ??= { total: 0, passed: 0, failed: 0 });
+		k.total++;
+		if (c.status === 'pass') k.passed++;
+		if (c.status === 'fail') k.failed++;
+	}
+	return out;
 }
 
 export function start({ root, key, profile }) {
 	if (!key || !profile) throw new QaError('start needs --key and --profile');
 	const dirty = dirtyFiles(root);
 	if (dirty.length) throw new QaError(`working tree is not clean (commit first): ${dirty.slice(0, 5).join(', ')}`);
-	const cases = listCases(root, key);
+	const cases = listCaseFiles(root, key);
 	if (!cases.length) throw new QaError(`needs_own_case: no case authored under ${CASES_DIR}/${key}/`, 2);
 	const run = nextRun(root);
 	const envFile = path.join(root, '.dev-factory', 'env.json');
@@ -177,7 +207,7 @@ export function start({ root, key, profile }) {
 		diffHash: diffHash(root, 'HEAD', baseFor(root)),
 		startedAt: new Date().toISOString(),
 		env: fs.existsSync(envFile) ? readJson(envFile) : null,
-		cases: cases.map((slug) => ({ slug, status: null })),
+		cases: cases.map(({ slug, kind }) => ({ slug, kind, status: null })),
 		evidence: [],
 		verdict: null,
 	};
@@ -192,9 +222,88 @@ const isImage = (buf) =>
 // A recorded assertion must describe this walk, never lean on another one.
 const CITES_OTHER_RUN = /#\d+|\brun\s*\d+|previous(ly)?|same commit|already passed|as before/i;
 
-export function record({ root, run, caseSlug, status, assertion, screenshot, step = 1 }) {
+// A video is recognised by what the file starts with, not by its name: an MP4 or QuickTime file has `ftyp` at byte 4, a WebM
+// or Matroska file starts with the EBML header.
+const isVideo = (buf) =>
+	buf.length > 12 && (buf.subarray(4, 8).toString('latin1') === 'ftyp' || buf.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3])));
+
+export const MAX_LOG_BYTES = 8 * 1024;
+export const MIN_WORKER_EVIDENCE_CHARS = 32;
+// evidence a pass can rest on, by type; a video or a log only supports one
+export const PASSING_EVIDENCE = ['image', 'probe', 'worker'];
+
+// The newest part of a log, whole lines only, with personal data and secrets replaced. Redacted first (over the newest 64 KB,
+// which is bounded work) and cut after, so the file kept is never longer than the cap whatever the replacements did to the length.
+function logTail(text, patterns, secrets) {
+	const bytes = (t) => Buffer.byteLength(t);
+	let t =
+		bytes(text) > 64 * 1024
+			? Buffer.from(text)
+					.subarray(-64 * 1024)
+					.toString('utf8')
+			: text;
+	t = t.slice(t === text ? 0 : t.indexOf('\n') + 1);
+	const red = redactText(t, { extraPatterns: patterns, secrets });
+	let out = red.text;
+	if (bytes(out) > MAX_LOG_BYTES) {
+		out = Buffer.from(out).subarray(-MAX_LOG_BYTES).toString('utf8');
+		out = out.slice(out.indexOf('\n') + 1); // the first line is cut in the middle
+	}
+	return { text: out, redactions: red.redactions };
+}
+
+const evidenceDir = (root, m) => path.join('.dev-factory', 'evidence', m.key, `run-${m.run}`);
+
+function openRun(root, run) {
 	const m = loadRun(root, run);
 	if (m.verdict) throw new QaError(`run ${run} is already finished (${m.verdict})`);
+	if (git(root, 'rev-parse', 'HEAD') !== m.head) throw new QaError('HEAD moved since the run started; start a new run');
+	return m;
+}
+
+// Copies a file the walk produced into the evidence folder after the checks every kind of capture shares: it exists, is big
+// enough, is fresh (made during this run) and is not byte-identical to something already registered.
+function registerFile({ root, m, caseSlug, step, file, what, minBytes = MIN_IMAGE_BYTES, ext, check }) {
+	if (!fs.existsSync(file)) throw new QaError(`${what} not found: ${file}`);
+	const st = fs.statSync(file);
+	const buf = fs.readFileSync(file);
+	if (st.size < minBytes) throw new QaError(`${what} is ${st.size} bytes; at least ${minBytes} required`);
+	if (check && !check(buf)) throw new QaError(`${what} is not ${what === 'video' ? 'an MP4, MOV or WebM file' : 'a PNG or JPEG'}`);
+	if (st.mtimeMs < Date.parse(m.startedAt) - MTIME_TOLERANCE_MS) throw new QaError(`${what} predates this run; take a fresh one`);
+	const hash = sha256(file);
+	const dup = m.evidence.find((e) => e.sha256 === hash);
+	if (dup) throw new QaError(`${what} bytes already registered for case ${dup.case}; capture the state this case asserts`);
+	const rel = path.join(evidenceDir(root, m), `${caseSlug}-${step}.${ext(buf)}`);
+	fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+	fs.copyFileSync(file, path.join(root, rel));
+	return { case: caseSlug, step, file: rel, sha256: hash, bytes: st.size };
+}
+
+// Text kept as evidence (a log tail, a worker's output, a probe): redacted first, so the file on disk is what may be shown.
+function registerText({ root, m, caseSlug, step, type, name, text, extra = {} }) {
+	const rel = path.join(evidenceDir(root, m), name);
+	fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+	fs.writeFileSync(path.join(root, rel), text);
+	const bytes = Buffer.byteLength(text);
+	return { case: caseSlug, step, type, file: rel, sha256: createHash('sha256').update(text).digest('hex'), bytes, ...extra };
+}
+
+export function record({
+	root,
+	run,
+	caseSlug,
+	status,
+	assertion,
+	screenshot,
+	video,
+	log,
+	kind,
+	evidenceFile,
+	step = 1,
+	secrets = [],
+	patterns = [],
+}) {
+	const m = openRun(root, run);
 	const c = m.cases.find((x) => x.slug === caseSlug);
 	if (!c) throw new QaError(`case ${caseSlug} is not part of run ${run}`);
 	if (!['pass', 'fail'].includes(status)) throw new QaError('--status must be pass or fail');
@@ -202,34 +311,150 @@ export function record({ root, run, caseSlug, status, assertion, screenshot, ste
 		throw new QaError(`assertion needs at least ${MIN_ASSERTION_CHARS} characters describing what was observed`);
 	if (CITES_OTHER_RUN.test(assertion))
 		throw new QaError('assertion must describe this walk; it may not cite another run, a run number or an earlier pass');
-	if (git(root, 'rev-parse', 'HEAD') !== m.head) throw new QaError('HEAD moved since the run started; start a new run');
+	if (kind != null && kind !== 'worker')
+		throw new QaError('--kind is worker (with --evidence-file); images, videos and logs are told apart by their option');
+	if ((kind === 'worker') !== !!evidenceFile) throw new QaError('worker evidence is --kind worker together with --evidence-file FILE');
+	if (evidenceFile && (c.kind ?? 'ui') !== 'worker')
+		throw new QaError(`case ${caseSlug} is a ${c.kind ?? 'ui'} case; worker evidence belongs to a .worker.md case`);
 
-	let evidence = null;
-	if (screenshot) {
-		if (!fs.existsSync(screenshot)) throw new QaError(`screenshot not found: ${screenshot}`);
-		const st = fs.statSync(screenshot);
-		const buf = fs.readFileSync(screenshot);
-		if (st.size < MIN_IMAGE_BYTES) throw new QaError(`screenshot is ${st.size} bytes; at least ${MIN_IMAGE_BYTES} required`);
-		if (!isImage(buf)) throw new QaError('screenshot is not a PNG or JPEG');
-		if (st.mtimeMs < Date.parse(m.startedAt) - MTIME_TOLERANCE_MS) throw new QaError('screenshot predates this run; take a fresh one');
-		const hash = sha256(screenshot);
-		const dup = m.evidence.find((e) => e.sha256 === hash);
-		if (dup) throw new QaError(`screenshot bytes already registered for case ${dup.case}; capture the state this case asserts`);
-		const ext = buf[0] === 0x89 ? 'png' : 'jpg';
-		const rel = path.join('.dev-factory', 'evidence', m.key, `run-${run}`, `${caseSlug}-${step}.${ext}`);
-		fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
-		fs.copyFileSync(screenshot, path.join(root, rel));
-		evidence = { case: caseSlug, step, file: rel, sha256: hash, bytes: st.size };
-		m.evidence.push(evidence);
+	const added = [];
+	if (screenshot)
+		added.push({
+			type: 'image',
+			...registerFile({
+				root,
+				m,
+				caseSlug,
+				step,
+				file: screenshot,
+				what: 'screenshot',
+				check: isImage,
+				ext: (b) => (b[0] === 0x89 ? 'png' : 'jpg'),
+			}),
+		});
+	if (video)
+		added.push({
+			type: 'video',
+			...registerFile({
+				root,
+				m,
+				caseSlug,
+				step,
+				file: video,
+				what: 'video',
+				minBytes: MIN_VIDEO_BYTES,
+				check: isVideo,
+				ext: (b) => (b[0] === 0x1a ? 'webm' : 'mp4'),
+			}),
+		});
+	if (log) {
+		if (!fs.existsSync(log)) throw new QaError(`log not found: ${log}`);
+		const t = logTail(fs.readFileSync(log, 'utf8'), patterns, secrets);
+		added.push(
+			registerText({
+				root,
+				m,
+				caseSlug,
+				step,
+				type: 'log',
+				name: `${caseSlug}-${step}.log.txt`,
+				text: t.text,
+				extra: { redactions: t.redactions },
+			}),
+		);
 	}
-	if (status === 'pass' && !m.evidence.some((e) => e.case === caseSlug)) {
-		throw new QaError('a pass needs at least one screenshot registered for this case in this run');
+	if (evidenceFile) {
+		if (!fs.existsSync(evidenceFile)) throw new QaError(`evidence file not found: ${evidenceFile}`);
+		const raw = fs.readFileSync(evidenceFile, 'utf8').slice(0, 64 * 1024);
+		const t = redactText(raw, { extraPatterns: patterns, secrets });
+		if (t.text.replace(/\s+/g, '').length < MIN_WORKER_EVIDENCE_CHARS)
+			throw new QaError(
+				`worker evidence needs at least ${MIN_WORKER_EVIDENCE_CHARS} characters of what the worker did (its output, the rows it wrote, the message it sent)`,
+			);
+		const hash = createHash('sha256').update(t.text).digest('hex');
+		const dup = m.evidence.find((e) => e.sha256 === hash);
+		if (dup) throw new QaError(`worker evidence already registered for case ${dup.case}; keep what this case's job did`);
+		added.push(
+			registerText({
+				root,
+				m,
+				caseSlug,
+				step,
+				type: 'worker',
+				name: `${caseSlug}-${step}.worker.txt`,
+				text: t.text,
+				extra: { redactions: t.redactions },
+			}),
+		);
+	}
+	m.evidence.push(...added);
+	if (status === 'pass') {
+		// an image, a probe or the worker's output; a video or a log alone shows that something ran, not what it did
+		const proof = m.evidence.filter((e) => e.case === caseSlug && PASSING_EVIDENCE.includes(e.type ?? 'image'));
+		if (!proof.length) {
+			const need = {
+				ui: 'screenshot',
+				api: 'screenshot or probe (qa.mjs probe)',
+				worker: 'screenshot or piece of worker evidence (--kind worker --evidence-file)',
+			}[c.kind ?? 'ui'];
+			throw new QaError(
+				`a pass needs at least one ${need} registered for this case in this run${added.some((e) => ['video', 'log'].includes(e.type)) ? '; a video or a log alone does not pass a case' : ''}`,
+			);
+		}
+		if (!proof.some((e) => e.type !== 'probe' || e.ok))
+			throw new QaError('the probes for this case did not get the expected answer; a pass needs one that did');
 	}
 	c.status = status;
 	c.assertion = assertion.trim();
 	c.recordedAt = new Date().toISOString();
 	writeJson(manifestPath(root, run), m);
-	return { case: c, evidence };
+	return { case: c, evidence: added[0] ?? null, evidenceAdded: added.map((e) => ({ type: e.type, file: e.file })) };
+}
+
+// Sends the request of an API case and registers the answer as evidence for it. See scripts/probe-lib.mjs for the rules.
+export async function probe({
+	root,
+	run,
+	caseSlug,
+	url,
+	method,
+	headers = [],
+	body = null,
+	bodyFile = null,
+	expectStatus = null,
+	step = 1,
+	fetchImpl,
+	patterns = [],
+	secrets = [],
+}) {
+	const m = openRun(root, run);
+	if (!m.cases.some((x) => x.slug === caseSlug)) throw new QaError(`case ${caseSlug} is not part of run ${run}`);
+	let payload = body;
+	if (bodyFile) {
+		if (!fs.existsSync(bodyFile)) throw new QaError(`body file not found: ${bodyFile}`);
+		payload = fs.readFileSync(bodyFile, 'utf8');
+	}
+	let rec;
+	try {
+		rec = await sendProbe({ url, method, headers, body: payload, expectStatus, env: m.env ?? {}, fetchImpl, secrets, extraPatterns: patterns });
+	} catch (e) {
+		if (e instanceof ProbeError) throw new QaError(`probe refused or failed: ${e.message}`);
+		throw e;
+	}
+	const text = JSON.stringify(rec, null, 2) + '\n';
+	const entry = registerText({
+		root,
+		m,
+		caseSlug,
+		step,
+		type: 'probe',
+		name: `${caseSlug}-probe-${step}.json`,
+		text,
+		extra: { status: rec.status, ok: rec.ok },
+	});
+	m.evidence.push(entry);
+	writeJson(manifestPath(root, run), m);
+	return { ...entry, probe: { method: rec.method, path: rec.path, status: rec.status, expectStatus: rec.expectStatus, ok: rec.ok, ms: rec.ms } };
 }
 
 export function done({ root, run }) {
@@ -241,6 +466,7 @@ export function done({ root, run }) {
 	const dirty = dirtyFiles(root);
 	if (dirty.length) throw new QaError(`working tree changed during the walk: ${dirty.slice(0, 5).join(', ')}`);
 	m.verdict = m.cases.every((c) => c.status === 'pass') ? 'pass' : 'fail';
+	m.caseSummary = caseSummary(m.cases);
 	m.finishedAt = new Date().toISOString();
 	writeJson(manifestPath(root, run), m);
 	return m;
@@ -281,21 +507,34 @@ function globListFor(profile, key, root) {
 export const uiGlobsFor = (root, profile) => globListFor(profile, 'uiGlobs', root);
 // Files under a UI folder that are still not UI surface (documentation), so a docs-only diff does not need a walk.
 export const nonUiGlobsFor = (root, profile) => globListFor(profile, 'nonUiGlobs', root);
+// Files whose change cannot alter what the software does. A profile that does not list any uses its nonUiGlobs.
+export const noBehaviourGlobsFor = (root, profile) => {
+	const own = globListFor(profile, 'noBehaviourGlobs', root);
+	return own.length ? own : nonUiGlobsFor(root, profile);
+};
+export const MIN_NA_REASON_CHARS = 8;
 
 export { globToRegExp };
 
+// "Not applicable" is a claim that nothing here can change behaviour: it is accepted only when EVERY changed file is one the
+// profile lists in noBehaviourGlobs (documentation, tests, formatting rules). A change to code that runs, a UI file or not,
+// needs its cases walked: a walk for a screen, api or worker cases for a service.
 export function markNa({ root, key, profile, reason, base = baseFor(root) }) {
 	if (!key || !profile || !reason) throw new QaError('mark-na needs --key, --profile and --reason');
-	const globs = uiGlobsFor(root, profile).map(globToRegExp);
-	if (!globs.length) throw new QaError(`profile ${profile} has no uiGlobs`);
+	if (reason.trim().length < MIN_NA_REASON_CHARS)
+		throw new QaError(`the reason needs at least ${MIN_NA_REASON_CHARS} characters saying why nothing here changes behaviour`);
+	const globs = noBehaviourGlobsFor(root, profile).map(globToRegExp);
+	if (!globs.length) throw new QaError(`profile ${profile} has no noBehaviourGlobs (or nonUiGlobs), so nothing can be declared not applicable`);
 	const files = git(root, 'diff', '--name-only', `${base}...HEAD`).split('\n').filter(Boolean);
-	const docs = nonUiGlobsFor(root, profile).map(globToRegExp);
-	const ui = files.filter((f) => globs.some((g) => g.test(f)) && !docs.some((g) => g.test(f)));
-	if (ui.length) throw new QaError(`diff touches UI surface, a walk is required: ${ui.slice(0, 5).join(', ')}`);
+	const behaviour = files.filter((f) => !globs.some((g) => g.test(f)));
+	if (behaviour.length)
+		throw new QaError(
+			`the diff changes files that can alter behaviour, so QA is required (a walk for a screen, api or worker cases for a service): ${behaviour.slice(0, 5).join(', ')}${behaviour.length > 5 ? `, and ${behaviour.length - 5} more` : ''}`,
+		);
 	const out = {
 		key,
 		profile,
-		reason,
+		reason: reason.trim(),
 		head: git(root, 'rev-parse', 'HEAD'),
 		diffHash: diffHash(root, 'HEAD', base),
 		files: files.length,
@@ -526,7 +765,13 @@ export function verify({ root, head, run, key, requireReview = false, specialist
 	}
 	if (noAttribution) problems.push(...attributionProblems(root, carriedFrom ? full : manifest.head, base));
 	if (problems.length) throw new QaError(`verify failed: ${problems.join('; ')}`);
-	return { ok: true, verdict: manifest.verdict, head: manifest.head, ...(carriedFrom ? { carriedFrom, prHead: full } : {}) };
+	return {
+		ok: true,
+		verdict: manifest.verdict,
+		head: manifest.head,
+		...(manifest.cases ? { caseSummary: manifest.caseSummary ?? caseSummary(manifest.cases) } : {}),
+		...(carriedFrom ? { carriedFrom, prHead: full } : {}),
+	};
 }
 
 export function learningsCheck({ root, key, bodyFile }) {
@@ -605,6 +850,18 @@ function cfg() {
 	}
 }
 const scrubPatterns = () => cfg().telemetry?.scrubPatterns ?? [];
+// every value of an option that may repeat (--header A --header B)
+const multi = (argv, name) => argv.flatMap((x, i) => (x === `--${name}` && argv[i + 1] !== undefined ? [argv[i + 1]] : []));
+// Literal secrets to keep out of kept evidence: the values of the environment variables env.json names in `secretEnv`
+// (the test account's password, a token the case sends). Their names are recorded, their values never.
+function qaSecrets(root) {
+	try {
+		const names = readJson(path.join(root, '.dev-factory', 'env.json')).secretEnv;
+		return (Array.isArray(names) ? names : []).map((n) => process.env[n]).filter(Boolean);
+	} catch {
+		return [];
+	}
+}
 
 // The run.json the scheduler wrote for the agent now running in this worktree, or null.
 function runJson(root) {
@@ -662,7 +919,7 @@ function debugCommand({ root, args, a }) {
 	}
 }
 
-function main() {
+async function main() {
 	const [cmd, ...rest] = process.argv.slice(2);
 	const a = parseArgs(rest);
 	const root = a.worktree ? repoRoot(a.worktree) : workRoot({ cwd: process.cwd() });
@@ -681,7 +938,29 @@ function main() {
 					status: a.status,
 					assertion: a.assertion,
 					screenshot: a.screenshot,
+					video: a.video,
+					log: a.log,
+					kind: a.kind,
+					evidenceFile: a['evidence-file'],
 					step: num(a.step) ?? 1,
+					patterns: scrubPatterns(),
+					secrets: qaSecrets(root),
+				});
+				break;
+			case 'probe':
+				result = await probe({
+					root,
+					run: num(a.run),
+					caseSlug: a.case,
+					url: a.url,
+					method: a.method,
+					headers: [].concat(multi(rest, 'header')),
+					body: a.body ?? null,
+					bodyFile: a['body-file'],
+					expectStatus: a['expect-status'],
+					step: num(a.step) ?? 1,
+					patterns: scrubPatterns(),
+					secrets: qaSecrets(root),
 				});
 				break;
 			case 'done':
