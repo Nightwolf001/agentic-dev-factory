@@ -152,8 +152,10 @@
 		"submodules": [],
 		"preCommit": null
 	},
+	"guard": {
+		"trackerHosts": []
+	},
 	"cleanup": {
-		"takeover": false,
 		"ports": []
 	},
 	"mobile": {
@@ -177,6 +179,7 @@
 	"telemetry": {
 		"maxRows": 200,
 		"maxWindowDays": 14,
+		"allowedRoles": [],
 		"scrubPatterns": []
 	},
 	"debug": {

@@ -33,7 +33,16 @@ process.stdin
 		} catch {
 			/* no readable config: keep the strict reading */
 		}
+		// hosts of the task tracker beyond the built-in ones: the Jira site, and whatever the repository lists
+		let trackerHosts = [];
+		try {
+			trackerHosts = [get('sources.jira.site'), ...(get('guard.trackerHosts') ?? [])].filter((h) => typeof h === 'string' && h);
+		} catch {
+			/* no readable config: the built-in hosts still apply */
+		}
 		const verdict = evaluate(command, {
+			cwd,
+			trackerHosts,
 			branch: run?.branch,
 			role: run?.role,
 			containerOnly,

@@ -1,13 +1,32 @@
 // Rules for the read-only Sentry and Axiom MCP tools. Enforced by hook, not by instruction.
 // Pure function so it is unit-tested; mcp-guard.mjs feeds it the PreToolUse input.
+//
+// Three kinds of server carry these tools: the plugin's own (`plugin_dev-factory_sentry`), one from the repository's .mcp.json
+// (`sentry`), and a claude.ai connector (`claude_ai_Sentry`). The first two are for the factory and are guarded wherever they
+// are used. A connector belongs to the person and is also used in their own sessions, so it is guarded only inside a factory
+// run (`inRun`).
 const VERBS =
-	'update|resolve|assign|merge|create|delete|mute|ingest|write|edit|set|add|remove|archive|ignore|unresolve|post|send|upload|import|trigger';
+	'update|resolve|assign|merge|create|delete|mute|ingest|write|edit|set|add|remove|archive|ignore|unresolve|post|send|upload|import|trigger|manage';
 // snake_case, kebab-case and camelCase tool names alike.
 const SNAKE = new RegExp(`(^|[_-])(${VERBS})([_-]|$)`, 'i');
 const CAMEL = new RegExp(`(^(${VERBS})|[a-z](${VERBS.replace(/\b[a-z]/g, (c) => c.toUpperCase())}))([A-Z]|$)`);
 const isWrite = (tool) => SNAKE.test(tool) || CAMEL.test(tool);
-// The server is named plugin_dev-factory_<id> when the plugin starts it and <id> when the repository's .mcp.json does.
-const PREFIX = /^mcp__(?:plugin_dev-factory_)?(sentry|axiom)__(.+)$/;
+// The server is named plugin_dev-factory_<id> when the plugin starts it, <id> when the repository's .mcp.json does, and
+// claude_ai_<Id> for a claude.ai connector.
+const PREFIX = /^mcp__(plugin_dev-factory_|claude_ai_)?(sentry|axiom)__(.+)$/i;
+
+// Sentry's connector runs its other tools through one tool, `execute_sentry_tool`, which names the tool it runs. That name,
+// not the wrapper's, decides whether the call writes. The input key and the key holding its arguments are not fixed, so the
+// usual spellings are read, and a call that names no tool cannot be judged and is refused.
+const WRAPPER = /^execute[_-]?(sentry|axiom)?[_-]?tool$/i;
+const INNER_NAME = ['tool_name', 'toolName', 'tool', 'name', 'command', 'action'];
+const INNER_ARGS = ['arguments', 'args', 'params', 'parameters', 'input', 'tool_input', 'toolInput'];
+const innerCall = (input) => {
+	const key = INNER_NAME.find((k) => typeof input?.[k] === 'string' && input[k]);
+	if (!key) return null;
+	const argKey = INNER_ARGS.find((k) => input[k] && typeof input[k] === 'object' && !Array.isArray(input[k]));
+	return { name: input[key], args: { ...input, ...(argKey ? input[argKey] : {}) } };
+};
 
 const daysOf = (v) => {
 	const m = /^(\d+)\s*([hdw])$/i.exec(String(v).trim());
@@ -26,11 +45,27 @@ export function datasetsIn(input) {
 	return [...out];
 }
 
-export function evaluateMcp({ toolName, toolInput = {}, config }) {
+// inRun: the event belongs to a factory run. role: that run's role, when known.
+export function evaluateMcp({ toolName, toolInput = {}, config, inRun, role }) {
 	const m = PREFIX.exec(toolName || '');
 	if (!m) return { deny: false };
-	const [, server, tool] = m;
+	const connector = m[1] === 'claude_ai_';
+	const server = m[2].toLowerCase();
+	let tool = m[3];
+	if (connector && inRun !== true) return { deny: false };
 	const deny = (why) => ({ deny: true, reason: `dev-factory guard: ${server} ${tool}: ${why}` });
+	// telemetry.allowedRoles narrows who may read: inside a run, only the roles listed. Empty or unset lists no restriction.
+	const roles = config?.telemetry?.allowedRoles;
+	if (inRun === true && Array.isArray(roles) && roles.length && !roles.includes(role))
+		return deny(`${role ? `the ${role} role` : 'a role that is not known'} may not read telemetry (telemetry.allowedRoles: ${roles.join(', ')})`);
+	if (WRAPPER.test(tool)) {
+		const inner = innerCall(toolInput);
+		if (!inner) return deny('this call does not say which tool it runs, so it cannot be judged');
+		if (WRAPPER.test(inner.name)) return deny('a tool that runs a tool cannot be nested');
+		tool = `${tool} → ${inner.name}`;
+		if (isWrite(inner.name)) return deny('write operations are not allowed, telemetry is read-only');
+		toolInput = inner.args;
+	}
 	if (isWrite(tool)) return deny('write operations are not allowed, telemetry is read-only');
 	const maxRows = config?.telemetry?.maxRows ?? 200;
 	const maxDays = config?.telemetry?.maxWindowDays ?? 14;

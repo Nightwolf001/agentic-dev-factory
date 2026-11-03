@@ -60,7 +60,8 @@ case "$SOURCE" in
   *) bad "tasks.source '$SOURCE' is not one of local, github, notion, jira" ;;
 esac
 
-[ "$(cfg cleanup.takeover)" = true ] && warn "cleanup.takeover is on: agents may stop any process, container or simulator that blocks a run (never the shell, Claude or the terminal)"
+case "${DF_TAKEOVER:-}" in 1|true|yes|on|TRUE|YES|ON|True|Yes|On) warn "DF_TAKEOVER is on: agents may stop any process, container or simulator that blocks a run (never the shell, Claude or the terminal)" ;; esac
+[ -f "$DIR/.env.local" ] && warn "$DIR/.env.local is ignored: secrets are read only from $(df_state_dir)/.env.local (move the values there and delete this file)"
 
 if [ "$CI" = 0 ]; then
   if [ "$(cfg mobile.appDir)" != "" ]; then

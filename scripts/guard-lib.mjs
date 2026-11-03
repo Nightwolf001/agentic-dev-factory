@@ -4,6 +4,18 @@
 // sandbox: an agent that writes and runs its own program is stopped by the real separation, which is that
 // the builder has no task-tracker or GitHub tools, the scheduler holds the credentials, and a person merges.
 import path from 'node:path';
+import {
+	LIMITS,
+	Unjudgeable,
+	budget,
+	candidates,
+	envOf,
+	namesEnvFile,
+	protectedPlace,
+	realPath,
+	resolveWord,
+	triesTakeover,
+} from './guard-paths.mjs';
 import { PLUGIN_ROOT } from './plugin-root.mjs';
 
 // `node <plugin>/bin/qa.mjs <rest>`: the real script of this plugin (its own directory, quoted or not), or one vendored at
@@ -147,7 +159,7 @@ function invocation(seg) {
 		while (t.length && (t[0].startsWith('-') || /^\w+=/.test(t[0]))) t = WRAPPERS[head].includes(t[0]) ? t.slice(2) : t.slice(1);
 		if (head === 'timeout' && /^\d/.test(t[0] ?? '')) t = t.slice(1);
 	}
-	return { cmd: base(t[0] ?? ''), args: t.slice(1), tokens };
+	return { cmd: base(t[0] ?? ''), args: t.slice(1), tokens, head: t[0] ?? '' };
 }
 
 const GIT_VALUE_OPTS = new Set([
@@ -298,7 +310,7 @@ function denyGh(args, ctx = {}, seg = '') {
 	return null;
 }
 
-const ENV_FILE = /(^|[\s/='"])\.env(\.(?!example\b)[\w.-]*)?(?=$|[\s'"])/;
+const ENV_FILE = /(^|[\s/='"])\.env(\.(?!example\b)[\w.-]*)?(?=$|[\s'"])/i;
 // A run of inline interpreter code can write anything the hook cannot see.
 const INLINE_CODE = [
 	[/^(node|nodejs|bun)$/, /^(-e|--eval|-p|--print|-pe|-ep)$/],
@@ -310,9 +322,11 @@ const INLINE_CODE = [
 ];
 const PROGRAM_RUNNERS = /^(awk|gawk|mawk|nawk)$/;
 
-function denyCommon(seg, tokens, cmd) {
-	if (ENV_FILE.test(seg)) return 'env files hold credentials and are not readable from the shell';
+function denyCommon(seg, tokens, cmd, vars) {
+	// by name as written, and by name as the shell would build it: quotes, case, globs such as .env.loca? and brace lists
+	if (ENV_FILE.test(seg) || tokens.some((t) => namesEnvFile(t, vars))) return 'env files hold credentials and are not readable from the shell';
 	if (cmd === 'eval') return 'eval is not allowed';
+	if (cmd === 'find' && tokens.some((t) => /^-(fls|fprint0?|fprintf)$/.test(t))) return 'find -fls, -fprint and -fprintf write files';
 	for (let i = 0; i < tokens.length; i++) {
 		const name = base(tokens[i]);
 		if (PROGRAM_RUNNERS.test(name)) return 'awk programs can run commands and write files';
@@ -419,7 +433,179 @@ function denyProcessControl(seg, cmd, args, ctx) {
 	return null;
 }
 
+// ---- machine state, shell profiles and the installed plugin ----
+// A run changes its worktree and what the factory records for it. It does not change the machine it runs on: the state folder
+// (secrets, locks, the settings a pass runs with), the shell start-up files that run in every later shell, and the installed
+// plugin. A command that names one of them is allowed only when it reads. Words are judged as the shell will build them
+// (see scripts/guard-paths.mjs), in the directory the command has moved to.
+const READERS = new Set([
+	...['cat', 'head', 'tail', 'ls', 'grep', 'egrep', 'fgrep', 'rg', 'wc', 'stat', 'file', 'nl', 'diff', 'cmp', 'jq', 'du', 'tree'],
+	...['readlink', 'realpath', 'basename', 'dirname', 'pwd', 'echo', 'printf', 'test', '[', 'cd', 'pushd', 'popd', 'true', 'false', 'which', 'type'],
+	...['strings', 'od', 'xxd', 'shasum', 'md5', 'md5sum', 'sha256sum', 'cksum'],
+]);
+const GIT_READ = new Set([
+	'status',
+	'log',
+	'diff',
+	'show',
+	'rev-parse',
+	'ls-files',
+	'cat-file',
+	'blame',
+	'grep',
+	'rev-list',
+	'diff-tree',
+	'merge-base',
+]);
+const GIT_READ_MORE = new Set(['describe', 'shortlog', 'ls-tree', 'name-rev', 'for-each-ref', 'show-ref', 'count-objects']);
+// commands whose plain arguments are files they change
+const FILE_WRITERS = new Set([
+	'rm',
+	'mv',
+	'cp',
+	'ln',
+	'touch',
+	'mkdir',
+	'rmdir',
+	'truncate',
+	'dd',
+	'install',
+	'chmod',
+	'chown',
+	'chgrp',
+	'unlink',
+	'shred',
+	'rsync',
+	'tee',
+]);
+const RUNNERS = new Set(['node', 'nodejs', 'bash', 'sh', 'zsh']);
+
+function readsOnly(seg, cmd, args) {
+	// any redirection that is not to /dev/null or a file descriptor writes a file
+	if (/>/.test(seg.replace(/\d*>>?\s*\/dev\/null/g, '').replace(/\d*>&\d*-?/g, ''))) return false;
+	if (READERS.has(cmd)) return !(cmd === 'rg' && args.some((a) => /^--pre(-glob)?\b/.test(a)));
+	if (cmd === 'find') return !args.some((a) => /^-(exec|execdir|ok|okdir|delete|fls|fprint0?|fprintf)$/.test(a));
+	if (cmd === 'git') {
+		const { sub } = gitParts(args);
+		return (GIT_READ.has(sub) || GIT_READ_MORE.has(sub)) && !args.some((a) => /^(--output\b|-O\S*|--ext-diff\b|--textconv\b)/.test(a));
+	}
+	if (cmd === 'sed') return args[0] === '-n' && /^(['"]?)\d*(,(\d+|\$))?p\1$/.test(args[1] ?? '') && args.length <= 3;
+	return false;
+}
+
+const MACHINE_WHY = {
+	state: "the machine's state folder (secrets, locks, the settings a pass runs with)",
+	profile: 'a shell start-up file',
+	plugin: 'the installed plugin',
+	claude: "Claude Code's own settings",
+};
+
+// -> a reason, or null. `st` carries the directory the command is in and the variables paths are built from.
+function denyMachinePaths(seg, inv, ctx, st) {
+	const { cmd, args, tokens, head } = inv;
+	const hits = [];
+	const writer = FILE_WRITERS.has(cmd);
+	let prev = '';
+	for (const tok of tokens) {
+		// a bare word is a file name for a command that changes the files it is given, and after a redirection
+		const bareOk = writer || tok.includes('>') || /^\d*>>?&?$/.test(prev);
+		prev = tok;
+		for (const c of candidates(tok, st.vars)) {
+			if (!(c.includes('/') || c.startsWith('.') || c.startsWith('~') || bareOk)) continue;
+			const abs = resolveWord(c, st.cwd);
+			if (!abs) continue;
+			let place = protectedPlace(abs, ctx);
+			if (!place && abs.startsWith('/')) place = protectedPlace(realPath(abs), ctx);
+			// the scheduler's own passes keep their state; only a factory agent is kept out of it
+			if (place === 'state' && !FACTORY_ROLES.has(ctx.role)) continue;
+			if (place) hits.push({ tok, place });
+		}
+	}
+	if (!hits.length) return null;
+	if (readsOnly(seg, cmd, args)) return null;
+	// running a script that is part of the installed plugin, or the launcher the installer put in the state folder, is not changing them
+	const script = args.find((a) => !a.startsWith('-'));
+	if (
+		RUNNERS.has(cmd) &&
+		script &&
+		hits.every((h) => h.tok === script && h.place === 'plugin') &&
+		!/>/.test(seg.replace(/\d*>>?\s*\/dev\/null/g, '').replace(/\d*>&\d*-?/g, ''))
+	)
+		return null;
+	const { stateDir } = envOf(ctx);
+	const launcher = path.posix.resolve(st.cwd, candidates(head, st.vars)[0] ?? head);
+	if (hits.every((h) => h.tok === head) && launcher.toLowerCase() === path.posix.join(stateDir, 'bin', 'dev-factory').toLowerCase()) return null;
+	const what = [...new Set(hits.map((h) => MACHINE_WHY[h.place]))].join(' and ');
+	return `${what} cannot be changed from a run (it only reads them); this command names it`;
+}
+
+// ---- the task tracker's own hosts ----
+// Reaching the tracker is the scheduler's alone, by whatever program: curl, node -e, git clone, gh api, python. Commands that
+// only print or search text are not reaching anything, and the quoted message of a commit or of PR/issue text may mention a
+// tracker's address; a `$(...)` inside it is judged on its own as a command.
+const TRACKER_HOSTS = ['atlassian.net', 'api.notion.com', 'notion.so'];
+const TEXT_OPTION = /^(--message|--body|--title|--subject|--notes|--description)$/;
+const TEXT_ATTACHED = /^(--(message|body|title|subject|notes|description)=|-[mbt].)/;
+const hostRegex = (h) => new RegExp(`(^|[^a-z0-9-])${h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![a-z0-9-]|\\.[a-z0-9])`, 'i');
+
+function writesText(cmd, args) {
+	if (cmd === 'git') return ['commit', 'tag', 'notes', 'merge', 'revert', 'stash'].includes(gitParts(args).sub);
+	if (cmd === 'gh') {
+		const p = ghPositionals(args);
+		return (
+			['pr', 'issue', 'release', 'gist'].includes(p[0]) &&
+			['create', 'edit', 'comment', 'review', 'close', 'reopen', 'merge', 'ready'].includes(p[1])
+		);
+	}
+	return false;
+}
+
+export function hitsTrackerHost(inv, ctx = {}, vars = {}) {
+	const { cmd, args, tokens } = inv;
+	const hosts = [...TRACKER_HOSTS, ...(ctx.trackerHosts ?? [])]
+		.map((h) =>
+			String(h)
+				.trim()
+				.replace(/^[a-z]+:\/\//i, '')
+				.replace(/[/:].*$/, ''),
+		)
+		.filter(Boolean);
+	if (readsOnly(tokens.join(' '), cmd, args)) return false; // printing or searching text reaches nothing
+	let words = tokens;
+	if (writesText(cmd, args)) {
+		words = [];
+		// git takes its message after -m, also inside a cluster such as -am; gh after -b or -t
+		const short = cmd === 'git' ? /^-[A-Za-z]*m$/ : /^-[bt]$/;
+		for (let i = 0; i < tokens.length; i++) {
+			if (TEXT_OPTION.test(tokens[i]) || short.test(tokens[i])) i++;
+			else if (!TEXT_ATTACHED.test(tokens[i])) words.push(tokens[i]);
+		}
+	}
+	const regexes = hosts.map(hostRegex);
+	for (const w of words) {
+		for (const c of [w, ...candidates(w, vars)]) if (regexes.some((re) => re.test(c))) return true;
+	}
+	return false;
+}
+
+const TAKEOVER_REFUSAL =
+	'dev-factory guard: takeover is switched on by the machine owner (DF_TAKEOVER in the environment the scheduler starts with), not by an agent';
+const UNJUDGEABLE = (why) => ({ deny: true, reason: `dev-factory guard: this command cannot be judged (${why}); split it into smaller commands` });
+
+// ctx: branch, role, containerOnly, service, noAttribution, takeover, plus for the path rules cwd (the directory the command
+// starts in), home, stateDir and env (default: the process's), and trackerHosts (hosts beyond the built-in ones).
 export function evaluate(command, ctx = {}) {
+	try {
+		return judge(String(command ?? ''), ctx);
+	} catch (e) {
+		// a command that cannot be judged is refused, never let through
+		return UNJUDGEABLE(e instanceof Unjudgeable ? e.message : 'the guard failed on it');
+	}
+}
+
+function judge(command, ctx) {
+	if (command.length > LIMITS.command) throw new Unjudgeable(`longer than ${LIMITS.command} characters`);
+	const check = budget();
 	const readOnly = READ_ONLY_ROLES.has(ctx.role);
 	// leading VAR=value words are stripped from each segment, so the identity variables are looked for in the whole command
 	if (ctx.noAttribution && IDENTITY_ENV.test(command) && /\bgit\b/.test(command))
@@ -427,14 +613,29 @@ export function evaluate(command, ctx = {}) {
 			deny: true,
 			reason: 'dev-factory guard: commits are made as the git user of this machine: GIT_AUTHOR_* and GIT_COMMITTER_* are not allowed',
 		};
-	// the toggle is the owner's: an agent does not switch it on for itself on the command line
-	if (FACTORY_ROLES.has(ctx.role) && !ctx.takeover && (/\bDF_TAKEOVER\b/.test(command) || /(^|\s)--takeover\b/.test(command)))
-		return { deny: true, reason: 'dev-factory guard: takeover is switched on by the owner (cleanup.takeover), not by an agent' };
-	for (const seg of segments(command)) {
-		const { cmd, args, tokens } = invocation(seg);
+	// the toggle is the owner's: an agent does not switch it on for itself, however the name is written
+	if (FACTORY_ROLES.has(ctx.role) && !ctx.takeover && triesTakeover(command)) return { deny: true, reason: TAKEOVER_REFUSAL };
+	const segs = segments(command);
+	if (segs.length > LIMITS.segments) throw new Unjudgeable(`more than ${LIMITS.segments} commands`);
+	const { home, stateDir } = envOf(ctx);
+	const st = { cwd: ctx.cwd || process.cwd(), vars: { HOME: home, DF_STATE_DIR: stateDir, PWD: ctx.cwd || process.cwd() } };
+	for (const seg of segs) {
+		check();
+		const inv = invocation(seg);
+		const { cmd, args, tokens } = inv;
 		const deny = (why) => ({ deny: true, reason: `dev-factory guard: ${why} [${seg.slice(0, 80)}]` });
-		const common = denyCommon(seg, tokens, cmd);
+		const common = denyCommon(seg, tokens, cmd, st.vars);
 		if (common) return deny(common);
+		const machine = denyMachinePaths(seg, inv, ctx, st);
+		if (machine) return deny(machine);
+		if (cmd === 'cd' || cmd === 'pushd') {
+			const target = args.find((a) => !a.startsWith('-'));
+			const to = target ? candidates(target, st.vars)[0] : home;
+			if (to && !to.includes('$')) {
+				st.cwd = path.posix.resolve(st.cwd, to);
+				st.vars.PWD = st.cwd;
+			}
+		}
 		if (readOnly) {
 			const why = denyForReadOnly(seg, ctx.role === 'debugger' ? DEBUGGER_EXTRA : []);
 			if (why) return deny(why);
@@ -451,11 +652,7 @@ export function evaluate(command, ctx = {}) {
 		let reason = null;
 		if (cmd === 'git') reason = denyGit(args, ctx, seg);
 		else if (cmd === 'gh') reason = denyGh(args, ctx, seg);
-		if (
-			!reason &&
-			/\b(curl|wget|http|https)\b.*(atlassian\.net|api\.notion\.com|notion\.so)/.test(seg) &&
-			(FACTORY_ROLES.has(ctx.role) || !notionUpload(cmd, args))
-		)
+		if (!reason && hitsTrackerHost(inv, ctx, st.vars) && (FACTORY_ROLES.has(ctx.role) || !notionUpload(cmd, args)))
 			reason = 'direct task-tracker access is reserved for the scheduler, which sends only QA screenshots to a Notion upload URL';
 		if (!reason && FACTORY_ROLES.has(ctx.role) && /^node\s+\S*tasks\.mjs"?\s+(set-state|comment|label|link|block|create|init)\b/.test(seg))
 			reason = 'the task tracker is written only by the scheduler, not by a factory agent (tasks.mjs ' + seg.split(/\s+/)[2] + ')';
@@ -492,13 +689,31 @@ const normalize = (p, root) => {
 };
 
 // Edit, Write and MultiEdit. Vocabulary applies to everyone editing dev-factory/; path protection only inside a factory run.
-export function evaluateEdit({ filePath, text = '', root, active = false, run = null }) {
+// ctx (home, stateDir, env) overrides where the machine's own folders are, for tests.
+export function evaluateEdit({ filePath, text = '', root, active = false, run = null, ...ctx }) {
 	if (typeof filePath !== 'string' || !filePath) return { deny: false };
 	const rel = normalize(filePath, root);
 	if ((/^dev-factory\//.test(rel) || (run?.role === 'improver' && run.factoryPrefix === '')) && FORBIDDEN.test(text)) {
 		return { deny: true, reason: 'dev-factory guard: this vocabulary is not allowed under dev-factory/ (see scripts/lint-vocabulary.sh)' };
 	}
 	if (!active) return { deny: false };
+	// First, what no run may change whatever its role: judged on the real location, so a symlink inside the worktree that
+	// points at one of them is refused too, and in lower case because the volume ignores it.
+	const abs = path.isAbsolute(filePath) ? path.normalize(filePath) : path.join(root, filePath);
+	const place = protectedPlace(abs, ctx) ?? protectedPlace(realPath(abs), ctx);
+	if (place && !(place === 'state' && !run))
+		return { deny: true, reason: `dev-factory guard: ${MACHINE_WHY[place]} cannot be changed from a run (${rel})` };
+	const lowerRel = rel.toLowerCase();
+	const name = path.posix.basename(lowerRel);
+	if (
+		name === 'dev-factory.config.json' ||
+		(name === 'dev-factory.qa.yaml' && lowerRel === name) ||
+		/(^|\/)\.claude\/settings[^/]*\.json$/.test(lowerRel)
+	)
+		return {
+			deny: true,
+			reason: `dev-factory guard: ${rel} sets what the factory allows a run to do; the owner changes it, a run does not`,
+		};
 	if (SENTINEL.test(rel)) return { deny: false };
 	if (run?.role === 'reviewer' || run?.role === 'debugger') return { deny: true, reason: `dev-factory guard: ${run.role}s do not edit files` };
 	if (run?.role === 'promoter') {
@@ -516,7 +731,7 @@ export function evaluateEdit({ filePath, text = '', root, active = false, run = 
 		// the factory is a folder of this repository (`dev-factory/`, the default) or the repository itself (factoryPrefix '')
 		const prefix = run.factoryPrefix ?? 'dev-factory/';
 		const enforcement = new RegExp(
-			`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(scripts/(guard-lib|guard-bash|edit-guard|stop-gate|stop-gate-lib|mcp-guard|mcp-guard-lib|scrub-lib|debug-lib|plugin-root)\\.|bin/qa\\.mjs|hooks/|settings\\.factory\\.json|config\\.json|plugins\\.json)`,
+			`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(scripts/(guard-lib|guard-paths|guard-bash|edit-guard|stop-gate|stop-gate-lib|mcp-guard|mcp-guard-lib|scrub-lib|debug-lib|plugin-root)\\.|bin/qa\\.mjs|hooks/|settings\\.factory\\.json|config\\.json|plugins\\.json)`,
 		);
 		if (enforcement.test(rel))
 			return {

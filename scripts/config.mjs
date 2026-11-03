@@ -15,6 +15,7 @@ const FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'conf
 export const REPO_CONFIG = 'dev-factory.config.json';
 export const SOURCES = ['local', 'github', 'notion', 'jira'];
 export const SCHEDULERS = ['auto', 'launchd', 'github-actions', 'routine', 'none'];
+export const ROLES = ['builder', 'reviewer', 'debugger', 'researcher', 'improver', 'promoter'];
 
 export const ENV_OVERRIDES = {
 	'caps.maxOpenPrs': 'DF_MAX_OPEN_PRS',
@@ -37,7 +38,6 @@ export const ENV_OVERRIDES = {
 	'caps.frontierRepeatHours': 'DF_FRONTIER_REPEAT_HOURS',
 	'improvement.factoryRepo': 'DF_FACTORY_REPO',
 	'runtime.scheduler': 'DF_SCHEDULER',
-	'cleanup.takeover': 'DF_TAKEOVER',
 	'blocked.agentDecides': 'DF_AGENT_DECIDES',
 };
 
@@ -224,8 +224,10 @@ export function validate(config = load()) {
 	if (unblock !== undefined && typeof unblock !== 'boolean') problems.push('tasks.unblockOnPr must be true or false');
 	const depth = dig(config, 'caps.maxStackDepth');
 	if (depth !== undefined && !(Number.isInteger(depth) && depth >= 1)) problems.push('caps.maxStackDepth must be a positive integer');
-	const takeover = dig(config, 'cleanup.takeover');
-	if (takeover !== undefined && typeof takeover !== 'boolean') problems.push('cleanup.takeover must be true or false');
+	if (dig(config, 'cleanup.takeover') !== undefined)
+		problems.push(
+			'cleanup.takeover is not a setting: a repository file cannot grant takeover. The machine owner sets DF_TAKEOVER=1 in <state>/.env.local (or the shell that starts a run)',
+		);
 	const agentDecides = dig(config, 'blocked.agentDecides');
 	if (agentDecides !== undefined && typeof agentDecides !== 'boolean') problems.push('blocked.agentDecides must be true or false');
 	const cports = dig(config, 'cleanup.ports');
@@ -257,6 +259,15 @@ export function validate(config = load()) {
 				problems.push(`environments.${name}.axiomDatasets must be a list`);
 		}
 	}
+	const trackerHosts = dig(config, 'guard.trackerHosts');
+	if (
+		trackerHosts !== undefined &&
+		!(Array.isArray(trackerHosts) && trackerHosts.every((h) => typeof h === 'string' && /^[A-Za-z0-9.-]+$/.test(h)))
+	)
+		problems.push('guard.trackerHosts must be a list of host names, such as jira.internal.example');
+	const roles = dig(config, 'telemetry.allowedRoles');
+	if (roles !== undefined && !(Array.isArray(roles) && roles.every((r) => ROLES.includes(r))))
+		problems.push(`telemetry.allowedRoles must be a list of roles from ${ROLES.join(', ')} (empty allows every role)`);
 	const patterns = dig(config, 'telemetry.scrubPatterns') ?? [];
 	for (const pat of patterns) {
 		try {

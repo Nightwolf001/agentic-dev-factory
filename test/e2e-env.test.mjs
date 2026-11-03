@@ -198,7 +198,7 @@ esac
 		);
 		const refused = f.run('up', '--key', 'APP-1', '--ports', 'canonical');
 		assert.equal(refused.status, 75, refused.stderr);
-		assert.match(refused.stderr, /cleanup\.takeover/, 'the refusal names the toggle');
+		assert.match(refused.stderr, /DF_TAKEOVER/, 'the refusal names the toggle');
 		assert.equal(child.exitCode, null, 'nothing was stopped');
 		const env = {
 			...process.env,

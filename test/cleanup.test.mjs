@@ -5,7 +5,8 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { cleanup, lineage, listeners, portsFor, processes, protectedReason, stopProcess } from '../scripts/cleanup.mjs';
+import { spawnSync } from 'node:child_process';
+import { cleanup, isLocalHost, lineage, listeners, portsFor, processes, protectedReason, restore, stopProcess } from '../scripts/cleanup.mjs';
 import { load, merge, validate } from '../scripts/config.mjs';
 import { takeoverOn } from '../scripts/takeover.mjs';
 
@@ -115,7 +116,7 @@ test('without takeover the run tears down only its own and reports what else hol
 	assert.ok(!m.calls.some((c) => c[0] === 'docker' && c[1] === 'stop'));
 	const held = r.left.find((l) => l.what === 'port');
 	assert.match(held.why, /container mine-db/);
-	assert.match(held.why, /cleanup\.takeover/);
+	assert.match(held.why, /DF_TAKEOVER/);
 });
 
 test('with takeover it stops the container and the process on the port, never a protected one', async () => {
@@ -247,14 +248,87 @@ test('a real process holding a port is left by default and stopped with takeover
 	}
 });
 
-test('cleanup settings are validated and the toggle reads the config and DF_TAKEOVER', () => {
-	assert.equal(load().cleanup.takeover, false);
+test('cleanup.ports is validated; cleanup.takeover is no longer a setting and is reported when a file sets it', () => {
+	assert.equal(load().cleanup.takeover, undefined, 'no default for it');
 	assert.deepEqual(load().cleanup.ports, []);
-	assert.deepEqual(validate(merge(load(), { cleanup: { takeover: true, ports: [3000] } })), []);
-	assert.match(validate(merge(load(), { cleanup: { takeover: 'yes' } })).join('\n'), /cleanup\.takeover must be true or false/);
+	assert.deepEqual(validate(merge(load(), { cleanup: { ports: [3000] } })), []);
+	assert.match(validate(merge(load(), { cleanup: { takeover: true } })).join('\n'), /cleanup\.takeover is not a setting/);
 	assert.match(validate(merge(load(), { cleanup: { ports: ['x'] } })).join('\n'), /cleanup\.ports must be a list of port numbers/);
-	assert.equal(takeoverOn({ cfg: load(), env: {} }), false);
-	assert.equal(takeoverOn({ cfg: merge(load(), { cleanup: { takeover: true } }), env: {} }), true);
-	assert.equal(takeoverOn({ cfg: load(), env: { DF_TAKEOVER: '1' } }), true);
-	assert.equal(takeoverOn({ cfg: merge(load(), { cleanup: { takeover: true } }), env: { DF_TAKEOVER: '0' } }), false);
+});
+
+test('takeover is read from the environment alone: a repository config cannot switch it on', () => {
+	assert.equal(takeoverOn({ env: {} }), false);
+	for (const v of ['1', 'true', 'TRUE', 'yes', 'on']) assert.equal(takeoverOn({ env: { DF_TAKEOVER: v } }), true, v);
+	for (const v of ['0', 'false', '', 'no', 'maybe']) assert.equal(takeoverOn({ env: { DF_TAKEOVER: v } }), false, v);
+	assert.equal(takeoverOn({ cfg: merge(load(), { cleanup: { takeover: true } }), env: {} }), false, 'a config value is ignored');
+});
+
+test('the cleanup command refuses --takeover, so a command line cannot grant it', () => {
+	const r = spawnSync(process.execPath, [path.join(import.meta.dirname, '..', 'scripts', 'cleanup.mjs'), '--takeover', '--dry-run'], {
+		encoding: 'utf8',
+		env: { ...process.env, DF_STATE_DIR: tmp() },
+	});
+	assert.equal(r.status, 1);
+	assert.match(r.stderr, /DF_TAKEOVER/);
+	assert.equal(r.stdout, '');
+});
+
+test('the web address frees a port only when it is this machine', () => {
+	const base = (url) => merge(load(), { environment: { webBaseUrl: url } });
+	const ports = (url) => portsFor({ cfg: base(url), run: machine().run });
+	assert.deepEqual(ports('http://localhost:3000'), [3000]);
+	assert.deepEqual(ports('http://127.0.0.1:8080/app'), [8080]);
+	assert.deepEqual(ports('http://myapp.test'), [80]);
+	assert.deepEqual(ports('https://staging.example.com'), [], 'a deployed host names no port to free here');
+	assert.deepEqual(ports('https://app.example.com:8443'), []);
+	for (const h of ['localhost', '127.0.0.1', '[::1]', 'a.local', 'x.test']) assert.equal(isLocalHost(h), true, h);
+	for (const h of ['example.com', 'localhost.evil.com', 'notlocal']) assert.equal(isLocalHost(h), false, h);
+});
+
+test('a ports lock with no owner file is abandoned and goes', async () => {
+	const state = tmp();
+	fs.mkdirSync(path.join(state, 'ports.lock'));
+	const r = await cleanup({ run: machine({ alive: [] }).run, state, cfg: load() });
+	assert.equal(fs.existsSync(path.join(state, 'ports.lock')), false);
+	assert.ok(r.done.some((d) => d.what === 'ports lock released'));
+});
+
+test('takeover records what it stopped; --restore starts the containers again and only lists processes', async () => {
+	const m = machine({
+		ps: [{ pid: 900, ppid: 1, command: 'node dev.js' }],
+		ports: { 3000: [{ pid: 900, name: 'node' }] },
+		containers: { 4000: [{ id: 'abc', name: 'old-web' }] },
+	});
+	const state = tmp();
+	await cleanup({ takeover: true, ports: [3000, 4000], run: m.run, stop: m.stop, state, cfg: load() });
+	const rec = JSON.parse(fs.readFileSync(path.join(state, 'takeover-stopped.json'), 'utf8'));
+	assert.equal(rec.containers[0].name, 'old-web');
+	assert.equal(rec.processes[0].pid, 900);
+
+	const dry = restore({ dryRun: true, run: m.run, state });
+	assert.equal(dry.done[0].result, 'would run');
+	assert.ok(fs.existsSync(path.join(state, 'takeover-stopped.json')), 'a dry run changes nothing');
+
+	const back = restore({ run: m.run, state });
+	assert.ok(m.calls.some((c) => c.join(' ') === 'docker start abc'));
+	assert.equal(back.done[0].result, 'restarted');
+	assert.match(back.left.find((l) => l.what === 'process').why, /cannot be restarted/);
+	assert.equal(fs.existsSync(path.join(state, 'takeover-stopped.json')), false, 'nothing left to give back');
+});
+
+test('a container that will not start again stays on the list', async () => {
+	const state = tmp();
+	fs.writeFileSync(path.join(state, 'takeover-stopped.json'), JSON.stringify({ containers: [{ id: 'abc', name: 'old-web' }], processes: [] }));
+	const failing = (cmd, args) => ({ status: cmd === 'docker' && args[0] === 'start' ? 1 : 0, stdout: '', stderr: '' });
+	const r = restore({ run: failing, state });
+	assert.match(r.left[0].why, /would not start/);
+	assert.equal(JSON.parse(fs.readFileSync(path.join(state, 'takeover-stopped.json'), 'utf8')).containers.length, 1);
+});
+
+test('a dry run records nothing, and without takeover nothing is recorded', async () => {
+	const m = machine({ ps: [], ports: {}, containers: { 4000: [{ id: 'abc', name: 'old-web' }] } });
+	const state = tmp();
+	await cleanup({ takeover: true, dryRun: true, ports: [4000], run: m.run, stop: m.stop, state, cfg: load() });
+	await cleanup({ takeover: false, ports: [4000], run: m.run, stop: m.stop, state, cfg: load() });
+	assert.equal(fs.existsSync(path.join(state, 'takeover-stopped.json')), false);
 });

@@ -15,7 +15,7 @@
 # reach environment.webBaseUrl like a developer does; it takes a machine-wide lock, one such
 # environment per Mac. --device implies canonical because the mobile app has the ports baked in.
 #
-# With cleanup.takeover (or DF_TAKEOVER=1) busy canonical ports are freed by scripts/cleanup.mjs instead of refusing.
+# With DF_TAKEOVER=1 (the owner's, see scripts/takeover.mjs) busy canonical ports are freed by scripts/cleanup.mjs instead of refusing.
 #
 # Exit codes: 0 ok, 1 failure, 75 refused (cap or device lock held; retry on a later pass).
 set -uo pipefail
@@ -208,12 +208,12 @@ do_up() {
     local busy p who=""; busy="$(busy_ports | tr '\n' ' ')"
     if [ -n "$busy" ] && node "$SELF_DIR/takeover.mjs"; then
       log "takeover is on: freeing host port(s) $busy"
-      node "$SELF_DIR/cleanup.mjs" --worktree "$WORKTREE" --takeover --ports "$(echo $busy | tr ' ' ',')" >&2 || true
+      node "$SELF_DIR/cleanup.mjs" --worktree "$WORKTREE" --ports "$(echo $busy | tr ' ' ',')" >&2 || true
       busy="$(busy_ports | tr '\n' ' ')"
     fi
     if [ -n "$busy" ]; then
       for p in $busy; do who="$who $p$(lsof -nP -iTCP:"$p" -sTCP:LISTEN 2>/dev/null | awk 'NR==2{printf " (%s, pid %s)", $1, $2}')"; done
-      refuse "host port(s) already in use:$who. Something else is running this stack's ports (your own docker compose or dev servers): stop it, or set cleanup.takeover so the run may stop it, then retry"
+      refuse "host port(s) already in use:$who. Something else is running this stack's ports (your own docker compose or dev servers): stop it, or have the owner set DF_TAKEOVER=1 so the run may stop it, then retry"
     fi
     mkdir -p "$STATE_DIR"
     mkdir "$STATE_DIR/ports.lock" 2>/dev/null || {

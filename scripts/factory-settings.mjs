@@ -8,6 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { get, load } from './config.mjs';
 import { isMain } from './is-main.mjs';
+import { takeoverOn } from './takeover.mjs';
 import { allowRules, catalog, claudeListing, externalServers, readProject } from './mcp.mjs';
 
 const BASE = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'settings.factory.json');
@@ -22,6 +23,7 @@ export function build({
 	base = JSON.parse(fs.readFileSync(BASE, 'utf8')),
 	cat = catalog(),
 	external = [],
+	env = process.env,
 } = {}) {
 	const out = JSON.parse(JSON.stringify(base));
 	const domains = new Set(out.sandbox?.network?.allowedDomains ?? []);
@@ -37,8 +39,7 @@ export function build({
 	if (typeof sandboxOn === 'boolean') out.sandbox.enabled = sandboxOn;
 	out.sandbox.network.allowedDomains = [...domains];
 	// takeover: stopping a process or a session outside the sandbox needs those commands to run outside it (the guard still refuses the protected targets)
-	if (get('cleanup.takeover', { config: cfg }) === true)
-		out.sandbox.excludedCommands = [...new Set([...(out.sandbox.excludedCommands ?? []), ...TAKEOVER_EXCLUDED])];
+	if (takeoverOn({ env })) out.sandbox.excludedCommands = [...new Set([...(out.sandbox.excludedCommands ?? []), ...TAKEOVER_EXCLUDED])];
 	out.permissions.allow = [...new Set([...out.permissions.allow, ...allowRules(mcpFile, external)])];
 	return out;
 }
