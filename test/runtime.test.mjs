@@ -21,3 +21,18 @@ test('secrets come from the state folder only, never from a file inside the plug
 	assert.equal(loaded(dir, state, 'OWNER_TOKEN'), 'from-state');
 	assert.equal(loaded(dir, state, 'PLANTED'), 'unset');
 });
+
+test('the tick interval from the environment is a whole number of minutes from 1 to 1440; anything else is the default', () => {
+	const interval = (value) =>
+		spawnSync('bash', ['-c', `DIR="${PLUGIN}"; . "${PLUGIN}/scripts/runtime.sh"; df_interval_minutes`], {
+			encoding: 'utf8',
+			env: { ...process.env, DF_SCHEDULER_INTERVAL_MINUTES: value, DF_CONFIG: '/nonexistent' },
+		}).stdout;
+	assert.equal(interval('5'), '5');
+	assert.equal(interval('08'), '8', 'a leading zero is not octal (it was an arithmetic error in the installer)');
+	assert.equal(interval('0010'), '10');
+	assert.equal(interval('1440'), '1440');
+	for (const bad of ['0', '00', '1441', '99999', '-3', 'abc', '5m', '2.5', '']) assert.equal(interval(bad), '15', JSON.stringify(bad));
+	const install = fs.readFileSync(path.join(PLUGIN, 'scripts/install.sh'), 'utf8');
+	assert.match(install, /\$\(\(INTERVAL \* 60\)\)/, 'and the installer does arithmetic with the checked value');
+});

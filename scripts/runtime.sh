@@ -36,7 +36,9 @@ df_interval_minutes() {
   local m="${DF_SCHEDULER_INTERVAL_MINUTES:-}"
   [ -n "$m" ] || m="$(node "$DIR/scripts/config.mjs" get scheduler.intervalMinutes 2>/dev/null)"
   case "$m" in ''|*[!0-9]*) m=15 ;; esac
-  [ "$m" -ge 1 ] || m=15
+  # a leading zero is not octal here (08 would be an arithmetic error in the installer), and an absurd value is not a schedule
+  m=$((10#${m:-15}))
+  { [ "$m" -ge 1 ] && [ "$m" -le 1440 ]; } || m=15
   printf '%s' "$m"
 }
 df_load_env() {
