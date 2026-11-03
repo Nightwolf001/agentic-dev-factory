@@ -16,7 +16,7 @@ import { isMain } from './is-main.mjs';
 
 export const PLATFORMS = ['ios', 'android'];
 
-const ANDROID = /\bandroid\b|\bkotlin\b|\bgradle\b|\bplay store\b|\bemulator\b/i;
+const ANDROID = /\bandroid\b|\bkotlin\b|\bgradle\b|\bplay store\b/i;
 const IOS = /\bios\b|\biphone\b|\bipad\b|\bxcode\b|\bswift(ui)?\b|\bcocoapods?\b|\btestflight\b|\bapp store\b|\bsimulator\b/i;
 
 // Android only when the text names Android and no iOS term: a ticket that mentions both is not for one platform, and the

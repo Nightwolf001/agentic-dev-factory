@@ -32,7 +32,8 @@ field() { node -e "try{const j=require('$ENV_JSON');process.stdout.write(String(
 USER_VAR="$(field remote.userVar)"; PASS_VAR="$(field remote.passwordVar)"
 [ -n "$USER_VAR" ] && [ -n "$PASS_VAR" ] || setup "the recorded environment has no QA account (start it with e2e-env.sh up --remote ENV --account NAME)"
 # only names that look like names are used as variable names
-printf '%s\n%s\n' "$USER_VAR" "$PASS_VAR" | grep -Eqv '^[A-Za-z_][A-Za-z0-9_]*$' && setup "the recorded variable names are not valid"
+# only the QA account variables e2e-env.sh names: a forged record must not make this read some other secret of the environment
+printf '%s\n%s\n' "$USER_VAR" "$PASS_VAR" | grep -Eqv '^DF_REMOTE_[A-Z0-9_]+_(USER|PASSWORD)$' && setup "the recorded variable names are not DF_REMOTE_<ENV>_<ACCOUNT>_USER and _PASSWORD"
 [ -n "${!USER_VAR:-}" ] && [ -n "${!PASS_VAR:-}" ] || setup "$USER_VAR and $PASS_VAR are not both set in this environment"
 [ -n "$APP_ID" ] || APP_ID="$(node "$SELF_DIR/config.mjs" get mobile.appId 2>/dev/null || true)"
 [ -n "$APP_ID" ] || setup "no app id: pass --app-id, set DF_APP_ID or mobile.appId"

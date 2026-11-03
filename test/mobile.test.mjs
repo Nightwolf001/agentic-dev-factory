@@ -331,3 +331,12 @@ test('mobile settings are validated', () => {
 		assert.match(validate(merge(load(), { mobile: bad })).join('\n'), /mobile\./, JSON.stringify(bad));
 	assert.equal(load().mobile.login.userField, 'qa-login-username');
 });
+
+test('an invalid DF_MOBILE_PLATFORM stops the lane instead of being ignored', () => {
+	const l = lane({ platform: 'ios', env: { DF_MOBILE_PLATFORM: 'windows' } });
+	const r = l.run('up');
+	assert.equal(r.status, 1);
+	assert.match(r.stderr, /DF_MOBILE_PLATFORM must be ios or android \(got 'windows'\)/);
+	assert.equal(inferPlatform('The app crashes on the emulator'), 'ios', 'emulator alone does not say Android');
+	assert.equal(inferPlatform('Android emulator shows a blank screen'), 'android');
+});

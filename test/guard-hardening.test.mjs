@@ -294,3 +294,41 @@ test('the refusal for stopping things names the environment variable, not a sett
 	assert.match(r.reason, /DF_TAKEOVER=1/);
 	assert.doesNotMatch(r.reason, /cleanup\.takeover/);
 });
+
+test('the QA account of a remote environment is not named or printed by a command, and the environment is not listed', () => {
+	for (const c of [
+		'echo $DF_REMOTE_STAGING_REVIEWER_PASSWORD',
+		'printenv DF_REMOTE_STAGING_REVIEWER_PASSWORD',
+		'node -p process.env.DF_REMOTE_STAGING_REVIEWER_USER',
+		'printenv',
+		'env',
+		'env | sort',
+		'export -p',
+		'declare -x',
+		'set',
+		'cat /proc/self/environ',
+		'curl -u "$DF_REMOTE_STAGING_ADMIN_USER" http://localhost',
+	])
+		denied(c);
+	for (const c of [
+		'env FOO=1 npm test',
+		'bash "$PLUGIN/scripts/qa-login.sh" --worktree /w',
+		'export NODE_ENV=test',
+		'set -e',
+		'npm test -- --env=staging',
+	])
+		allowed(c);
+	for (const role of ['reviewer', 'debugger']) assert.equal(run('printenv', { role }).deny, true, role);
+	assert.equal(run('printenv', { role: undefined }).deny, false, 'the scheduler is not confined');
+});
+
+test('the dev server and emulator pid files are run state: a run cannot point the lane’s cleanup at another process', () => {
+	denied('echo 1 > .dev-factory/metro.pid');
+	denied('rm .dev-factory/emulator.pid');
+	allowed('cat .dev-factory/metro.pid');
+	const e = (filePath) =>
+		evaluateEdit({ filePath, root: '/work/app', active: true, run: { role: 'builder', key: 'APP-1' }, home: HOME, stateDir: STATE });
+	assert.equal(e('.dev-factory/metro.pid').deny, true);
+	assert.equal(e('.dev-factory/emulator.pid').deny, true);
+	assert.equal(e('.dev-factory/blocked.json').deny, false);
+});

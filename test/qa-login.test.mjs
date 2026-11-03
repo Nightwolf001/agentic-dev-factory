@@ -108,7 +108,7 @@ test('it refuses to run when it is not set up, and says what is missing by name'
 	fs.writeFileSync(path.join(g.wt, '.dev-factory/env.json'), JSON.stringify(env));
 	const bad = g.run();
 	assert.equal(bad.status, 2);
-	assert.match(bad.stderr, /not valid/);
+	assert.match(bad.stderr, /not DF_REMOTE_/);
 });
 
 test('the Maestro flows are shipped, take their ids from the environment and keep the account out of the file', () => {
@@ -129,4 +129,16 @@ test('the Maestro flows are shipped, take their ids from the environment and kee
 	assert.match(dismiss, /Not Now/);
 	assert.match(dismiss, /appId: \$\{MAESTRO_APP_ID\}/);
 	assert.doesNotMatch(login + dismiss, /My Devices|olarm/i);
+});
+
+test('only the QA account variables e2e-env.sh names can be read: a forged record cannot point it at another secret', () => {
+	const f = fixture();
+	const env = JSON.parse(fs.readFileSync(path.join(f.wt, '.dev-factory/env.json'), 'utf8'));
+	for (const bad of ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'JIRA_API_TOKEN', 'DF_REMOTE_staging_USER', 'DF_REMOTE_X', 'HOME']) {
+		fs.writeFileSync(path.join(f.wt, '.dev-factory/env.json'), JSON.stringify({ ...env, remote: { ...env.remote, passwordVar: bad } }));
+		const r = f.run([], { ANTHROPIC_API_KEY: 'sk-secret', CLAUDE_CODE_OAUTH_TOKEN: 'oauth-secret', JIRA_API_TOKEN: 'jira-secret' });
+		assert.equal(r.status, 2, bad);
+		assert.match(r.stderr, /not DF_REMOTE_<ENV>_<ACCOUNT>_USER and _PASSWORD/);
+		assert.doesNotMatch(r.stdout + r.stderr, /sk-secret|oauth-secret|jira-secret/);
+	}
 });

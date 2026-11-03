@@ -26,6 +26,7 @@ RUN_DIR="$WORKTREE/.dev-factory"; ENV_JSON="$RUN_DIR/env.json"; APP="$WORKTREE/$
 log() { echo "mobile-env: $*" >&2; }
 die() { log "$*"; exit 1; }
 
+case "${DF_MOBILE_PLATFORM:-}" in ''|ios|android) ;; *) die "DF_MOBILE_PLATFORM must be ios or android (got '${DF_MOBILE_PLATFORM}')" ;; esac
 PLATFORM="$(node "$SELF_DIR/mobile-platform.mjs" resolve --worktree "$WORKTREE" 2>/dev/null)"; PLATFORM="${PLATFORM:-ios}"
 case "$PLATFORM" in ios|android) ;; *) die "platform must be ios or android (got '$PLATFORM')" ;; esac
 

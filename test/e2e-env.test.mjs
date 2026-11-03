@@ -511,3 +511,33 @@ test('the remote settings are validated', async () => {
 		assert.match(validate(with_(remote)).join('\n'), re, JSON.stringify(remote));
 	assert.match(validate(with_({ url: 'https://x.test' }, 'bad name')).join('\n'), /environment name/);
 });
+
+test('a remote address with a user or password in it is refused, and what is logged is the origin and path, not the query', () => {
+	for (const bad of [
+		'https://qa:SECRETPW@staging.example.test/app',
+		'https://:SECRETPW@staging.example.test',
+		'ftp://staging.example.test',
+		'staging.example.test/app',
+	]) {
+		const f = remoteFixture();
+		fs.writeFileSync(
+			path.join(f.worktree, 'dev-factory.config.json'),
+			JSON.stringify({ environments: { staging: { remote: { url: bad, accounts: ['reviewer'] } } } }),
+		);
+		const r = f.run(['up', '--key', 'APP-1', '--remote', 'staging']);
+		assert.equal(r.status, 1, bad);
+		assert.match(r.stderr, /http\(s\) address with no user or password/);
+		assert.doesNotMatch(r.stdout + r.stderr, /SECRETPW/, 'and the secret is not echoed back');
+		assert.equal(fs.existsSync(path.join(f.worktree, '.dev-factory/env.json')), false);
+	}
+	const ok = remoteFixture();
+	fs.writeFileSync(
+		path.join(ok.worktree, 'dev-factory.config.json'),
+		JSON.stringify({
+			environments: { staging: { remote: { url: 'https://staging.example.test/app?token=QUERYSECRET', accounts: ['reviewer'] } } },
+		}),
+	);
+	const r = ok.run(['up', '--key', 'APP-1', '--remote', 'staging']);
+	assert.equal(r.status, 0, r.stderr);
+	assert.doesNotMatch(r.stderr, /QUERYSECRET/, 'the log names the address without its query');
+});

@@ -256,6 +256,8 @@ do_up_remote() {
   local url accounts account="" userVar="" passVar="" host
   url="$(node "$SELF_DIR/config.mjs" get "environments.$REMOTE.remote.url" 2>/dev/null)"
   [ -n "$url" ] || die "environments.$REMOTE.remote.url is not set: there is no remote environment called $REMOTE"
+  # an address with a user or password in it would be logged, recorded in env.json and sent to every probe: credentials are variables
+  node -e 'try{const u=new URL(process.argv[1]);process.exit(/^https?:$/.test(u.protocol)&&!u.username&&!u.password?0:1)}catch(e){process.exit(1)}' "$url" || die "environments.$REMOTE.remote.url must be an http(s) address with no user or password in it (the QA account is DF_REMOTE_<ENV>_<ACCOUNT>_USER and _PASSWORD)"
   accounts="$(node "$SELF_DIR/config.mjs" get "environments.$REMOTE.remote.accounts" 2>/dev/null || true)"
   account="$ACCOUNT"
   [ -n "$account" ] || account="$(node "$SELF_DIR/config.mjs" get "environments.$REMOTE.remote.defaultAccount" 2>/dev/null || true)"
@@ -275,7 +277,7 @@ do_up_remote() {
       remote:{env:e.DF_R_ENV,url:e.DF_R_URL,account:e.DF_R_ACCOUNT||null,userVar:e.DF_R_USERVAR||null,passwordVar:e.DF_R_PASSVAR||null},
       secretEnv:e.DF_R_PASSVAR?[e.DF_R_PASSVAR]:[],createdAt:new Date().toISOString()};
     require("fs").writeFileSync(e.ENV_JSON,JSON.stringify(j,null,2))'
-  log "remote environment $REMOTE: $url answers${account:+; QA account $account ($userVar, $passVar)}"
+  log "remote environment $REMOTE: $(node -e 'const u=new URL(process.argv[1]);console.log(u.origin+u.pathname)' "$url") answers${account:+; QA account $account ($userVar, $passVar)}"
   if [ "$DEVICE" = 1 ]; then
     ( cd "$WORKTREE" && bash "$SELF_DIR/mobile-env.sh" up --worktree "$WORKTREE" ) || { rc=$?; [ "$rc" = 75 ] && refuse "Metro port busy"; die "mobile lane failed"; }
   fi
