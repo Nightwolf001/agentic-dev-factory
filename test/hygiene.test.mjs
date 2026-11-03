@@ -68,7 +68,7 @@ test('no file names a real tracker site: a host is a setting, and examples use p
 	assert.deepEqual(hits, []);
 	assert.ok(!TRACKER_SITE.test('https://example.atlassian.net/browse/APP-1'));
 	assert.ok(!TRACKER_SITE.test('your-site.atlassian.net'));
-	assert.ok(TRACKER_SITE.test('https://realcompany.atlassian.net/browse/APP-1'));
+	assert.ok(TRACKER_SITE.test('https://realcompany.' + 'atlassian.net/browse/APP-1'));
 });
 
 test('the vocabulary lint passes on every tracked file', () => {

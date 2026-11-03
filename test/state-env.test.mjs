@@ -144,3 +144,39 @@ test('a new state file is created with mode 600 from the start, and without --fr
 	assert.match(vendored.run().stdout, /from .*dev-factory\/\.env\.local/);
 	assert.match(fs.readFileSync(new URL('../scripts/cli.mjs', import.meta.url), 'utf8'), /'import-env': \['bash', 'scripts\/import-env\.sh'\]/);
 });
+
+test('import-env copies only values the shell reads back as themselves, and keeps the last old line apart from the new one', () => {
+	const s = setup();
+	const pwned = path.join(s.root, 'pwned');
+	fs.writeFileSync(
+		s.old,
+		[
+			'GOOD_PLAIN=abc123',
+			"GOOD_SINGLE='a b $c'",
+			'GOOD_DOUBLE="a b"',
+			`BAD_SUBST=$(touch ${pwned})`,
+			`BAD_BACKTICK=\`touch ${pwned}\``,
+			`BAD_SEMI=x; touch ${pwned}`,
+			`BAD_SPACE=x touch ${pwned}`,
+			'BAD_EXPAND="$HOME/x"',
+			`BAD_AND=x && touch ${pwned}`,
+			'BAD_QUOTE="a"b"',
+		].join('\n'),
+	);
+	fs.mkdirSync(s.state);
+	fs.writeFileSync(s.target, 'EXISTING=1');
+	const r = s.run('--from', s.old, '--apply');
+	assert.equal(r.status, 0, r.stderr);
+	for (const n of ['BAD_SUBST', 'BAD_BACKTICK', 'BAD_SEMI', 'BAD_SPACE', 'BAD_EXPAND', 'BAD_AND', 'BAD_QUOTE'])
+		assert.match(r.stdout, new RegExp(`skip  ${n} `), n);
+	const written = fs.readFileSync(s.target, 'utf8');
+	assert.equal(written, 'EXISTING=1\nGOOD_PLAIN=abc123\nGOOD_SINGLE=\'a b $c\'\nGOOD_DOUBLE="a b"\n');
+	// what was written is inert when the shell reads it, the way df_load_env does
+	const sourced = spawnSync(
+		'bash',
+		['-c', `set -a; . "${s.target}"; printf '%s|%s|%s|%s' "$EXISTING" "$GOOD_PLAIN" "$GOOD_SINGLE" "$GOOD_DOUBLE"`],
+		{ encoding: 'utf8' },
+	);
+	assert.equal(sourced.stdout, '1|abc123|a b $c|a b');
+	assert.equal(fs.existsSync(pwned), false);
+});
