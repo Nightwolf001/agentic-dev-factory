@@ -72,11 +72,12 @@ const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8',
 const sha256 = (file) => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
 // What a walk or a review judged is the ticket's own change against its base. When the base is merged into the branch the
-// head moves but that change does not, so a verdict made before the merge still holds. The change is hashed as zero-context
-// hunks without line numbers or blob ids, which are what a merge of unrelated base work shifts.
+// head moves but that change does not, so a verdict made before the merge still holds. The change is hashed as hunks with one line of
+// context, without line numbers or blob ids, which are what a merge of unrelated base work shifts. The context line keeps a hunk's
+// place: the same lines moved elsewhere in a file are a different change.
 export function diffHash(root, head, base) {
 	try {
-		const raw = execFileSync('git', ['diff', '--no-ext-diff', '--binary', '-U0', `${base}...${head}`], {
+		const raw = execFileSync('git', ['diff', '--no-ext-diff', '--binary', '--no-renames', '-U1', `${base}...${head}`], {
 			cwd: root,
 			encoding: 'utf8',
 			stdio: ['ignore', 'pipe', 'ignore'],
@@ -231,6 +232,8 @@ export const MAX_LOG_BYTES = 8 * 1024;
 export const MIN_WORKER_EVIDENCE_CHARS = 32;
 // evidence a pass can rest on, by type; a video or a log only supports one
 export const PASSING_EVIDENCE = ['image', 'probe', 'worker'];
+// ...and which of them a case of each kind can rest on: a screen is shown by a picture, a request by its answer, a job by its output
+const PROOF_FOR = { ui: ['image'], api: ['image', 'probe'], worker: ['image', 'worker'] };
 
 // The newest part of a log, whole lines only, with personal data and secrets replaced. Redacted first (over the newest 64 KB,
 // which is bounded work) and cut after, so the file kept is never longer than the cap whatever the replacements did to the length.
@@ -263,6 +266,15 @@ function openRun(root, run) {
 
 // Copies a file the walk produced into the evidence folder after the checks every kind of capture shares: it exists, is big
 // enough, is fresh (made during this run) and is not byte-identical to something already registered.
+// A piece of evidence has a file named by its case and step. Writing a second one to the same name would replace the first on disk
+// while the manifest kept both hashes, and the run could never be verified.
+function claim(m, rel, caseSlug, step) {
+	if (m.evidence.some((e) => e.file === rel))
+		throw new QaError(
+			`step ${step} of case ${caseSlug} already holds evidence of this kind; record the next one with --step ${Number(step) + 1}`,
+		);
+}
+
 function registerFile({ root, m, caseSlug, step, file, what, minBytes = MIN_IMAGE_BYTES, ext, check }) {
 	if (!fs.existsSync(file)) throw new QaError(`${what} not found: ${file}`);
 	const st = fs.statSync(file);
@@ -274,6 +286,7 @@ function registerFile({ root, m, caseSlug, step, file, what, minBytes = MIN_IMAG
 	const dup = m.evidence.find((e) => e.sha256 === hash);
 	if (dup) throw new QaError(`${what} bytes already registered for case ${dup.case}; capture the state this case asserts`);
 	const rel = path.join(evidenceDir(root, m), `${caseSlug}-${step}.${ext(buf)}`);
+	claim(m, rel, caseSlug, step);
 	fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
 	fs.copyFileSync(file, path.join(root, rel));
 	return { case: caseSlug, step, file: rel, sha256: hash, bytes: st.size };
@@ -282,6 +295,7 @@ function registerFile({ root, m, caseSlug, step, file, what, minBytes = MIN_IMAG
 // Text kept as evidence (a log tail, a worker's output, a probe): redacted first, so the file on disk is what may be shown.
 function registerText({ root, m, caseSlug, step, type, name, text, extra = {} }) {
 	const rel = path.join(evidenceDir(root, m), name);
+	claim(m, rel, caseSlug, step);
 	fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
 	fs.writeFileSync(path.join(root, rel), text);
 	const bytes = Buffer.byteLength(text);
@@ -390,7 +404,7 @@ export function record({
 	m.evidence.push(...added);
 	if (status === 'pass') {
 		// an image, a probe or the worker's output; a video or a log alone shows that something ran, not what it did
-		const proof = m.evidence.filter((e) => e.case === caseSlug && PASSING_EVIDENCE.includes(e.type ?? 'image'));
+		const proof = m.evidence.filter((e) => e.case === caseSlug && PROOF_FOR[c.kind ?? 'ui'].includes(e.type ?? 'image'));
 		if (!proof.length) {
 			const need = {
 				ui: 'screenshot',
@@ -422,7 +436,7 @@ export async function probe({
 	body = null,
 	bodyFile = null,
 	expectStatus = null,
-	step = 1,
+	step = null,
 	fetchImpl,
 	patterns = [],
 	secrets = [],
@@ -442,13 +456,16 @@ export async function probe({
 		throw e;
 	}
 	const text = JSON.stringify(rec, null, 2) + '\n';
+	// a case is often probed again after a fix: without --step, the next free one is taken, so the earlier answer stays on record
+	let n = step ?? 1;
+	if (step == null) while (m.evidence.some((e) => e.file === path.join(evidenceDir(root, m), `${caseSlug}-probe-${n}.json`))) n++;
 	const entry = registerText({
 		root,
 		m,
 		caseSlug,
-		step,
+		step: n,
 		type: 'probe',
-		name: `${caseSlug}-probe-${step}.json`,
+		name: `${caseSlug}-probe-${n}.json`,
 		text,
 		extra: { status: rec.status, ok: rec.ok },
 	});
@@ -525,7 +542,7 @@ export function markNa({ root, key, profile, reason, base = baseFor(root) }) {
 		throw new QaError(`the reason needs at least ${MIN_NA_REASON_CHARS} characters saying why nothing here changes behaviour`);
 	const globs = noBehaviourGlobsFor(root, profile).map(globToRegExp);
 	if (!globs.length) throw new QaError(`profile ${profile} has no noBehaviourGlobs (or nonUiGlobs), so nothing can be declared not applicable`);
-	const files = git(root, 'diff', '--name-only', `${base}...HEAD`).split('\n').filter(Boolean);
+	const files = git(root, 'diff', '--name-only', '--no-renames', `${base}...HEAD`).split('\n').filter(Boolean);
 	const behaviour = files.filter((f) => !globs.some((g) => g.test(f)));
 	if (behaviour.length)
 		throw new QaError(
@@ -557,7 +574,7 @@ const ALL_AXES = [...AXES, ...SPECIALIST_AXES];
 export function triggeredAxes({ root, head, specialistAxes = {}, base = baseFor(root) }) {
 	let files;
 	try {
-		files = git(root, 'diff', '--name-only', `${base}...${head ?? 'HEAD'}`)
+		files = git(root, 'diff', '--name-only', '--no-renames', `${base}...${head ?? 'HEAD'}`)
 			.split('\n')
 			.filter(Boolean);
 	} catch {
@@ -806,7 +823,7 @@ export function learningsCheck({ root, key, bodyFile }) {
 }
 
 export function promoteCheck({ root, base = baseFor(root), cap = 15 }) {
-	const names = git(root, 'diff', '--name-only', `${base}...HEAD`).split('\n').filter(Boolean);
+	const names = git(root, 'diff', '--name-only', '--no-renames', `${base}...HEAD`).split('\n').filter(Boolean);
 	const files = names.map((p) => {
 		let before = '';
 		try {
@@ -958,7 +975,7 @@ async function main() {
 					body: a.body ?? null,
 					bodyFile: a['body-file'],
 					expectStatus: a['expect-status'],
-					step: num(a.step) ?? 1,
+					step: num(a.step),
 					patterns: scrubPatterns(),
 					secrets: qaSecrets(root),
 				});

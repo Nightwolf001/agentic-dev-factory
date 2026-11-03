@@ -14,17 +14,25 @@ import path from 'node:path';
 import { get, load } from './config.mjs';
 import { isMain } from './is-main.mjs';
 
+// A glob as a regular expression over a repository path. `**/` is any number of folders (including none), a trailing `/**` is anything
+// below, `*` is a name or part of one and never crosses a `/`. So `**/tests/**` is a folder called tests, not `latests`.
 export function globToRegExp(glob) {
 	let re = '';
 	for (let i = 0; i < glob.length; i++) {
 		const ch = glob[i];
 		if (ch === '*') {
 			if (glob[i + 1] === '*') {
-				re += '.*';
-				i++;
-				if (glob[i + 1] === '/') i++;
+				const atStart = i === 0 || glob[i - 1] === '/';
+				if (glob[i + 2] === '/' && atStart) {
+					re += '(?:.*/)?';
+					i += 2;
+				} else {
+					re += '.*';
+					i++;
+				}
 			} else re += '[^/]*';
-		} else re += ch.replace(/[.+^${}()|[\]\\?]/g, '\\$&');
+		} else if (ch === '?') re += '[^/]';
+		else re += ch.replace(/[.+^${}()|[\]\\]/g, '\\$&');
 	}
 	return new RegExp(`^${re}$`);
 }

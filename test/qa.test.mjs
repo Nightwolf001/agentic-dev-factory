@@ -985,3 +985,140 @@ test('verify reports the case counts per kind and still checks every kind of evi
 	fs.appendFileSync(path.join(root, p.file), ' ');
 	refused(() => verify({ root, head: head(root), run: m.run }), /evidence changed since recorded/);
 });
+
+// ---- review findings ----
+import { carried } from '../bin/qa.mjs';
+
+test('a verdict is not carried to a commit that is not built on the one it was made at, even for an identical change', () => {
+	const root = branchWithWork();
+	passedRun(root);
+	const h0 = head(root);
+	// the same change, made again on its own branch from the base: same diff, a different history
+	g(root, 'checkout', '-qb', 'task/APP-1-again', 'origin/develop');
+	g(root, 'cherry-pick', '--no-commit', h0);
+	g(root, 'commit', '-qm', 'the same change, made again'); // a different message: the same author, time and tree would give the same commit id
+	const h1 = head(root);
+	assert.notEqual(h0, h1);
+	assert.equal(diffHash(root, h0, 'origin/develop'), diffHash(root, h1, 'origin/develop'), 'the change is the same');
+	assert.equal(
+		carried(root, { head: h0, diffHash: diffHash(root, h0, 'origin/develop') }, h1, 'origin/develop'),
+		false,
+		'the head is not a descendant',
+	);
+	refused(() => verify({ root, head: h1, key: 'APP-1' }), /no QA run at/);
+});
+
+test('the same lines moved elsewhere in a file are a different change', () => {
+	const root = makeRepo();
+	fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+	fs.writeFileSync(path.join(root, 'src/a.js'), 'if (ok) {\n  x();\n}\ny();\nz();\n');
+	g(root, 'add', '-A');
+	g(root, 'commit', '-qm', 'file');
+	g(root, 'update-ref', 'refs/remotes/origin/develop', 'HEAD');
+	g(root, 'checkout', '-qb', 'inside');
+	fs.writeFileSync(path.join(root, 'src/a.js'), 'if (ok) {\n  x();\n  guard();\n}\ny();\nz();\n');
+	g(root, 'commit', '-qam', 'guard inside the block');
+	const inside = diffHash(root, 'HEAD', 'origin/develop');
+	g(root, 'checkout', '-qb', 'outside', 'origin/develop');
+	fs.writeFileSync(path.join(root, 'src/a.js'), 'if (ok) {\n  x();\n}\ny();\n  guard();\nz();\n');
+	g(root, 'commit', '-qam', 'guard after y');
+	assert.notEqual(diffHash(root, 'HEAD', 'origin/develop'), inside);
+	// ...while unrelated work above it, which only shifts line numbers, does not change the hash
+	g(root, 'checkout', '-q', 'inside');
+	g(root, 'checkout', '-q', 'develop');
+	fs.writeFileSync(path.join(root, 'src/a.js'), '// header\n// header\nif (ok) {\n  x();\n}\ny();\nz();\n');
+	g(root, 'commit', '-qam', 'base adds a header');
+	g(root, 'update-ref', 'refs/remotes/origin/develop', 'HEAD');
+	g(root, 'checkout', '-q', 'inside');
+	g(root, 'merge', '-q', '--no-edit', 'develop');
+	assert.equal(diffHash(root, 'HEAD', 'origin/develop'), inside, 'a header added above shifts numbers, not the change');
+});
+
+test('moving code to a documentation path is not a documentation change: a rename lists both paths', () => {
+	const root = makeRepo();
+	g(root, 'update-ref', 'refs/remotes/origin/develop', 'HEAD');
+	g(root, 'checkout', '-qb', 'task/X-9-x');
+	fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+	fs.mkdirSync(path.join(root, 'docs'), { recursive: true });
+	fs.writeFileSync(path.join(root, 'src/server.js'), 'listen();\n'.repeat(20));
+	g(root, 'add', '-A');
+	g(root, 'commit', '-qm', 'server');
+	g(root, 'update-ref', 'refs/remotes/origin/develop', 'HEAD');
+	g(root, 'mv', 'src/server.js', 'docs/server.md');
+	g(root, 'commit', '-qm', 'move the server into docs');
+	refused(() => markNa({ root, key: 'X-9', profile: 'web', reason: 'documentation only' }), /src\/server\.js/);
+});
+
+test('evidence of a case is one file per step: a second probe takes the next step, a second capture at a taken step is refused', async () => {
+	const root = serviceRepo();
+	const m = start({ root, key: 'APP-2', profile: 'service' });
+	const base = { root, run: m.run, caseSlug: 'create-order.api' };
+	const first = await probe({ ...base, url: 'http://localhost/o', expectStatus: 201, fetchImpl: answer(500, 'boom') });
+	const second = await probe({ ...base, url: 'http://localhost/o', expectStatus: 201, fetchImpl: answer(201, '{"id":1}') });
+	assert.notEqual(first.file, second.file, 'the earlier answer stays on record');
+	assert.match(second.file, /-probe-2\.json$/);
+	assert.equal(JSON.parse(fs.readFileSync(path.join(root, first.file), 'utf8')).status, 500);
+	await assert.rejects(
+		probe({ ...base, url: 'http://localhost/o', step: 2, fetchImpl: answer(200) }),
+		/step 2 of case create-order\.api already holds evidence/,
+	);
+	record({ ...base, status: 'pass', assertion: 'POST /o answered 201 on the retry' });
+	record({ root, run: m.run, caseSlug: 'order-screen', status: 'pass', assertion: 'the order screen shows it', screenshot: png(root, 'p1', 61) });
+	refused(
+		() =>
+			record({
+				root,
+				run: m.run,
+				caseSlug: 'order-screen',
+				status: 'fail',
+				assertion: 'a second look at the screen',
+				screenshot: png(root, 'p2', 62),
+			}),
+		/step 1 of case order-screen already holds evidence/,
+	);
+	record({
+		root,
+		run: m.run,
+		caseSlug: 'send-receipt.worker',
+		status: 'pass',
+		assertion: 'the job mailed the receipt',
+		kind: 'worker',
+		evidenceFile: textFile(root, 'wk.txt', 'job 12 finished and sent one email to the receipts queue topic'),
+	});
+	done({ root, run: m.run });
+	assert.equal(
+		verify({ root, head: head(root), run: m.run }).ok,
+		true,
+		'and the run still verifies, which an overwritten file would have prevented',
+	);
+});
+
+test('a screen is shown by a picture: a probe cannot pass a ui case, nor worker output an api case', async () => {
+	const root = serviceRepo();
+	const m = start({ root, key: 'APP-2', profile: 'service' });
+	await probe({ root, run: m.run, caseSlug: 'order-screen', url: 'http://localhost/o', fetchImpl: answer(200) });
+	refused(
+		() => record({ root, run: m.run, caseSlug: 'order-screen', status: 'pass', assertion: 'the order screen is up' }),
+		/at least one screenshot/,
+	);
+	refused(
+		() => record({ root, run: m.run, caseSlug: 'send-receipt.worker', status: 'pass', assertion: 'the job did it', screenshot: undefined }),
+		/at least one screenshot or piece of worker evidence/,
+	);
+});
+
+test('globs: ** is any depth of folders, not a prefix of a name', () => {
+	const re = (g) => globToRegExp(g);
+	assert.equal(re('**/tests/**').test('src/latests/handler.js'), false);
+	assert.equal(re('**/tests/**').test('tests/a.js'), true);
+	assert.equal(re('**/tests/**').test('a/b/tests/c/d.js'), true);
+	assert.equal(re('**/*.md').test('README.md'), true);
+	assert.equal(re('**/*.md').test('docs/a/b.md'), true);
+	assert.equal(re('**/*.md').test('README.mdx'), false);
+	assert.equal(re('docs/**').test('docs/a/b.md'), true);
+	assert.equal(re('docs/**').test('xdocs/a.md'), false);
+	assert.equal(re('.github/workflows/**').test('.github/workflows/ci.yml'), true);
+	assert.equal(re('ios/*.xcodeproj/project.pbxproj').test('ios/App.xcodeproj/project.pbxproj'), true);
+	assert.equal(re('*.json').test('a/b.json'), false, 'a single star stays in one folder');
+	assert.equal(re('a?c').test('abc'), true);
+});

@@ -874,7 +874,7 @@ export function evaluateEdit({ filePath, text = '', root, active = false, run = 
 		// the factory is a folder of this repository (`dev-factory/`, the default) or the repository itself (factoryPrefix '')
 		const prefix = run.factoryPrefix ?? 'dev-factory/';
 		const enforcement = new RegExp(
-			`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(scripts/(guard-lib|guard-paths|guard-bash|edit-guard|stop-gate|stop-gate-lib|mcp-guard|mcp-guard-lib|scrub-lib|debug-lib|plugin-root)\\.|bin/qa\\.mjs|hooks/|settings\\.factory\\.json|config\\.json|plugins\\.json)`,
+			`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(scripts/(guard-lib|guard-paths|guard-bash|edit-guard|stop-gate|stop-gate-lib|mcp-guard|mcp-guard-lib|scrub-lib|probe-lib|debug-lib|plugin-root)\\.|bin/qa\\.mjs|hooks/|settings\\.factory\\.json|config\\.json|plugins\\.json)`,
 		);
 		if (enforcement.test(rel))
 			return {
