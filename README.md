@@ -217,14 +217,15 @@ Blocked by: TASK-2
 Base branch: feature/reports-v2
 ```
 
-| Part                            | Required                               | What it does                                                                                                                                 |
-| ------------------------------- | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| Acceptance criteria             | always                                 | Concrete, checkable bullets. Checked at claim: a task without them is blocked with `needs acceptance criteria` rather than built on guesses. |
-| Out of scope, Testing decisions | when planned with `plan` (strict lint) | Keeps the change small and names the first failing test.                                                                                     |
-| `Blocked by:`                   | optional                               | Task keys (`TASK-2`, `GH-12`, `#12`). The task waits until every one is `done`. A `Blocked by` heading with a list works too.                |
-| `Base branch:`                  | optional                               | Build on a pushed branch instead of the default; the PR targets it.                                                                          |
-| `Research:`                     | optional                               | Questions for the researcher agent (also label the task `needs-research`).                                                                   |
-| `Telemetry:`                    | optional                               | Sentry issue ids or log queries, plus `env:<name>`, for bug triage.                                                                          |
+| Part                            | Required                               | What it does                                                                                                                                                 |
+| ------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Acceptance criteria             | always                                 | Concrete, checkable bullets. Checked at claim: a task without them is blocked with `needs acceptance criteria` rather than built on guesses.                 |
+| Out of scope, Testing decisions | when planned with `plan` (strict lint) | Keeps the change small and names the first failing test.                                                                                                     |
+| `Blocked by:`                   | optional                               | Task keys (`TASK-2`, `GH-12`, `#12`). The task waits until every one is `done`. A `Blocked by` heading with a list works too.                                |
+| `Base branch:`                  | optional                               | Build on a pushed branch instead of the default; the PR targets it.                                                                                          |
+| `Remote-QA:`                    | optional                               | `staging` or `staging (account: reviewer)`: walk the ticket against that deployed environment instead of a stack started here (see [Remote QA](#remote-qa)). |
+| `Research:`                     | optional                               | Questions for the researcher agent (also label the task `needs-research`).                                                                                   |
+| `Telemetry:`                    | optional                               | Sentry issue ids or log queries, plus `env:<name>`, for bug triage.                                                                                          |
 
 Check a draft yourself with `dev-factory qa ticket lint --file draft.md` (add `--strict true` for the planning standard).
 
@@ -498,23 +499,38 @@ Takeover itself is not a setting: a repository file is something a run can edit,
 
 #### Mobile lane
 
-| Key                   | Default                                  | What it does                                                      |
-| --------------------- | ---------------------------------------- | ----------------------------------------------------------------- |
-| `mobile.appDir`       | `null`                                   | The mobile app folder. Setting it enables the device lane.        |
-| `mobile.hints`        | `["mobile app", "iOS", "Android"]`       | Words in a task that mark it as a mobile task.                    |
-| `mobile.metroPort`    | `8081`                                   | Port of the app's dev server.                                     |
-| `mobile.prepare`      | `null`                                   | Command run in the app folder before anything else.               |
-| `mobile.install`      | `"yarn install --frozen-lockfile"`       | Installs the app's dependencies when `node_modules` is missing.   |
-| `mobile.pods`         | `"yarn pods"`                            | Installs native pods when `ios/Pods` is missing.                  |
-| `mobile.start`        | `"yarn start --port {port}"`             | Starts the dev server; `{port}` is filled in.                     |
-| `mobile.build`        | `"yarn ios --udid {udid} --port {port}"` | Builds and installs the app; `{port}` and `{udid}` are filled in. |
-| `mobile.nativeInputs` | `see config.json`                        | Globs (relative to the app) whose change means a native rebuild.  |
+| Key                          | Default                                            | What it does                                                                                                                                                                                                                                             |
+| ---------------------------- | -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mobile.appDir`              | `null`                                             | The mobile app folder. Setting it enables the device lane.                                                                                                                                                                                               |
+| `mobile.hints`               | `["mobile app", "iOS", "Android"]`                 | Words in a task that mark it as a mobile task.                                                                                                                                                                                                           |
+| `mobile.metroPort`           | `8081`                                             | Port of the app's dev server.                                                                                                                                                                                                                            |
+| `mobile.prepare`             | `null`                                             | Command run in the app folder before anything else.                                                                                                                                                                                                      |
+| `mobile.install`             | `"yarn install --frozen-lockfile"`                 | Installs the app's dependencies when `node_modules` is missing.                                                                                                                                                                                          |
+| `mobile.pods`                | `"yarn pods"`                                      | Installs native pods when `ios/Pods` is missing.                                                                                                                                                                                                         |
+| `mobile.start`               | `"yarn start --port {port}"`                       | Starts the dev server; `{port}` is filled in.                                                                                                                                                                                                            |
+| `mobile.build`               | `"yarn ios --udid {udid} --port {port}"`           | Builds and installs the app; `{port}` and `{udid}` are filled in.                                                                                                                                                                                        |
+| `mobile.nativeInputs`        | `see config.json`                                  | Globs (relative to the app) whose change means a native rebuild.                                                                                                                                                                                         |
+| `mobile.androidAvd`          | `null`                                             | The Android virtual device to boot headless (or `DF_DEVICE_NAME`); `null` uses the first of `emulator -list-avds`. A running emulator of that AVD is reused.                                                                                             |
+| `mobile.androidBuild`        | `"yarn android --deviceId {serial} --port {port}"` | Builds and installs the Android app; `{serial}` and `{port}` are filled in. No pods are installed on Android.                                                                                                                                            |
+| `mobile.androidNativeInputs` | `see config.json`                                  | Globs (relative to the app) whose change means an Android rebuild.                                                                                                                                                                                       |
+| `mobile.androidReversePorts` | `[]`                                               | Host ports besides Metro that the emulator reaches through `adb reverse` (the backend's, in canonical-ports mode).                                                                                                                                       |
+| `mobile.clientLogs`          | `true`                                             | Start Metro with `--client-logs` (behind `--` for an npm script, on the last command of an `&&` chain).                                                                                                                                                  |
+| `mobile.iosAutofillOff`      | `null`                                             | A command that turns password AutoFill off on a simulator (`{udid}` is filled in). It runs once per simulator on this machine, because the save-password dialog that follows a login covers the app and hides it from Maestro. Its failure is a warning. |
+| `mobile.appId`               | `null`                                             | The app id `qa-login.sh` hands to the login flow (or `DF_APP_ID`).                                                                                                                                                                                       |
+| `mobile.login.userField`     | `"qa-login-username"`                              | Element id of the user field in the shipped `qa/maestro/login.yaml`. A generic placeholder: set your app's.                                                                                                                                              |
+| `mobile.login.passwordField` | `"qa-login-password"`                              | Element id of the password field.                                                                                                                                                                                                                        |
+| `mobile.login.submit`        | `"qa-login-submit"`                                | Element id of the sign-in button.                                                                                                                                                                                                                        |
+| `mobile.login.success`       | `"qa-login-success"`                               | Element id that is visible once signed in.                                                                                                                                                                                                               |
+
+The platform is **not** a default setting (a default would always win, and the ticket would never be read): `mobile.platform` (`ios` or `android`), `DF_MOBILE_PLATFORM` for one run, or a `platform` in a worktree's `run.json` pick it explicitly, in that order of strength (the variable first); without one, a ticket is Android only when its text names Android and no iOS term, and iOS otherwise. The device lane works for iOS and Android. On **iOS** it boots the simulator named by `DF_DEVICE_NAME` or the profile (a simulator that was already open is left open), installs pods, builds with `mobile.build` and records `device.udid`. On **Android** it reuses a running emulator of the AVD or boots one headless (`-no-window -no-audio -no-boot-anim`), runs `adb reverse` for Metro and `mobile.androidReversePorts`, builds with `mobile.androidBuild` and records `device.serial`, `device.avd` and `bootedByFactory`; `cleanup.mjs` kills an emulator the run booted and leaves one that was already running. The native build is skipped while its inputs are unchanged; on iOS the Xcode version is part of that hash, so a newer Xcode does not leave a binary the newer simulator runtime refuses. The device lane also runs against a deployed environment (`e2e-env.sh up --remote ENV --device`).
+
+`qa/maestro/login.yaml` and `qa/maestro/dismiss-system-dialogs.yaml` are generic Maestro flows (the dialog texts are the usual English ones). `scripts/qa-login.sh` signs the QA account in without the password reaching an agent's transcript: it reads the **names** of the account's variables from `.dev-factory/env.json`, hands the values to Maestro only through its environment (`MAESTRO_QA_USER`, `MAESTRO_QA_PASSWORD`; never an argument, where `ps` would show them), and filters everything Maestro prints so the values show as `***`.
 
 #### Telemetry environments
 
-| Key            | Default           | What it does                                                                                                                            |
-| -------------- | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `environments` | `see config.json` | Per telemetry environment (`dev`, `staging`...): `sentry` (`org`, `environment`, `projects`) and `axiomDatasets` the debugger may read. |
+| Key            | Default           | What it does                                                                                                                                                                                                                                          |
+| -------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `environments` | `see config.json` | Per environment (`dev`, `staging`...): `sentry` (`org`, `environment`, `projects`) and `axiomDatasets` the debugger may read, and `remote` (`url`, `accounts`, `defaultAccount`) for QA against a deployed environment (see [Remote QA](#remote-qa)). |
 
 #### Coverage
 
@@ -769,6 +785,20 @@ Runs the whole flow (worktree, environment, test-first build, QA walk, two revie
 | `e2e-env.sh verify`                                      | Re-check the contract.                                                                                           |
 | `e2e-env.sh down`                                        | Remove the project and its volumes.                                                                              |
 | `e2e-env.sh sweep`                                       | Remove `df-*` projects with no live owner, except one whose worktree changed in the last 3 hours. Safe any time. |
+
+### Remote QA
+
+`e2e-env.sh up --worktree DIR --key KEY --remote ENV [--account NAME] [--device]` starts nothing. It checks that the address in `environments.ENV.remote.url` answers (anything below HTTP 500: a login page or a 401 means the service is there), and records `mode: remote` in `.dev-factory/env.json` with the **names** of the variables that hold the QA account, `DF_REMOTE_<ENV>_<ACCOUNT>_USER` and `_PASSWORD` (upper case, `-` becomes `_`), which the owner sets in `~/.dev-factory/.env.local`. The values are never written or printed. The recorded password variable is also listed in `secretEnv`, so evidence kept for the run is redacted of it, and the recorded host is one `qa.mjs probe` may reach. `down` only forgets the record (and stops Metro with `--device`); `verify` pings the address again. A ticket selects it with a `Remote-QA: staging (account: reviewer)` line. Configure it:
+
+```json
+{
+	"environments": {
+		"staging": { "remote": { "url": "https://staging.example.com", "accounts": ["reviewer", "admin"], "defaultAccount": "reviewer" } }
+	}
+}
+```
+
+`dev-factory doctor` checks that each account's two variables are set. Remote QA is meant for a QA account on a deployed environment that people expect tests to use; the factory never creates, changes or deletes accounts there.
 
 `up` is idempotent: a resumed ticket finds its stack healthy and takes it over again. A stack started with fewer ports than the run needs is not reused: the modes are ordered isolated, canonical, device, and a recorded stack that is weaker than the one asked for is taken down and replaced, so a browser or device ticket is never left without ports or a simulator. Setup steps are read by index and run with no standard input, so every step runs (`exec -T` reads standard input and used to swallow the steps after the first).
 

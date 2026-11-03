@@ -68,7 +68,22 @@ if [ "$CI" = 0 ]; then
   if [ "$(cfg mobile.appDir)" != "" ]; then
     command -v xcrun >/dev/null && xcrun simctl list runtimes 2>/dev/null | grep -q iOS && ok "iOS simulator runtime" || warn "no iOS simulator runtime (mobile lane disabled)"
     command -v maestro >/dev/null && ok "maestro $(maestro --version 2>/dev/null | head -1)" || warn "maestro missing (mobile lane disabled)"
+    # Maestro is a Java program: a machine without a runtime fails at the first flow
+    if command -v maestro >/dev/null; then java -version >/dev/null 2>&1 && ok "java runtime (Maestro needs one)" || warn "no java runtime: Maestro cannot run a flow (install a JDK)"; fi
+    # the Android lane: only reported, since iOS is the default
+    SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Library/Android/sdk}}"
+    if command -v adb >/dev/null || [ -x "$SDK/platform-tools/adb" ]; then
+      ok "Android: adb present"
+      { command -v emulator >/dev/null || [ -x "$SDK/emulator/emulator" ]; } && ok "Android: emulator present" || warn "Android: no emulator binary (set ANDROID_SDK_ROOT); the Android lane is disabled"
+    else warn "Android SDK not found (adb): the Android lane is disabled; iOS tickets are not affected"; fi
   fi
+  # remote QA: every account of every remote environment needs its two variables, by name
+  while read -r renv racct; do
+    [ -n "$racct" ] || continue
+    u="$(printf 'DF_REMOTE_%s_%s_USER' "$renv" "$racct" | tr '[:lower:]-' '[:upper:]_')"; p="$(printf 'DF_REMOTE_%s_%s_PASSWORD' "$renv" "$racct" | tr '[:lower:]-' '[:upper:]_')"
+    if [ -n "${!u:-}" ] && [ -n "${!p:-}" ]; then ok "remote QA account $racct for $renv: $u and $p are set"
+    else warn "remote QA account $racct for $renv: set $u and $p in $(df_state_dir)/.env.local (a remote ticket cannot sign in without them)"; fi
+  done < <(node -e 'try{const c=require("child_process").execFileSync("node",[process.argv[1],"get","environments"],{encoding:"utf8"});for(const [n,e] of Object.entries(JSON.parse(c)))for(const a of e?.remote?.accounts??[])console.log(n,a)}catch(e){}' "$DIR/scripts/config.mjs")
   ENVF="$(df_state_dir)/.env.local"
   if [ -f "$ENVF" ]; then
     ok "$ENVF present"

@@ -36,6 +36,12 @@ const PLAYWRIGHT_BROWSER = /playwright_chromiumdev_profile|ms-playwright\/|playw
 const PLAYWRIGHT_SERVER = /@playwright\/mcp|playwright-mcp\/cli|playwright.*\bmcp\b/;
 const MAESTRO_PROCESS = /maestro(-driver|\.cli|\.android|\.ios)|dev\.mobile\.maestro|maestro[^ ]* (test|studio|record)\b|maestro-driver-ios/i;
 
+// adb from the PATH, else from the Android SDK
+export const adbBin = (env = process.env) => {
+	const sdk = env.ANDROID_SDK_ROOT || env.ANDROID_HOME;
+	return sdk && fs.existsSync(path.join(sdk, 'platform-tools', 'adb')) ? path.join(sdk, 'platform-tools', 'adb') : 'adb';
+};
+
 export const defaultRun = (cmd, args, opts = {}) => {
 	const r = spawnSync(cmd, args, { encoding: 'utf8', timeout: opts.timeout ?? 60000 });
 	return { status: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
@@ -216,7 +222,26 @@ export async function cleanup({
 		act('dev server stop', 'Metro', () =>
 			run('bash', [path.join(SELF, 'mobile-env.sh'), 'down', '--worktree', worktree]).status === 0 ? 'stopped' : 'failed',
 		);
-	const udid = recorded.device?.udid;
+	// an Android emulator the run booted is killed (adb emu kill, then the process if it is still ours); one already running stays
+	const serial = recorded.device?.platform === 'android' ? recorded.device.serial : null;
+	if (serial && (recorded.device.bootedByFactory || takeover)) {
+		act('emulator kill', serial, () => {
+			const killed = run(adbBin(), ['-s', serial, 'emu', 'kill']).status === 0;
+			const pidFile = worktree ? path.join(worktree, '.dev-factory', 'emulator.pid') : null;
+			if (pidFile && fs.existsSync(pidFile)) {
+				const pid = Number(fs.readFileSync(pidFile, 'utf8').trim());
+				if (pid > 1 && pid !== process.pid && !killed) run('kill', ['-TERM', String(pid)]);
+				fs.rmSync(pidFile, { force: true });
+			}
+			return killed ? 'killed' : 'already off';
+		});
+	} else if (serial)
+		left.push({
+			what: 'emulator',
+			target: serial,
+			why: 'it was already running before the factory started (the owner sets DF_TAKEOVER to shut it down)',
+		});
+	const udid = recorded.device?.platform === 'android' ? null : recorded.device?.udid;
 	if (udid && (recorded.device.bootedByFactory || takeover))
 		act('simulator shutdown', udid, () => (run('xcrun', ['simctl', 'shutdown', udid]).status === 0 ? 'shut down' : 'already off'));
 	else if (udid)

@@ -1,0 +1,20 @@
+# Signs the QA account in. Run by scripts/qa-login.sh, which puts the account in the process environment as MAESTRO_QA_USER and
+# MAESTRO_QA_PASSWORD (Maestro reads variables with the MAESTRO_ prefix from the environment), so neither value is written in a
+# flow, on a command line or in a transcript. The element ids are the mobile.login settings, passed as MAESTRO_LOGIN_*; an app
+# whose login screen uses other ids sets those, or copies this file into its own flows.
+appId: ${MAESTRO_APP_ID}
+---
+- launchApp
+- runFlow: dismiss-system-dialogs.yaml
+- tapOn:
+    id: ${MAESTRO_LOGIN_USER_FIELD}
+- inputText: ${MAESTRO_QA_USER}
+- tapOn:
+    id: ${MAESTRO_LOGIN_PASSWORD_FIELD}
+- inputText: ${MAESTRO_QA_PASSWORD}
+- hideKeyboard
+- tapOn:
+    id: ${MAESTRO_LOGIN_SUBMIT}
+- runFlow: dismiss-system-dialogs.yaml
+- assertVisible:
+    id: ${MAESTRO_LOGIN_SUCCESS}

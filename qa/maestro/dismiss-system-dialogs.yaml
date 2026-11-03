@@ -1,0 +1,36 @@
+# Dismisses the system dialogs that cover an app during a walk (notifications, tracking, location, save password). Each step is
+# optional: a dialog that is not on screen is skipped. Run it from another flow with `runFlow: dismiss-system-dialogs.yaml`.
+# The button texts are the usual ones in English; a repository whose device runs in another language copies this file into its
+# own flows and changes them.
+appId: ${MAESTRO_APP_ID}
+---
+- runFlow:
+    when:
+      visible: "Not Now"
+    commands:
+      - tapOn: "Not Now"
+- runFlow:
+    when:
+      visible: "Don’t Allow"
+    commands:
+      - tapOn: "Don’t Allow"
+- runFlow:
+    when:
+      visible: "Don't Allow"
+    commands:
+      - tapOn: "Don't Allow"
+- runFlow:
+    when:
+      visible: "Allow While Using App"
+    commands:
+      - tapOn: "Allow While Using App"
+- runFlow:
+    when:
+      visible: "While using the app"
+    commands:
+      - tapOn: "While using the app"
+- runFlow:
+    when:
+      visible: "Never for This Website"
+    commands:
+      - tapOn: "Never for This Website"
