@@ -9,8 +9,8 @@
     <string>__LAUNCHER__</string>
     <string>__JOB__</string>
   </array>
-  <key>WorkingDirectory</key><string>__REPO__</string>
-  <key>StartInterval</key><integer>900</integer>
+  <key>WorkingDirectory</key><string>__STATE__</string>
+  <key>StartInterval</key><integer>__INTERVAL__</integer>
   <key>RunAtLoad</key><false/>
   <key>EnvironmentVariables</key>
   <dict>
@@ -19,6 +19,9 @@
     <key>DF_REPO</key><string>__REPO__</string>
     <key>DF_SCHEDULED</key><string>1</string>
     <key>DF_STATE_DIR</key><string>__STATE__</string>
+    <key>TERM</key><string>xterm-256color</string>
+    <key>LANG</key><string>en_US.UTF-8</string>
+    <key>LC_ALL</key><string>en_US.UTF-8</string>
   </dict>
   <key>StandardOutPath</key><string>__HOME__/Library/Logs/dev-factory-launchd.out.log</string>
   <key>StandardErrorPath</key><string>__HOME__/Library/Logs/dev-factory-launchd.err.log</string>

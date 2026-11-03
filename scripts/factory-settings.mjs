@@ -4,6 +4,7 @@
 //
 //   factory-settings.mjs [OUT_FILE]     write the effective settings (default: stdout)
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { get, load } from './config.mjs';
@@ -24,6 +25,7 @@ export function build({
 	cat = catalog(),
 	external = [],
 	env = process.env,
+	state = env.DF_STATE_DIR || path.join(os.homedir(), '.dev-factory'),
 } = {}) {
 	const out = JSON.parse(JSON.stringify(base));
 	const domains = new Set(out.sandbox?.network?.allowedDomains ?? []);
@@ -38,6 +40,8 @@ export function build({
 	const sandboxOn = get('sandbox.enabled', { config: cfg });
 	if (typeof sandboxOn === 'boolean') out.sandbox.enabled = sandboxOn;
 	out.sandbox.network.allowedDomains = [...domains];
+	// the pass keeps its locks, live-stack records and run pointer in the state folder, and e2e-env.sh (run outside the sandbox) writes there too
+	out.sandbox.filesystem = { ...out.sandbox.filesystem, allowWrite: [...new Set([...(out.sandbox.filesystem?.allowWrite ?? []), state])] };
 	// takeover: stopping a process or a session outside the sandbox needs those commands to run outside it (the guard still refuses the protected targets)
 	if (takeoverOn({ env })) out.sandbox.excludedCommands = [...new Set([...(out.sandbox.excludedCommands ?? []), ...TAKEOVER_EXCLUDED])];
 	out.permissions.allow = [...new Set([...out.permissions.allow, ...allowRules(mcpFile, external)])];

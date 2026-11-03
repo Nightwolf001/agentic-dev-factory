@@ -210,3 +210,14 @@ test('takeover lets the sandbox run the commands that stop host processes, and o
 	}
 	assert.ok(on.includes('docker *'), 'the base list is kept');
 });
+
+test('the scheduled pass may write the state folder and runs e2e-env.sh outside the sandbox', async () => {
+	const { load } = await import('../scripts/config.mjs');
+	const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'df-state-')), '.mcp.json');
+	const out = build({ cfg: load(), mcpFile: file, env: {}, state: '/Users/dev/.dev-factory' });
+	assert.deepEqual(out.sandbox.filesystem.allowWrite, ['/Users/dev/.dev-factory']);
+	assert.ok(out.sandbox.filesystem.denyRead.includes('~/.ssh'), 'the base denials stay');
+	for (const c of ['bash *e2e-env.sh*', 'dev-factory env*']) assert.ok(out.sandbox.excludedCommands.includes(c), c);
+	const env = build({ cfg: load(), mcpFile: file, env: { DF_STATE_DIR: '/custom/state' } });
+	assert.deepEqual(env.sandbox.filesystem.allowWrite, ['/custom/state'], 'DF_STATE_DIR is where it is');
+});

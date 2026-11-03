@@ -10,6 +10,7 @@
 //   dev-factory cloud init [--github-actions]  set the repository up for Claude Code on the web or GitHub Actions
 //   dev-factory qa|worktree|env ...        the QA recorder, worktree helper and environment script
 //   dev-factory cleanup                    tear down what a run left: its stack, dev server, browser and Maestro sessions
+//   dev-factory update [--check]           update every installed copy of the plugin and remove stale cached versions
 //   dev-factory target                     where an improvement to the factory itself can be made from here
 //   dev-factory path                       print the plugin directory
 //
@@ -35,6 +36,7 @@ export const COMMANDS = {
 	worktree: ['node', 'scripts/worktree.mjs'],
 	env: ['bash', 'scripts/e2e-env.sh'],
 	cleanup: ['node', 'scripts/cleanup.mjs'],
+	update: ['node', 'scripts/update.mjs'],
 };
 
 export function resolve(argv) {

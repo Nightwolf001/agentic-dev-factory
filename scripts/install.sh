@@ -47,42 +47,52 @@ if [ ! -f "$ENVF" ]; then
   if [ $APPLY = 1 ]; then mkdir -p "$STATE"; cp "$DIR/.env.example" "$ENVF"; chmod 600 "$ENVF"; fi
 else say "$ENVF exists, left alone"; fi
 
-# 4. plugins the factory relies on
-node -e '
-  const p=require(process.argv[1]);
-  for(const [n,m] of Object.entries(p.marketplaces)) console.log("marketplace "+n+" "+m.repo);
-  for(const x of p.plugins) console.log("plugin "+x.id+" "+(x.required?"required":"optional"));' "$DIR/plugins.json" | while read -r kind id extra; do
+# 4. plugins the factory relies on. Optional ones are installed too unless DF_INSTALL_OPTIONAL=0; a plugin that fails to
+# install fails the run (after the rest were tried), so a half-installed machine is never reported as set up.
+FAILED=0
+while read -r kind id extra; do
   if [ "$kind" = marketplace ]; then
     if claude plugin marketplace list 2>/dev/null | grep -q "$id"; then say "marketplace $id already added"
-    else say "claude plugin marketplace add $extra"; [ $APPLY = 1 ] && claude plugin marketplace add "$extra" >/dev/null; fi
+    else
+      say "claude plugin marketplace add $extra"
+      if [ $APPLY = 1 ] && ! claude plugin marketplace add "$extra" >/dev/null; then echo "FAILED: claude plugin marketplace add $extra" >&2; FAILED=1; fi
+    fi
   else
     if claude plugin list 2>/dev/null | grep -q "$id"; then say "plugin $id already installed"
-    elif [ "$extra" = required ] || [ "${DF_INSTALL_OPTIONAL:-0}" = 1 ]; then say "claude plugin install $id --scope local"; [ $APPLY = 1 ] && claude plugin install "$id" --scope local >/dev/null
-    else say "plugin $id is optional, skipped (DF_INSTALL_OPTIONAL=1 to install)"; fi
+    elif [ "$extra" = required ] || [ "${DF_INSTALL_OPTIONAL:-1}" != 0 ]; then
+      say "claude plugin install $id --scope local"
+      if [ $APPLY = 1 ] && ! claude plugin install "$id" --scope local >/dev/null; then echo "FAILED: claude plugin install $id" >&2; FAILED=1; fi
+    else say "plugin $id is optional, skipped (DF_INSTALL_OPTIONAL=0)"; fi
   fi
-done
+done < <(node -e '
+  const p=require(process.argv[1]);
+  for(const [n,m] of Object.entries(p.marketplaces)) console.log("marketplace "+n+" "+m.repo);
+  for(const x of p.plugins) console.log("plugin "+x.id+" "+(x.required?"required":"optional"));' "$DIR/plugins.json")
 
 # 5. the scheduler, by runtime.scheduler
 SCHED="$(node "$DIR/scripts/config.mjs" get runtime.scheduler 2>/dev/null || echo auto)"
 if [ "$SCHED" = auto ]; then
   if [ "$(uname)" = Darwin ] && [ "$RUNTIME" = local ]; then SCHED=launchd; else SCHED=none; fi
 fi
-SLUG="$(df_slug "$REPO")"
+SLUG="$(df_slug "$REPO")"; INTERVAL="$(df_interval_minutes)"
 case "$SCHED" in
   launchd)
     for job in tick improve; do
       LABEL="com.dev-factory.$SLUG.$job"; PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
-      if [ "$job" = tick ]; then say "render $PLIST (every 15 minutes: dev-factory tick in $REPO)"; else say "render $PLIST (weekly, Monday 07:00: dev-factory improve in $REPO)"; fi
+      if [ "$job" = tick ]; then say "render $PLIST (every $INTERVAL minutes: dev-factory tick in $REPO)"; else say "render $PLIST (weekly, Monday 07:00: dev-factory improve in $REPO)"; fi
       if [ $APPLY = 1 ]; then
-        mkdir -p "$(dirname "$PLIST")"
-        sed -e "s#__LABEL__#$LABEL#g" -e "s#__LAUNCHER__#$LAUNCHER#g" -e "s#__JOB__#$job#g" -e "s#__REPO__#$REPO#g" -e "s#__STATE__#$STATE#g" -e "s#__HOME__#$HOME#g" -e "s#__PATH__#$PATH#g" "$DIR/launchd/$job.plist.template" > "$PLIST"
+        mkdir -p "$(dirname "$PLIST")" "$STATE"   # the job runs in the state folder, which must exist
+        sed -e "s#__LABEL__#$LABEL#g" -e "s#__LAUNCHER__#$LAUNCHER#g" -e "s#__JOB__#$job#g" -e "s#__REPO__#$REPO#g" -e "s#__STATE__#$STATE#g" -e "s#__HOME__#$HOME#g" -e "s#__INTERVAL__#$((INTERVAL * 60))#g" -e "s#__PATH__#$PATH#g" "$DIR/launchd/$job.plist.template" > "$PLIST"
         plutil -lint "$PLIST"
       fi
-      if [ $LOAD = 1 ]; then launchctl bootstrap "gui/$(id -u)" "$PLIST"; say "loaded $PLIST"
+      if [ $LOAD = 1 ]; then
+        launchctl bootstrap "gui/$(id -u)" "$PLIST"; say "loaded $PLIST"
+        # do not wait a whole interval for the first tick
+        [ "$job" = tick ] && launchctl kickstart "gui/$(id -u)/$LABEL" 2>/dev/null && say "started a tick now"
       else echo "to load: launchctl bootstrap gui/\$(id -u) $PLIST   (unload: launchctl bootout gui/\$(id -u)/$LABEL)"; fi
     done ;;
   github-actions) echo "scheduler: GitHub Actions. Run: dev-factory cloud init --github-actions   (writes .github/workflows/dev-factory-tick.yml)" ;;
-  routine) echo "scheduler: a Claude Code routine. Run /schedule in claude and ask for a routine that runs /dev-factory:tick every 15 minutes in this repository (see README, Cloud and scheduled runs)" ;;
+  routine) echo "scheduler: a Claude Code routine. Run /schedule in claude and ask for a routine that runs /dev-factory:tick every $INTERVAL minutes in this repository (see README, Cloud and scheduled runs)" ;;
   *) echo "scheduler: none on this machine (runtime.scheduler is $SCHED). Run 'dev-factory tick' by hand, or see README, Cloud and scheduled runs" ;;
 esac
 
@@ -93,3 +103,4 @@ manual steps:
   3. unattended runs only: run 'claude setup-token', put the value in $ENVF as CLAUDE_CODE_OAUTH_TOKEN,
      and for jira or notion also the API token the scheduler's preflight uses (see .env.example)
 TXT
+[ "$FAILED" = 0 ] || { echo "install: a plugin or marketplace could not be installed (see above); fix it and run again" >&2; exit 1; }
