@@ -4,6 +4,7 @@
 // exits without spawning.
 //
 //   frontier.mjs check     exit 0 = run the session; 20 = nothing to do; anything else = could not tell, no session
+//                          (it also looks for a person's answer to a question the factory asked, and for a fix request written on a ticket)
 //   frontier.mjs commit    remember the frontier the session just looked at (tick.sh, after a clean session only)
 //
 // A source that needs a token the machine lacks (Jira, Notion) exits 21 (unknown); tick.sh then starts nothing
@@ -12,6 +13,8 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { findFixRequest, findReplies } from './comment-lib.mjs';
 import { get, load } from './config.mjs';
 import { isMain } from './is-main.mjs';
 import { isStacked, planStack, parseStackNote, stackAction, stackSettings } from './stack-lib.mjs';
@@ -29,6 +32,7 @@ export function actionOptions(cfg) {
 		reviewedOn: g('pr.reviewedOnMergeInto') ?? null,
 		doneOn: g('pr.doneOnMergeInto') ?? null,
 		fixComment: g('tasks.fixComment'),
+		questionLabel: g('tasks.questionLabel') ?? null,
 		bugbot: g('review.bugbot') === true,
 		bugbotAuthor: g('review.bugbotAuthor'),
 		...stackSettings(cfg),
@@ -70,7 +74,6 @@ export function prNeedsAction(pr, { reviewedOn = null, doneOn = null, fixComment
 	return requested || asked || (bugbot && pr.bugbotOpen > 0) ? 'fix' : null;
 }
 
-// deps: { list({states, staleMinutes}) -> tasks[], prState(key) -> pr data for prNeedsAction }, state: { fingerprint, at } | null
 const ACTION_TEXT = {
 	fix: 'has review feedback',
 	retarget: 'is stacked on a PR that merged: retarget it',
@@ -94,20 +97,53 @@ async function stackable(t, deps, opts, reviewing) {
 	return planStack({ blockers, enabled: opts.enabled, maxDepth: opts.maxDepth, checkScope: false }).action === 'stack';
 }
 
+// Answers to the factory's questions, fix requests written on the ticket, and the ready queue are one decision: the pass looks at
+// them together and remembers the fingerprint of all three, so a pass that ended without acting on them (a fix pass that posted no
+// marker, an answer that needed a person's second look) is not started again for the same thing within caps.frontierRepeatHours.
+// With no answers and no fix requests the fingerprint is the ready queue's alone, which is what older versions stored, so a
+// fingerprint written before this existed is still read.
+export function decisionFingerprint({ queue, answers = [], fixes = [] }) {
+	if (!answers.length && !fixes.length) return queue;
+	const rows = [`q|${queue}`, ...answers.map((a) => `a|${a.key}|${a.ids.join(',')}`), ...fixes.map((f) => `f|${f.key}|${f.id}`)].sort();
+	return `v2:${createHash('sha1').update(rows.join('\n')).digest('hex')}`;
+}
+
+// deps: { list({states, staleMinutes, label}) -> tasks[], prState(key) -> pr data for prNeedsAction, comments?(key) -> [{id, body}] }
+// state: { fingerprint, at } | null
 export async function decide({ cfg, deps, state, now = Date.now() }) {
 	const repeatMs = get('caps.frontierRepeatHours', { config: cfg }) * 3600_000;
 	const stall = get('caps.stallMinutes', { config: cfg });
 	const opts = actionOptions(cfg);
+	const readComments = async (key) => {
+		try {
+			return deps.comments ? await deps.comments(key) : [];
+		} catch {
+			return []; // comments that cannot be read are no evidence of anything: the pass does not start on a guess
+		}
+	};
 	const strays = await deps.list({ states: ['inProgress'], staleMinutes: stall });
 	if (strays.length) return { run: true, reason: `${strays.length} orphaned in-progress task(s)` };
+	const fixes = [];
 	for (const t of await deps.list({ states: ['inReview'] })) {
-		const action = prNeedsAction(await deps.prState(t.key, opts), opts);
+		const pr = await deps.prState(t.key, opts);
+		const action = prNeedsAction(pr, opts);
 		if (action) return { run: true, reason: `${t.key} PR ${ACTION_TEXT[action] ?? 'is merged or approved'}` };
+		// a fix request written on the ticket itself, while its PR is open and until the factory has answered it
+		const ask = pr?.state === 'OPEN' ? findFixRequest(await readComments(t.key), { fixComment: opts.fixComment, prOpen: true }) : null;
+		if (ask) fixes.push({ key: t.key, id: String(ask.id ?? ask.created ?? ask.body) });
 	}
 	// reviewed is the people's stage unless a merge into a later branch is what finishes a task
 	if (opts.doneOn) {
 		for (const t of await deps.list({ states: ['reviewed'] })) {
 			if (prNeedsAction(await deps.prState(t.key, opts), opts) === 'done') return { run: true, reason: `${t.key} reached ${opts.doneOn}` };
+		}
+	}
+	// a person answered a question the factory asked
+	const answers = [];
+	if (opts.questionLabel && deps.comments) {
+		for (const t of await deps.list({ label: opts.questionLabel, notStates: ['done'] })) {
+			const { replies } = findReplies(await readComments(t.key));
+			if (replies.length) answers.push({ key: t.key, ids: replies.map((r) => String(r.id ?? r.created ?? r.body)) });
 		}
 	}
 	const ready = await deps.list({ states: ['ready'] });
@@ -116,12 +152,20 @@ export async function decide({ cfg, deps, state, now = Date.now() }) {
 		for (const state of ['inReview', 'reviewed']) for (const t of await deps.list({ states: [state] })) reviewing.set(t.key, state);
 	const frontier = [];
 	for (const t of ready) if (isBuildable(t) || (opts.enabled && (await stackable(t, deps, opts, reviewing)))) frontier.push(t);
-	if (!frontier.length) return { run: false, reason: 'frontier empty' };
-	const fp = fingerprintOf(frontier);
+	if (!frontier.length && !answers.length && !fixes.length) return { run: false, reason: 'frontier empty' };
+	const fp = decisionFingerprint({ queue: fingerprintOf(frontier), answers, fixes });
+	const parts = [
+		answers.length && `${answers.length} answered question(s) (${answers.map((a) => a.key).join(', ')})`,
+		fixes.length && `${fixes.length} fix request(s) on the ticket (${fixes.map((f) => f.key).join(', ')})`,
+		frontier.length && `${frontier.length} claimable task(s)`,
+	].filter(Boolean);
 	if (state?.fingerprint === fp && now - Date.parse(state.at) < repeatMs) {
-		return { run: false, reason: `frontier unchanged since the last session looked at it (${frontier.map((t) => t.key).join(', ')})` };
+		return {
+			run: false,
+			reason: `nothing new since the last session looked (${parts.join('; ')}; ${[...frontier.map((t) => t.key), ...answers.map((a) => a.key), ...fixes.map((f) => f.key)].join(', ')})`,
+		};
 	}
-	return { run: true, reason: `${frontier.length} claimable task(s)`, fingerprint: fp };
+	return { run: true, reason: parts.join('; '), fingerprint: fp };
 }
 
 export const stateDir = (env = process.env) => env.DF_STATE_DIR || path.join(os.homedir(), '.dev-factory');
@@ -182,7 +226,15 @@ export function prStateFor(
 	run = (args) => execFileSync('gh', args, { encoding: 'utf8' }),
 	{ doneOn = null, bugbot = false, bugbotAuthor = null } = {},
 ) {
-	const list = JSON.parse(run(['pr', 'list', '--state', 'all', '--search', `${key} in:title`, '--json', 'number', '--limit', '1']));
+	// every factory PR title ends in [KEY]: the search is loose (KEY-1 also finds KEY-12), so the title is checked, and an open PR is
+	// preferred when a task has had more than one
+	const found = JSON.parse(run(['pr', 'list', '--state', 'all', '--search', `${key} in:title`, '--json', 'number,title,state', '--limit', '20']));
+	const own = found.filter((p) =>
+		String(p.title ?? '')
+			.trimEnd()
+			.endsWith(`[${key}]`),
+	);
+	const list = [...own.filter((p) => p.state === 'OPEN'), ...own.filter((p) => p.state !== 'OPEN')];
 	if (!list.length) return null;
 	const number = String(list[0].number);
 	const pr = JSON.parse(
@@ -261,7 +313,15 @@ async function main() {
 		/* first pass */
 	}
 	const source = makeSource(cfg);
-	const d = await decide({ cfg, deps: { list: (f) => source.list(f), prState: (k, o) => prStateFor(k, undefined, o) }, state });
+	const d = await decide({
+		cfg,
+		deps: {
+			list: (f) => source.list(f),
+			prState: (k, o) => prStateFor(k, undefined, o),
+			comments: typeof source.comments === 'function' ? (k) => source.comments(k) : undefined,
+		},
+		state,
+	});
 	if (d.run && d.fingerprint) savePending(dir, d.fingerprint);
 	console.log(`frontier: ${d.run ? 'run' : 'skip'}: ${d.reason}`);
 	process.exit(d.run ? 0 : SKIP);

@@ -3,22 +3,27 @@
 //
 //   tasks.mjs list   --state ready|inProgress|inReview|reviewed|done [--stale-minutes N]    JSON array of tasks
 //                    [--label NAME] [--updated-within-minutes N]                           narrow it further
+//                    [--not-label NAME] [--not-state STATE]                                exclude tasks with a label or in a state
 //   tasks.mjs get    KEY                                                                    JSON task with body and comments
+//   tasks.mjs comments KEY                                                                  [{id, author, created, body}] oldest first
 //   tasks.mjs set-state KEY STATE                                                           move a task
 //   tasks.mjs comment KEY --file F                                                          add a comment / activity line
 //   tasks.mjs label  KEY --add NAME | --remove NAME
 //   tasks.mjs link   KEY [--branch NAME|URL] [--pr URL] [--qa-verdict pass|fail|not applicable] [--evidence F,F]   record where the work is
-//   tasks.mjs block  KEY --reason R --decision D                                            label it blocked, comment, return it to ready
+//   tasks.mjs block  KEY --reason R --decision D [--kind question|factory] [--assignee TAG] [--reporter TAG]   label it blocked (and, for a question, with the question label), comment, return it to ready
+//   tasks.mjs unblock KEY                                                                   remove the blocked and question labels
 //   tasks.mjs create --title T --file BODY [--type TYPE] [--blocked-by K,K] [--parent KEY]  prints {"key"}
 //   tasks.mjs init                                                                          create the labels or the folder
 //
-// Exit codes: 0 ok, 1 failure, 3 usage, 4 the active source is written through its MCP server.
+// Exit codes: 0 ok, 1 failure, 3 usage, 4 the active source is written through its MCP server, 21 a list that needs credentials this
+// machine lacks (an empty list would be a wrong answer, not an empty queue).
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import { compose } from './comment-lib.mjs';
 import { get, load } from './config.mjs';
 import { isMain } from './is-main.mjs';
 import { STATES } from './sources/common.mjs';
-import { SCRIPTED, makeSource } from './sources/index.mjs';
+import { SCRIPTED, makeSource, missingCredentials } from './sources/index.mjs';
 
 export const PHASE_PREFIX = '[dev-factory]';
 
@@ -56,15 +61,30 @@ export async function run(argv, { cfg = load(), source, resolveRepoUrl: resolver
 	};
 	switch (cmd) {
 		case 'list': {
+			// Jira answers a search it is not allowed to run with an empty list, which reads as "no work". Without the credentials
+			// the answer would be wrong, not empty: say so, with a code a script can tell apart.
+			const missing = source ? null : missingCredentials(cfg);
+			if (missing) throw Object.assign(new Error(`cannot list ${name} tasks: ${missing}`), { code: 21 });
 			const stale = a['stale-minutes'] !== undefined ? Number(a['stale-minutes']) : undefined;
 			const within = a['updated-within-minutes'] !== undefined ? Number(a['updated-within-minutes']) : undefined;
-			const tasks = await src.list({ states: a.state ? [needState(a.state)] : undefined, staleMinutes: stale });
+			const tasks = await src.list({
+				states: a.state ? [needState(a.state)] : undefined,
+				staleMinutes: stale,
+				label: typeof a.label === 'string' ? a.label : undefined,
+				notLabel: typeof a['not-label'] === 'string' ? a['not-label'] : undefined,
+				notStates: typeof a['not-state'] === 'string' ? [needState(a['not-state'])] : undefined,
+			});
 			return tasks
 				.filter((t) => typeof a.label !== 'string' || t.labels.includes(a.label))
+				.filter((t) => typeof a['not-label'] !== 'string' || !t.labels.includes(a['not-label']))
+				.filter((t) => typeof a['not-state'] !== 'string' || t.state !== a['not-state'])
 				.filter((t) => within === undefined || Date.now() - Date.parse(t.updated) <= within * 60000);
 		}
 		case 'get':
 			return src.get(a._[0]);
+		case 'comments':
+			if (typeof src.comments !== 'function') throw Object.assign(new Error(`${name} comments are read through its MCP server`), { code: 4 });
+			return src.comments(a._[0]);
 		case 'set-state':
 			await src.setState(a._[0], needState(a._[1]));
 			return { ok: true };
@@ -94,11 +114,38 @@ export async function run(argv, { cfg = load(), source, resolveRepoUrl: resolver
 			return { ok: true };
 		}
 		case 'block': {
+			// a question waits for a person's answer (and carries the question label, so it is not counted as a failure and a reply
+			// wakes it); --kind factory is a block the factory cannot get past by being told something
 			const key = a._[0];
+			const kind = a.kind === 'factory' ? 'factory' : 'question';
 			await src.addLabel(key, get('tasks.blockedLabel', { config: cfg }));
-			await src.comment(key, `${PHASE_PREFIX} blocked: ${a.reason}. Decision needed: ${a.decision}`);
+			if (kind === 'question') await src.addLabel(key, get('tasks.questionLabel', { config: cfg }));
+			const people = typeof src.people === 'function' ? await src.people(key).catch(() => ({})) : {};
+			await src.comment(
+				key,
+				compose({
+					kind,
+					text: `${a.reason}. Decision needed: ${a.decision}`,
+					assignee: typeof a.assignee === 'string' ? a.assignee : people.assignee,
+					reporter: typeof a.reporter === 'string' ? a.reporter : people.reporter,
+				}),
+			);
 			await src.setState(key, 'ready');
 			return { ok: true };
+		}
+		case 'unblock': {
+			// the blocked and question labels come off (a person answered, or the task is done and the label is a leftover)
+			const key = a._[0];
+			const removed = [];
+			for (const l of [get('tasks.blockedLabel', { config: cfg }), get('tasks.questionLabel', { config: cfg })]) {
+				try {
+					await src.removeLabel(key, l);
+					removed.push(l);
+				} catch {
+					/* the task did not carry it */
+				}
+			}
+			return { ok: true, removed };
 		}
 		case 'create': {
 			if (!a.title || !a.file) throw Object.assign(new Error('create needs --title and --file'), { code: 3 });
@@ -120,7 +167,7 @@ export async function run(argv, { cfg = load(), source, resolveRepoUrl: resolver
 		case 'init':
 			return src.init();
 		default:
-			throw Object.assign(new Error('usage: tasks.mjs list|get|set-state|comment|label|block|create|init'), { code: 3 });
+			throw Object.assign(new Error('usage: tasks.mjs list|get|comments|set-state|comment|label|block|unblock|create|init'), { code: 3 });
 	}
 }
 

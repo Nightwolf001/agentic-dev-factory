@@ -290,6 +290,11 @@ export function validate(config = load()) {
 			}
 		}
 	}
+	const questionLabel = dig(config, 'tasks.questionLabel');
+	if (questionLabel !== undefined && (typeof questionLabel !== 'string' || !/^[A-Za-z0-9._:-]+$/.test(questionLabel)))
+		problems.push('tasks.questionLabel must be a label name (letters, digits, . _ : -)');
+	if (questionLabel !== undefined && questionLabel === dig(config, 'tasks.blockedLabel'))
+		problems.push('tasks.questionLabel must differ from tasks.blockedLabel');
 	const platform = dig(config, 'mobile.platform');
 	if (platform !== undefined && !['ios', 'android'].includes(platform))
 		problems.push('mobile.platform must be ios or android (leave it unset to infer it from the ticket)');
@@ -305,6 +310,9 @@ export function validate(config = load()) {
 	const login = dig(config, 'mobile.login');
 	if (login !== undefined && !(login && typeof login === 'object' && Object.values(login).every((v) => typeof v === 'string' && v)))
 		problems.push('mobile.login must map userField, passwordField, submit and success to element ids');
+	const maxMb = dig(config, 'evidence.maxAttachmentMb');
+	if (maxMb !== undefined && !(typeof maxMb === 'number' && maxMb > 0 && maxMb <= 1024))
+		problems.push('evidence.maxAttachmentMb must be a number of megabytes above 0');
 	const cmd = dig(config, 'coverage.command');
 	if (cmd != null && (typeof cmd !== 'string' || !cmd)) problems.push('coverage.command must be a command or null');
 	const lcov = dig(config, 'coverage.lcovPath');

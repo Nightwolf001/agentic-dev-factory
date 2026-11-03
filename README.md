@@ -171,7 +171,7 @@ Share the database with an internal integration and put its secret in `~/.dev-fa
 }
 ```
 
-Put `JIRA_EMAIL` and `JIRA_API_TOKEN` in `~/.dev-factory/.env.local` for the preflight, enable the MCP server with `dev-factory mcp enable atlassian`, and log in once with `/mcp`. Transitions are chosen by target status, never by name, because workflows differ per issue type. Ask a Jira admin to allow the labels the factory adds (`factory-blocked`, `factory-validated`, `factory-regression`, `needs-research`).
+Put `JIRA_EMAIL` and `JIRA_API_TOKEN` in `~/.dev-factory/.env.local` for the preflight. For the writes, either enable the Atlassian server with `dev-factory mcp enable atlassian` and log in once with `/mcp` (that login does not survive unattended passes), or run `node scripts/jira-mcp-config.mjs` to add this plugin's token server to `.mcp.json` (see [Jira over an API token](#jira-over-an-api-token)). Transitions are chosen by target status, never by name, because workflows differ per issue type. Ask a Jira admin to allow the labels the factory adds (`factory-blocked`, `factory-validated`, `factory-regression`, `needs-research`).
 
 Switching source later changes only `tasks.source`; existing tasks stay where they are.
 
@@ -370,15 +370,16 @@ Every setting, with its default. `see config.json` means the default is a longer
 
 #### Tasks
 
-| Key                    | Default             | What it does                                                                                                                      |
-| ---------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `tasks.source`         | `"local"`           | Where tasks live: `local`, `github`, `notion` or `jira`.                                                                          |
-| `tasks.label`          | `"dev-factory"`     | The label that marks a task as the factory's. A task without it is invisible to the factory.                                      |
-| `tasks.blockedLabel`   | `"factory-blocked"` | The label the factory adds to park a task it cannot continue; a person removes it.                                                |
-| `tasks.fixComment`     | `"dev-factory fix"` | A comment on the PR or task starting with this text (a leading `/` is optional) asks for a fix pass; the rest is the instruction. |
-| `tasks.placeholderKey` | `"TASK-000"`        | The key `/dev-factory:quick` puts in branch names and PR titles when there is no task. Set it to one your CI accepts.             |
-| `tasks.bugTypes`       | `["bug"]`           | Task types (case-insensitive) that count as bugs: triaged by the debugger first, and the stop gate wants a recorded root cause.   |
-| `tasks.unblockOnPr`    | `false`             | `true`: a task whose blockers are in review with an open PR is built on the blocker's branch ([Stacked PRs](#stacked-prs)).       |
+| Key                    | Default              | What it does                                                                                                                                                                                                                                                  |
+| ---------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tasks.source`         | `"local"`            | Where tasks live: `local`, `github`, `notion` or `jira`.                                                                                                                                                                                                      |
+| `tasks.label`          | `"dev-factory"`      | The label that marks a task as the factory's. A task without it is invisible to the factory.                                                                                                                                                                  |
+| `tasks.blockedLabel`   | `"factory-blocked"`  | The label the factory adds to park a task it cannot continue; a person removes it.                                                                                                                                                                            |
+| `tasks.questionLabel`  | `"factory-question"` | Added next to `tasks.blockedLabel` when the factory blocks a task to ask a person something. Such a block does not count toward the breaker, and a reply on the task (a comment with no marker line after the question) makes the next pass pick it up again. |
+| `tasks.fixComment`     | `"dev-factory fix"`  | A comment on the PR or task starting with this text (a leading `/` is optional) asks for a fix pass; the rest is the instruction.                                                                                                                             |
+| `tasks.placeholderKey` | `"TASK-000"`         | The key `/dev-factory:quick` puts in branch names and PR titles when there is no task. Set it to one your CI accepts.                                                                                                                                         |
+| `tasks.bugTypes`       | `["bug"]`            | Task types (case-insensitive) that count as bugs: triaged by the debugger first, and the stop gate wants a recorded root cause.                                                                                                                               |
+| `tasks.unblockOnPr`    | `false`              | `true`: a task whose blockers are in review with an open PR is built on the blocker's branch ([Stacked PRs](#stacked-prs)).                                                                                                                                   |
 
 #### Task sources
 
@@ -531,6 +532,12 @@ The platform is **not** a default setting (a default would always win, and the t
 | Key            | Default           | What it does                                                                                                                                                                                                                                          |
 | -------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `environments` | `see config.json` | Per environment (`dev`, `staging`...): `sentry` (`org`, `environment`, `projects`) and `axiomDatasets` the debugger may read, and `remote` (`url`, `accounts`, `defaultAccount`) for QA against a deployed environment (see [Remote QA](#remote-qa)). |
+
+#### Evidence
+
+| Key                        | Default | What it does                                                                                                                                   |
+| -------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `evidence.maxAttachmentMb` | `9`     | The largest evidence file attached to a task by `scripts/evidence.mjs` (Jira takes 10 MB). A larger file is left out and named in the summary. |
 
 #### Coverage
 
@@ -700,6 +707,20 @@ dev-factory cloud init --routine          # also print how to schedule /dev-fact
 | MCP servers     | `dev-factory mcp connect`, then `/mcp` login | commit `.mcp.json`; OAuth servers need a login the cloud session cannot do, so prefer API-token or no-MCP sources                     |
 
 The GitHub Actions workflow runs one pass every `scheduler.intervalMinutes` (at least 5) under a `concurrency` group so two passes never overlap, restores the factory's state between runs from the Actions cache, sets the commit identity from the repository variables, installs the plugin from the marketplace, and runs `dev-factory tick`. Its header lists the secrets it needs.
+
+### Comments for people
+
+What the factory writes for a person is short and tagged: the assignee and the reporter first (nobody twice), one paragraph of at most 280 characters, and a marker line last, `[dev-factory] <kind>`, where the kind is `phase`, `question` (`blocked: question`), `factory` (`blocked: factory`), `summary`, `coverage` or `evidence`. `scripts/comment.mjs compose` writes one; text that came from outside is defanged, so a task title cannot forge a marker. The marker line is also how the factory finds its own comments again, which is what lets people answer in the tracker:
+
+-   **Answers.** When the factory blocks a task to ask something, the task carries `tasks.blockedLabel` and `tasks.questionLabel`. The preflight lists the tasks with the question label, reads their comments (REST for Jira, `gh` for GitHub, the activity lines for local files), and starts a pass when a person has written a comment with no marker line after the newest question (quoting the question counts; a later `blocked: factory` marker withdraws it, and a factory comment after the reply means it was already taken up). The pass removes both labels and the task is built again with the answer in its prompt.
+-   **Fix requests on the ticket.** `dev-factory fix` (`tasks.fixComment`) written as a task comment starts a fix pass while the task's PR is open, as a whole word (`fixed` is not it), and until a factory comment follows it. The PR is found by the `[KEY]` at the end of its title (`KEY-1` does not find `KEY-12`).
+-   **One decision.** Answers, ticket fix requests and the ready queue are fingerprinted together, and a pass is not started twice for the same decision within `caps.frontierRepeatHours`, so a pass that left no marker is not repeated. A fingerprint stored by an older version (the queue alone) is still read.
+-   **The breaker** (`caps.breakerThreshold` blocked tasks within `caps.breakerWindowHours` stops new claims) counts failures only: a task that is `done`, or that waits with a question, is not counted, and a finished task's leftover label is cleared in housekeeping.
+-   **A source that needs credentials fails loudly.** `tasks.mjs list` exits 21 for Jira without `JIRA_EMAIL` and `JIRA_API_TOKEN` (and for Notion without `NOTION_TOKEN`), because Jira answers an unauthenticated search with an empty list that would read as "no work". Project keys, labels, status names and the stale window are checked before they are put in a Jira query.
+
+### Jira over an API token
+
+The Atlassian MCP server signs in with OAuth, which does not survive an unattended pass. `scripts/jira-mcp.mjs` is a small MCP server over Jira's REST API that offers the same tool names the Jira task-source skill uses, plus `uploadAttachmentToJiraIssue`. `node scripts/jira-mcp-config.mjs` adds it to `.mcp.json` as `jira`: the entry holds only the Jira host and starts the server through the launcher in the state folder (which finds the newest installed copy of the plugin); the credentials are read from the environment of the pass. Comment bodies are text in and out (`scripts/adf.mjs` converts to and from Atlassian Document Format), and `[~accountid:ID]` becomes a real mention node, because a wiki token written through some clients arrives as literal text. `scripts/evidence.mjs plan` lists a finished QA run's files for the ticket (taken from the manifest, hashed, none over `evidence.maxAttachmentMb`, nothing that resolves outside the run folder) and writes a redacted `summary.md` with the verdict, each case, the diff stat, key hunks and excerpts; the upload tool reads only that ticket's `.dev-factory/evidence/<KEY>/run-N/`, takes a bare file name and skips a file already attached with the same name and size.
 
 ## Using the factory
 
