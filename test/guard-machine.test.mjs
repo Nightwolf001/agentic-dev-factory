@@ -205,7 +205,12 @@ test('brace lists and quoting are expanded the way the shell does', () => {
 	assert.ok(candidates('-o$HOME/.zshrc', { HOME }).includes(`${HOME}/.zshrc`), 'attached short option');
 	assert.ok(candidates('2>>~/.zshrc', { HOME }).includes(`${HOME}/.zshrc`), 'redirection target');
 	assert.equal(protectedPlace(`${STATE}/a`, { home: HOME, stateDir: STATE }), 'state');
-	assert.equal(protectedPlace(`${HOME}/projects/.zshrc`, { home: HOME, stateDir: STATE }), 'profile');
+	assert.equal(protectedPlace(`${HOME}/.zshrc`, { home: HOME, stateDir: STATE }), 'profile');
+	assert.equal(
+		protectedPlace(`${HOME}/projects/.zshrc`, { home: HOME, stateDir: STATE }),
+		null,
+		'a project’s own file of that name is not the login shell’s',
+	);
 	assert.equal(protectedPlace(`${HOME}/projects/app`, { home: HOME, stateDir: STATE }), null);
 	assert.equal(protectedPlace(`${HOME}/.dev-factory-notes/a`, { home: HOME, stateDir: STATE }), null, 'a folder that merely starts with the name');
 });

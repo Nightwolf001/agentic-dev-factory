@@ -94,40 +94,36 @@ export const hasGlob = (w) => /[*?[]/.test(w);
 
 // ---- words ----
 
-// `{a,b}` lists, as the shell expands them before anything else. `${...}` is left alone. Nested lists expand too.
+// `{a,b}` lists, as the shell expands them before anything else. `${...}` is left alone. Nested lists expand too. The groups of a
+// word are found in one pass with a stack, so a word made of thousands of braces costs a pass, not a pass per brace.
+function braceGroups(w) {
+	const stack = [];
+	const groups = [];
+	for (let i = 0; i < w.length; i++) {
+		const c = w[i];
+		if (c === '{') stack.push({ open: i, dollar: w[i - 1] === '$', commas: [] });
+		else if (c === ',' && stack.length && !stack[stack.length - 1].dollar) stack[stack.length - 1].commas.push(i);
+		else if (c === '}' && stack.length) {
+			const g = stack.pop();
+			if (!g.dollar && g.commas.length) groups.push({ ...g, close: i });
+		}
+	}
+	return groups;
+}
+
 export function braceExpand(word, limit = LIMITS.expansions) {
 	const out = [];
 	const walk = (w) => {
 		if (out.length > limit) throw new Unjudgeable('a brace list that expands to too many words');
-		for (let i = 0; i < w.length; i++) {
-			if (w[i] === '$' && w[i + 1] === '{') {
-				const close = w.indexOf('}', i);
-				if (close < 0) break;
-				i = close;
-				continue;
-			}
-			if (w[i] !== '{') continue;
-			let depth = 0;
-			const cuts = [];
-			let end = -1;
-			for (let j = i; j < w.length; j++) {
-				if (w[j] === '{') depth++;
-				else if (w[j] === '}' && --depth === 0) {
-					end = j;
-					break;
-				} else if (w[j] === ',' && depth === 1) cuts.push(j);
-			}
-			if (end < 0 || !cuts.length) continue;
-			const alts = [];
-			let from = i + 1;
-			for (const c of [...cuts, end]) {
-				alts.push(w.slice(from, c));
-				from = c + 1;
-			}
-			for (const a of alts) walk(w.slice(0, i) + a + w.slice(end + 1));
-			return;
+		const groups = braceGroups(w);
+		if (!groups.length) return void out.push(w);
+		const g = groups.reduce((a, b) => (b.open < a.open ? b : a)); // the leftmost; its inner lists expand in the recursion
+		const cuts = [...g.commas, g.close];
+		let from = g.open + 1;
+		for (const c of cuts) {
+			walk(w.slice(0, g.open) + w.slice(from, c) + w.slice(g.close + 1));
+			from = c + 1;
 		}
-		out.push(w);
 	};
 	walk(word);
 	return out;
@@ -169,11 +165,37 @@ export function unquote(word) {
 	return out;
 }
 
-// ~ and the few variables a path is usually built from. Any other variable stays as text, so the path it makes is unknown.
+// ~ and the few variables a path is usually built from. Any other variable stays as text, so the path it makes is unknown. One
+// pass, with the name read from a bounded slice: an unclosed `${aaaa...` costs nothing extra.
 export function expandVars(word, vars) {
 	let w = word;
 	if (w === '~' || w.startsWith('~/')) w = vars.HOME + w.slice(1);
-	return w.replace(/\$(?:\{(\w+)[^}]*\}|(\w+))/g, (m, a, b) => vars[a ?? b] ?? m);
+	if (!w.includes('$')) return w;
+	let out = '';
+	for (let i = 0; i < w.length; i++) {
+		if (w[i] !== '$') {
+			out += w[i];
+			continue;
+		}
+		const braced = w[i + 1] === '{';
+		const start = i + (braced ? 2 : 1);
+		const name = /^\w{1,64}/.exec(w.slice(start, start + 64))?.[0];
+		if (name && Object.hasOwn(vars, name)) {
+			if (!braced) {
+				out += vars[name];
+				i = start + name.length - 1;
+				continue;
+			}
+			const close = w.indexOf('}', start + name.length);
+			if (close > 0) {
+				out += vars[name];
+				i = close;
+				continue;
+			}
+		}
+		out += '$';
+	}
+	return out;
 }
 
 // Every path a token might name: the token, the value after `=` (--file=x, VAR=x), an option with its value attached (-ox),
@@ -184,11 +206,12 @@ export function candidates(token, vars) {
 	if (eq > -1) raw.add(token.slice(eq + 1));
 	const short = /^-[A-Za-z]([/~$.].*)$/.exec(token);
 	if (short) raw.add(short[1]);
-	for (const piece of token.split(/[<>|]+/)) if (piece) raw.add(piece);
+	for (const piece of token.split(/[<>|()]+/)) if (piece) raw.add(piece);
+	raw.add(token.replace(/[)}]+$/, ''));
 	const out = new Set();
 	for (const r of raw)
 		for (const b of braceExpand(r))
-			for (const part of [b, ...b.split(/[:,]/)]) {
+			for (const part of [b, ...b.split(/[:,=]/)]) {
 				const u = expandVars(unquote(part), vars);
 				if (u) out.add(u);
 			}
@@ -231,7 +254,6 @@ const PROFILE_FILES = [
 	'.bash_logout',
 	'.profile',
 ];
-const PROFILE_BASENAME = new RegExp(`^(${PROFILE_FILES.map((f) => f.replace('.', '\\.')).join('|')})$`, 'i');
 
 export function envOf(ctx = {}) {
 	const env = ctx.env ?? process.env;
@@ -241,24 +263,123 @@ export function envOf(ctx = {}) {
 }
 
 const lower = (p) => p.toLowerCase();
-const within = (p, dir) => p === dir || p.startsWith(dir.endsWith('/') ? dir : dir + '/');
+const comps = (p) => lower(path.posix.normalize(p)).split('/').filter(Boolean);
 
-// -> a short name for what an absolute path is, or null. Paths are compared in lower case (macOS volumes ignore case).
+// A path component against a pattern component: equal, or, when either side has a glob, a match (a shell would expand the glob
+// against what is on disk; here every name the protected side could be is tried). Case never matters (macOS volumes ignore it).
+const compEq = (c, pat) => {
+	if (!hasGlob(c) && !hasGlob(pat)) return c === pat;
+	const [glob, name] = hasGlob(pat) ? [pat, c] : [c, pat];
+	if (name.startsWith('.') && !glob.startsWith('.')) return false; // a shell's * does not match a name that starts with a dot
+	// a pattern that is nearly all wildcard (`*`, `*.ts`) names nothing in particular: it takes a few literal characters to be
+	// read as aimed at a plain name such as dev-factory
+	if (!name.startsWith('.') && glob.replace(/[*?[\]!^-]/g, '').length < 4) return false;
+	return globMatch(glob, name);
+};
+const startsWith = (cs, ps) => cs.length >= ps.length && ps.every((p, i) => compEq(cs[i], p));
+const containsSeq = (cs, ps) => {
+	for (let i = 0; i + ps.length <= cs.length; i++) if (ps.every((p, j) => compEq(cs[i + j], p))) return true;
+	return false;
+};
+
+// Folders and files under the user's home that no run touches, by what they are for. Paths are components relative to home.
+const HOME_PLACES = [
+	['home', ['.claude', 'commands']],
+	['home', ['.claude', 'agents']],
+	['home', ['.claude', 'skills']],
+	['home', ['.claude', 'hooks']],
+	['home', ['.claude', 'claude.md']],
+	['home', ['.claude', 'keybindings.json']],
+	['home', ['.gitconfig']],
+	['home', ['.config', 'git']],
+	['home', ['library', 'launchagents']],
+	['home', ['library', 'launchdaemons']],
+	['profile', ['.config', 'fish']],
+	['secret', ['.ssh']],
+	['secret', ['.aws']],
+	['secret', ['.gnupg']],
+	['secret', ['.netrc']],
+	['secret', ['.config', 'gh']],
+	['secret', ['.docker', 'config.json']],
+	['secret', ['library', 'keychains']],
+];
+
+// Every absolute entry a run must not change, as [place, components]. Used for the ancestors too.
+export function protectedPaths(ctx = {}) {
+	const { home, stateDir } = envOf(ctx);
+	const h = comps(home);
+	return [['state', comps(stateDir)], ...HOME_PLACES.map(([place, rel]) => [place, [...h, ...rel]])];
+}
+
+// -> a short name for what an absolute path is, or null. The path may hold globs (`~/.dev-fac*`), and is compared in lower case.
 //   state    the machine state folder (secrets, locks, logs, the run pointer, the settings a pass runs with)
 //   profile  a shell start-up file, which runs in every later shell
 //   plugin   the installed plugin or any plugin, under .claude/plugins
 //   claude   Claude Code's own settings
+//   home     what Claude Code, git and launchd run on this machine's behalf (commands, agents, skills, hooks, ~/.gitconfig, LaunchAgents)
+//   git      a repository's hooks and configuration: a program put there runs the next time the scheduler uses git
+//   secret   credentials (ssh and cloud keys, the gh token): not read either
 export function protectedPlace(abs, ctx = {}) {
-	const { home, stateDir } = envOf(ctx);
-	const p = lower(path.posix.normalize(abs));
-	const h = lower(home);
-	if (within(p, lower(stateDir))) return 'state';
-	if (PROFILE_BASENAME.test(path.posix.basename(p))) return 'profile';
-	if (within(p, `${h}/.config/fish`)) return 'profile';
-	if (/(^|\/)\.claude\/plugins(\/|$)/.test(p)) return 'plugin';
-	if (p === `${h}/.claude.json` || new RegExp(`^${h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/\\.claude/settings[^/]*\\.json$`).test(p))
-		return 'claude';
+	const { home } = envOf(ctx);
+	const cs = comps(abs);
+	if (!cs.length) return null;
+	for (const [place, ps] of protectedPaths(ctx)) if (startsWith(cs, ps)) return place;
+	const h = comps(home);
+	if (PROFILE_FILES.some((f) => startsWith(cs, [...h, f.toLowerCase()]))) return 'profile';
+	if (containsSeq(cs, ['.claude', 'plugins'])) return 'plugin';
+	if (containsSeq(cs, ['.git', 'hooks']) || containsSeq(cs, ['.git', 'config'])) return 'git';
+	if (startsWith(cs, [...h, '.claude.json']) || startsWith(cs, [...h, '.claude', 'settings*.json'])) return 'claude';
 	return null;
+}
+
+// Whether `abs` is the root, the home folder, or a folder that holds a protected entry: removing, moving, mounting or linking it
+// takes the protected entry with it. Globs are not ancestors; they are matched as paths by protectedPlace.
+export function ancestorOfProtected(abs, ctx = {}) {
+	const cs = comps(abs);
+	if (hasGlob(abs)) return false;
+	if (!cs.length) return true;
+	const h = comps(envOf(ctx).home);
+	if (cs.length === h.length && h.every((c, i) => c === cs[i])) return true;
+	return protectedPaths(ctx).some(([, ps]) => cs.length < ps.length && cs.every((c, i) => c === ps[i]));
+}
+
+// Run state and factory files inside a worktree. A ticket changes only its own code, tests and cases; these are the factory's.
+const RUN_STATE = [
+	['.dev-factory', 'run.json'],
+	['.dev-factory', 'env.json'],
+	['.dev-factory', 'env-sealed.json'],
+	['.dev-factory', 'compose.override.yml'],
+	['.dev-factory', 'review'],
+	['.dev-factory', 'qa'],
+	['.dev-factory', 'evidence'],
+	['.dev-factory', 'debug'],
+	['.factory', 'tasks'],
+	['dev-factory'],
+	['dev-factory.config.json'],
+	['.claude'],
+	['.github', 'workflows'],
+	['.husky'],
+];
+
+// Whether an absolute path (globs allowed) IS one of the folders that hold run state or factory files: removing or moving it whole
+// takes everything in it. (Writing a hand-off file inside .dev-factory is fine; deleting .dev-factory is not.)
+export function runStateRoot(abs) {
+	const last = comps(abs).at(-1);
+	return !!last && ['.dev-factory', '.factory', 'dev-factory', '.claude', '.husky'].some((n) => compEq(last, n));
+}
+
+// Whether an absolute path (globs allowed) is run state or a factory file, wherever the worktree is.
+export function runStatePlace(abs) {
+	const cs = comps(abs);
+	for (let i = 0; i < cs.length; i++) {
+		for (const ps of RUN_STATE) {
+			if (!ps.every((p, j) => cs[i + j] !== undefined && compEq(cs[i + j], p))) continue;
+			// a ticket's own QA cases live under the vendored folder
+			if (ps.length === 1 && ps[0] === 'dev-factory' && cs[i + 1] === 'qa' && cs[i + 2] === 'cases') continue;
+			return true;
+		}
+	}
+	return false;
 }
 
 // The folder of a path that exists, resolved through symlinks, with the rest of the path kept: a file that is not there yet is
