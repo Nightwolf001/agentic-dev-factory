@@ -360,3 +360,33 @@ test('the lane seals the native project files the build rewrote, with mobile.app
 	assert.deepEqual(Object.keys(sealed), ['app/ios/Podfile.lock']);
 	l.run('down');
 });
+
+test('--record writes run.json whole: no temporary file is left and the content is the old record plus the platform', () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'df-plat-'));
+	fs.mkdirSync(path.join(dir, '.dev-factory'));
+	fs.writeFileSync(path.join(dir, '.dev-factory/run.json'), JSON.stringify({ key: 'APP-1', role: 'builder' }));
+	fs.writeFileSync(path.join(dir, 'ticket.txt'), 'Crash on Android when the app starts');
+	const r = spawnSync(
+		process.execPath,
+		[
+			new URL('../scripts/mobile-platform.mjs', import.meta.url).pathname,
+			'resolve',
+			'--worktree',
+			dir,
+			'--text-file',
+			path.join(dir, 'ticket.txt'),
+			'--record',
+		],
+		{
+			encoding: 'utf8',
+			env: { ...process.env, DF_MOBILE_PLATFORM: '' },
+		},
+	);
+	assert.equal(r.status, 0, r.stderr);
+	assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, '.dev-factory/run.json'), 'utf8')), {
+		key: 'APP-1',
+		role: 'builder',
+		platform: 'android',
+	});
+	assert.deepEqual(fs.readdirSync(path.join(dir, '.dev-factory')), ['run.json']);
+});
