@@ -13,8 +13,11 @@ const docs = () =>
 		.filter(Boolean)
 		.filter(
 			(f) =>
-				!['docs/fork-improvements-to-port.md', 'docs/superpowers/plans/2026-11-04-user-level-config.md'].includes(f) &&
-				fs.existsSync(path.join(ROOT, f)),
+				![
+					'docs/fork-improvements-to-port.md',
+					'docs/superpowers/plans/2026-11-04-user-level-config.md',
+					'docs/superpowers/specs/2026-11-04-user-level-config-design.md',
+				].includes(f) && fs.existsSync(path.join(ROOT, f)),
 		);
 const text = (f) => fs.readFileSync(path.join(ROOT, f), 'utf8');
 // markdown without fenced code, so a shell example is not read as prose
