@@ -20,6 +20,8 @@ import { get } from '../config.mjs';
 import { KEY_RE, asList, matches, normaliseRef, parseBlockedBy, stateOf } from './common.mjs';
 
 const ACTIVITY = '## Activity';
+// the frontmatter fields that hold a list; any other value is text, even when it starts with "[" (a title such as "[Bug] Export fails")
+const LIST_KEYS = new Set(['labels', 'blockedBy', 'evidence']);
 
 export function parseFile(text) {
 	const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(text);
@@ -29,23 +31,26 @@ export function parseFile(text) {
 		const kv = /^([A-Za-z][A-Za-z0-9]*):\s*(.*)$/.exec(line);
 		if (!kv) continue;
 		const v = kv[2].trim();
-		meta[kv[1]] = v.startsWith('[')
-			? v
-					.slice(1, v.lastIndexOf(']'))
-					.split(',')
-					.map((s) => s.trim())
-					.filter(Boolean)
-			: v;
+		meta[kv[1]] =
+			LIST_KEYS.has(kv[1]) && v.startsWith('[')
+				? v
+						.slice(1, v.lastIndexOf(']'))
+						.split(',')
+						.map((s) => s.trim())
+						.filter(Boolean)
+				: v;
 	}
 	const at = m[2].indexOf(`\n${ACTIVITY}`);
 	const startsWithActivity = m[2].startsWith(ACTIVITY);
 	const split = startsWithActivity ? 0 : at;
 	const body = split === -1 ? m[2] : m[2].slice(0, split);
 	const log = split === -1 ? '' : m[2].slice(split).replace(/^\s*## Activity\s*/, '');
-	const comments = log
-		.split(/\r?\n/)
-		.filter((l) => l.startsWith('- '))
-		.map((l) => l.slice(2));
+	// an entry is "- text"; its further lines are indented by two spaces, so a marker line stays a line of its own
+	const comments = [];
+	for (const l of log.split(/\r?\n/)) {
+		if (l.startsWith('- ')) comments.push(l.slice(2));
+		else if (l.startsWith('  ') && comments.length) comments[comments.length - 1] += `\n${l.slice(2)}`;
+	}
 	return { meta, body: body.trim(), comments };
 }
 
@@ -53,7 +58,7 @@ export function serialize({ meta, body, comments = [] }) {
 	const order = ['key', 'title', 'state', 'type', 'labels', 'blockedBy', 'parent', 'updated'];
 	const keys = [...order.filter((k) => meta[k] !== undefined), ...Object.keys(meta).filter((k) => !order.includes(k))];
 	const front = keys.map((k) => `${k}: ${Array.isArray(meta[k]) ? `[${meta[k].join(', ')}]` : meta[k]}`).join('\n');
-	const log = comments.length ? `\n\n${ACTIVITY}\n${comments.map((c) => `- ${c}`).join('\n')}` : '';
+	const log = comments.length ? `\n\n${ACTIVITY}\n${comments.map((c) => `- ${c.replace(/\r?\n/g, '\n  ')}`).join('\n')}` : '';
 	return `---\n${front}\n---\n${body.trim()}${log}\n`;
 }
 
@@ -141,7 +146,7 @@ export function localSource(cfg, { root = process.cwd(), env = process.env, now 
 		},
 		async comment(key, text) {
 			const d = read(key);
-			d.comments.push(`${now().toISOString()} ${text.replace(/\r?\n/g, ' ')}`);
+			d.comments.push(`${now().toISOString()} ${text.replace(/\r\n/g, '\n').replace(/\n+$/, '')}`);
 			d.meta.updated = now().toISOString();
 			write(d.file, d);
 		},
