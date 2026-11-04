@@ -180,3 +180,24 @@ test('what was left out and what was not attached is in the summary, and the CLI
 		1,
 	);
 });
+
+test('a base that is an option is not given to git, and an excerpt is redacted before it is cut', () => {
+	const f = finished();
+	const target = path.join(f.root, 'written-by-git.txt');
+	const d = diffDigest({ root: f.root, base: `--output=${target}`, head: 'HEAD' });
+	assert.match(d.note, /could not be read/);
+	assert.equal(fs.existsSync(target), false, '--output never reached git');
+	// a secret that would straddle the cut is gone whole
+	const listing = listEvidence({ root: f.root, run: f.run });
+	const worker = listing.attach.find((a) => a.type === 'worker');
+	fs.writeFileSync(worker.file, `${'x'.repeat(380)} token sk_live_abcdefghijklmnop1234 end`);
+	const text = summaryText({ root: f.root, run: f.run, listing, digest: null, excerptChars: 400 });
+	assert.doesNotMatch(text, /sk_live|abcdefghij/);
+});
+
+test('plan works for a run that attached nothing: the folder for summary.md is made', () => {
+	const f = finished();
+	fs.rmSync(path.join(f.root, '.dev-factory/evidence'), { recursive: true, force: true });
+	const p = plan({ root: f.root, run: f.run, base: 'origin/develop' });
+	assert.ok(fs.existsSync(path.join(f.root, p.summary)));
+});

@@ -23,18 +23,19 @@ import {
 import { PLUGIN_ROOT } from './plugin-root.mjs';
 
 // `node <plugin>/bin/qa.mjs <rest>`: the real script of this plugin (its own directory, quoted or not), or one vendored at
-// dev-factory/. A file called qa.mjs that an agent wrote elsewhere is not it.
+// dev-factory/ in the working directory (`dev-factory/bin/qa.mjs`, with or without `./`). A file called qa.mjs that an agent wrote
+// elsewhere, `./evil/dev-factory/bin/qa.mjs` included, is not it.
 const escapeRe = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 export function qaBin(rest = '') {
 	const own = `"?${escapeRe(PLUGIN_ROOT)}/bin/qa\\.mjs"?`;
-	return new RegExp(`^node\\s+(?:${own}|\\S*dev-factory/bin/qa\\.mjs)\\s${rest ? `+${rest}` : ''}`);
+	return new RegExp(`^node\\s+(?:${own}|(?:\\./)?dev-factory/bin/qa\\.mjs)\\s${rest ? `+${rest}` : ''}`);
 }
 
 // `node <plugin>/scripts/config.mjs get <one.setting>`: a read-only role may read one setting of the merged configuration (the
 // repository skills of its phase, the files a reviewer reads first). Nothing but a dotted name follows `get`.
 export function configGet() {
 	const own = `"?${escapeRe(PLUGIN_ROOT)}/scripts/config\\.mjs"?`;
-	return new RegExp(`^node\\s+(?:${own}|\\S*dev-factory/scripts/config\\.mjs)\\s+get\\s+[A-Za-z][\\w.]*$`);
+	return new RegExp(`^node\\s+(?:${own}|(?:\\./)?dev-factory/scripts/config\\.mjs)\\s+get\\s+[A-Za-z][\\w.]*$`);
 }
 
 const PROTECTED = new Set(['develop', 'preprod', 'main', 'master']);
@@ -459,8 +460,8 @@ const REVIEWER_ALLOWED = [
 // localhost and *.local / *.test hosts) and records through qa.mjs debug and scrub. It still never edits, installs or pushes.
 const DEBUGGER_EXTRA = [
 	qaBin('(debug|scrub)\\b'),
-	/^docker\s+compose\s+(-f\s+\S+\s+)?(-p\s+\S+\s+)?(ps|logs)\b/,
-	/^docker\s+compose\s+(-f\s+\S+\s+)?(-p\s+\S+\s+)?exec\s+-T\s+(-u\s+\S+\s+)?[A-Za-z][\w.-]*\s+pm2\s+(logs\s+--nostream|jlist|status|list)\b/,
+	/^docker\s+compose\s+(-f\s+\S+\s+)*(-p\s+\S+\s+)?(ps|logs)\b/,
+	/^docker\s+compose\s+(-f\s+\S+\s+)*(-p\s+\S+\s+)?exec\s+-T\s+(-u\s+\S+\s+)?[A-Za-z][\w.-]*\s+pm2\s+(logs\s+--nostream|jlist|status|list)\b/,
 	// the red loop: a test runner or curl inside the ticket's own devcontainer
 	/^docker\s+compose\s+(-f\s+\S+\s+)*(-p\s+\S+\s+)?exec\s+-T\s+(-u\s+\S+\s+)?(-w\s+\S+\s+)?[A-Za-z][\w.-]*\s+(npx\s+(vitest|jest|playwright\s+test)|npm\s+(test|run\s+test\S*)|node\s+--test|yarn\s+(test|vitest|jest))\b/,
 	// the whole segment must be one plain URL: a trailing $(...) or second URL is not a read of the ticket stack
@@ -839,7 +840,7 @@ function judge(command, ctx) {
 
 // Shell writes to the factory directory (its own QA cases aside), run state, evidence and review records, hook wiring and husky are refused.
 const PROTECTED_BASH =
-	/\.factory\/tasks\/|\.dev-factory\/(review|qa|evidence|debug)(\/|\s|$)|\.dev-factory\/((run|env|env-sealed)\.json|(metro|emulator)\.pid)|(^|[\s/'"])dev-factory\/(?!qa\/cases\/)|\.dev-factory\/compose\.override\.yml|(^|[\s/'"])dev-factory\.config\.json|\.claude\/|\.github\/workflows|\.husky\//;
+	/\.factory\/tasks\/|\.dev-factory\/(review|qa|evidence|debug)(\/|\s|$)|\.dev-factory\/((run|env|env-sealed|env-prechanged)\.json|(metro|emulator)\.pid)|(^|[\s/'"])dev-factory\/(?!qa\/cases\/)|\.dev-factory\/compose\.override\.yml|(^|[\s/'"])dev-factory\.config\.json|\.claude\/|\.github\/workflows|\.husky\//;
 const WRITE_LIKE = /(^|[^2&0-9])>{1,2}\s*[^&\s]|\btee\b|\b(cp|mv|rm|ln|truncate|dd|install)\b|\bsed\s+-i|\bperl\s+-i/;
 
 const FORBIDDEN = new RegExp(['co[-_ ]?' + 'work', 'co[-_ ]?' + 'lab', 'night[-_ ]?' + 'shift', 'day[-_ ]?' + 'shift'].join('|'), 'i');
@@ -923,7 +924,7 @@ export function evaluateEdit({ filePath, text = '', root, active = false, run = 
 	// the installed plugin is outside the worktree, in the plugin cache: no ticket edits it by absolute path
 	if (/(^|\/)\.claude\/plugins\//i.test(abs)) return { deny: true, reason: 'dev-factory guard: the installed plugin is not edited by a ticket' };
 	const protectedPath =
-		/^(dev-factory\.config\.json$|\.factory\/(tasks|qa\/cases)\/|dev-factory\/|\.claude\/|\.github\/|\.husky\/|\.dev-factory\/(review|qa|evidence|debug)\/|\.dev-factory\/((run|env|env-sealed)\.json|(metro|emulator)\.pid)|\.dev-factory\/compose\.override\.yml)/i.test(
+		/^(dev-factory\.config\.json$|\.factory\/(tasks|qa\/cases)\/|dev-factory\/|\.claude\/|\.github\/|\.husky\/|\.dev-factory\/(review|qa|evidence|debug)\/|\.dev-factory\/((run|env|env-sealed|env-prechanged)\.json|(metro|emulator)\.pid)|\.dev-factory\/compose\.override\.yml)/i.test(
 			rel,
 		);
 	if (protectedPath && !ownCase) {

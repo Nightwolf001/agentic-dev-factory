@@ -255,6 +255,23 @@ test('the tick interval is one setting: it drives the launchd job, the workflow 
 	assert.match(cronFor(17).note, /became 15/);
 	assert.equal(cronFor(120).cron, '0 */2 * * *');
 	assert.equal(cronFor(1440).cron, '0 0 * * *');
+	// "every N hours" restarts at midnight, so only a divisor of 24 has equal gaps
+	for (const [asked, hours] of [
+		[60, 1],
+		[180, 3],
+		[300, 4],
+		[420, 6],
+		[540, 8],
+		[600, 8],
+		[660, 12],
+		[780, 12],
+		[900, 12],
+		[1000, 12],
+		[1300, 24],
+	])
+		assert.equal(cronFor(asked).minutes, hours * 60, `${asked} minutes`);
+	assert.equal(cronFor(300).cron, '0 */4 * * *');
+	assert.match(cronFor(300).note, /divide the day/);
 	assert.throws(() => cronFor(0), /whole number/);
 	const yml = fs.readFileSync(path.join(ROOT, 'templates/dev-factory-tick.yml'), 'utf8');
 	assert.match(renderWorkflow(yml, 'o/r', 10), /cron: '\*\/10 \* \* \* \*'/);

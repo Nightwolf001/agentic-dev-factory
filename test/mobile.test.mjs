@@ -340,3 +340,53 @@ test('an invalid DF_MOBILE_PLATFORM stops the lane instead of being ignored', ()
 	assert.equal(inferPlatform('The app crashes on the emulator'), 'ios', 'emulator alone does not say Android');
 	assert.equal(inferPlatform('Android emulator shows a blank screen'), 'android');
 });
+
+test('the lane seals the native project files the build rewrote, with mobile.appDir in front of mobile.nativeInputs', () => {
+	const l = lane({ platform: 'ios' });
+	const git = (...a) => spawnSync('git', ['-C', l.wt, '-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { encoding: 'utf8' });
+	fs.writeFileSync(path.join(l.wt, '.gitignore'), '.dev-factory/\n');
+	git('init', '-q');
+	git('add', '-A');
+	git('commit', '-qm', 'init');
+	// the iOS build step rewrites the Podfile.lock under the app folder
+	const cfgFile = path.join(l.wt, 'dev-factory.config.json');
+	const cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
+	cfg.mobile.build = `echo rewritten >> "${path.join(l.wt, 'app/ios/Podfile.lock')}"`;
+	cfg.mobile.nativeInputs = ['ios/Podfile.lock'];
+	fs.writeFileSync(cfgFile, JSON.stringify(cfg));
+	const r = l.run('up');
+	assert.equal(r.status, 0, r.stderr);
+	const sealed = JSON.parse(fs.readFileSync(path.join(l.wt, '.dev-factory/env-sealed.json'), 'utf8'));
+	assert.deepEqual(Object.keys(sealed), ['app/ios/Podfile.lock']);
+	l.run('down');
+});
+
+test('--record writes run.json whole: no temporary file is left and the content is the old record plus the platform', () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'df-plat-'));
+	fs.mkdirSync(path.join(dir, '.dev-factory'));
+	fs.writeFileSync(path.join(dir, '.dev-factory/run.json'), JSON.stringify({ key: 'APP-1', role: 'builder' }));
+	fs.writeFileSync(path.join(dir, 'ticket.txt'), 'Crash on Android when the app starts');
+	const r = spawnSync(
+		process.execPath,
+		[
+			new URL('../scripts/mobile-platform.mjs', import.meta.url).pathname,
+			'resolve',
+			'--worktree',
+			dir,
+			'--text-file',
+			path.join(dir, 'ticket.txt'),
+			'--record',
+		],
+		{
+			encoding: 'utf8',
+			env: { ...process.env, DF_MOBILE_PLATFORM: '' },
+		},
+	);
+	assert.equal(r.status, 0, r.stderr);
+	assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, '.dev-factory/run.json'), 'utf8')), {
+		key: 'APP-1',
+		role: 'builder',
+		platform: 'android',
+	});
+	assert.deepEqual(fs.readdirSync(path.join(dir, '.dev-factory')), ['run.json']);
+});

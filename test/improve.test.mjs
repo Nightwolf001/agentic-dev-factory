@@ -8,7 +8,7 @@ import { QaError, learningsCheck } from '../bin/qa.mjs';
 import { entriesFromPrs, learningRequired, lintLearnings, preload, promotionCandidates } from '../scripts/learnings-lib.mjs';
 import { checkPromotion } from '../scripts/promote-lib.mjs';
 import * as debugLib from '../scripts/debug-lib.mjs';
-import { append, buildTicketRecord, clusters, readRuns } from '../scripts/run-record.mjs';
+import { append, buildTicketRecord, clusters, indexLearnings, readRuns } from '../scripts/run-record.mjs';
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'df-imp-'));
 const wt = (run) => {
@@ -198,4 +198,26 @@ test('a pass record carries the wall-clock time and how the session ended, since
 	assert.equal(none.wallMs, null);
 	assert.equal(none.subtype, null);
 	assert.equal(passRecord({}, { started: 'garbage' }).wallMs, null);
+});
+
+test('one damaged line in runs.jsonl does not stop the readings that follow, and indexing learnings twice adds them once', () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'df-runs-'));
+	const file = path.join(dir, 'runs.jsonl');
+	fs.writeFileSync(file, '{"type":"ticket","key":"A-1","at":"2026-01-01"}\n{"type":"tick');
+	fs.appendFileSync(file, '\n{"type":"ticket","key":"A-2","at":"2026-01-02"}\n');
+	assert.deepEqual(
+		readRuns(file).map((r) => r.key),
+		['A-1', 'A-2'],
+	);
+	const idx = path.join(dir, 'learnings.jsonl');
+	const rows = [
+		{ at: 't', key: 'A-1', scope: 'src/api', text: 'check the cursor' },
+		{ at: 't', key: 'A-1', scope: 'src/db', text: 'wrap in a transaction' },
+	];
+	assert.deepEqual(indexLearnings(idx, rows), { indexed: 2, skipped: 0 });
+	assert.deepEqual(indexLearnings(idx, rows), { indexed: 0, skipped: 2 }, 'a rerun repeats nothing');
+	assert.deepEqual(indexLearnings(idx, [...rows, { at: 't', key: 'A-2', scope: 'src/api', text: 'check the cursor' }]), { indexed: 1, skipped: 2 });
+	fs.appendFileSync(idx, '{"key":"A-3","scope":\n');
+	assert.deepEqual(indexLearnings(idx, rows), { indexed: 0, skipped: 2 }, 'a damaged line is ignored');
+	assert.equal(fs.readFileSync(idx, 'utf8').split('\n').filter(Boolean).length, 4);
 });

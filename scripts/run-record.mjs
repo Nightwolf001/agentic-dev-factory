@@ -92,14 +92,39 @@ export function append(record, file = runsFile()) {
 	return record;
 }
 
+// Adds learnings to the index, except the ones it already holds (the same ticket, scope and text): running the command again for a
+// ticket must not repeat them. -> { indexed, skipped }
+export function indexLearnings(file, rows) {
+	const have = new Set();
+	if (fs.existsSync(file))
+		for (const l of fs.readFileSync(file, 'utf8').split('\n').filter(Boolean)) {
+			try {
+				const r = JSON.parse(l);
+				have.add(`${r.key}\0${r.scope}\0${r.text}`);
+			} catch {
+				/* a damaged line holds nothing */
+			}
+		}
+	const fresh = rows.filter((r) => !have.has(`${r.key}\0${r.scope}\0${r.text}`));
+	fs.mkdirSync(path.dirname(file), { recursive: true });
+	for (const r of fresh) fs.appendFileSync(file, JSON.stringify(r) + '\n');
+	return { indexed: fresh.length, skipped: rows.length - fresh.length };
+}
+
 export function readRuns(file = runsFile(), since = null) {
 	if (!fs.existsSync(file)) return [];
 	return fs
 		.readFileSync(file, 'utf8')
 		.split('\n')
 		.filter(Boolean)
-		.map((l) => JSON.parse(l))
-		.filter((r) => !since || r.at > since);
+		.map((l) => {
+			try {
+				return JSON.parse(l);
+			} catch {
+				return null; // a line cut short by a crash is skipped, not fatal for every later reading
+			}
+		})
+		.filter((r) => r && (!since || r.at > since));
 }
 
 const norm = (s) => s.toLowerCase().replace(/\d+/g, 'N').replace(/\s+/g, ' ').trim().slice(0, 120);
@@ -157,9 +182,7 @@ if (isMain(import.meta.url)) {
 		const rows = parseLearnings(text)
 			.filter((e) => e.scope)
 			.map((e) => ({ at: new Date().toISOString(), key: a.key, scope: e.scope, text: e.text }));
-		fs.mkdirSync(path.dirname(learningsIndex()), { recursive: true });
-		for (const r of rows) fs.appendFileSync(learningsIndex(), JSON.stringify(r) + '\n');
-		console.log(JSON.stringify({ indexed: rows.length }));
+		console.log(JSON.stringify(indexLearnings(learningsIndex(), rows)));
 	} else if (cmd === 'preload') {
 		const f = learningsIndex();
 		const entries = fs.existsSync(f)
@@ -167,7 +190,14 @@ if (isMain(import.meta.url)) {
 					.readFileSync(f, 'utf8')
 					.split('\n')
 					.filter(Boolean)
-					.map((l) => JSON.parse(l))
+					.map((l) => {
+						try {
+							return JSON.parse(l);
+						} catch {
+							return null;
+						}
+					})
+					.filter(Boolean)
 			: [];
 		console.log(preload({ entries, ticketText: fs.readFileSync(a['text-file'], 'utf8') }).join('\n'));
 	} else if (cmd === 'clusters') {

@@ -28,6 +28,7 @@ export function plan({ root, run, base, maxMb, cfg = load(), env = process.env }
 	const digest = diffDigest({ root, base, secrets, patterns });
 	const text = summaryText({ root, run, listing, digest, secrets, patterns });
 	const file = path.join(runDir(root, listing.key, run), 'summary.md');
+	fs.mkdirSync(path.dirname(file), { recursive: true }); // a run with no evidence has no folder yet
 	fs.writeFileSync(file, text);
 	return {
 		...listing,

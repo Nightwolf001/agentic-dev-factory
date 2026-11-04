@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { clear, describe, read, record } from '../scripts/preflight-alert.mjs';
+import { asString, clear, describe, read, record } from '../scripts/preflight-alert.mjs';
 
 const dir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'df-alert-'));
 
@@ -83,4 +83,12 @@ test('doctor and scheduler status show the last failure', () => {
 	const sched = fs.readFileSync(new URL('../scripts/scheduler.sh', import.meta.url), 'utf8');
 	assert.match(doctor, /preflight-alert\.mjs" show/);
 	assert.match(sched, /preflight-alert\.mjs" show/);
+});
+
+test('the notification text is cut before it is escaped, so it never ends in a lone backslash', () => {
+	for (const tail of ['\\', '"', '\\"', 'x']) {
+		const s = asString('a'.repeat(199) + tail + 'zzz');
+		assert.match(s, /^"(?:[^"\\]|\\.)*"$/, `a well-formed AppleScript string for tail ${JSON.stringify(tail)}`);
+	}
+	assert.equal(asString('line one\nline two\u0000'), '"line one line two "');
 });

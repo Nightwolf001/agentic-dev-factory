@@ -210,3 +210,56 @@ test('what line-wise redaction cannot catch is stated, and the email rule no lon
 	assert.equal(redactText('x'.repeat(200) + '@example.com').redactions, 0, 'a local part longer than any address is not an address');
 	assert.equal(scrubFindings('first.last+tag@sub.example.co.uk').length, 1);
 });
+
+// ---- the hook entry: what it derives from the event and the environment ----
+import { spawnSync } from 'node:child_process';
+
+const ENTRY = new URL('../scripts/mcp-guard.mjs', import.meta.url).pathname;
+function hook(event, env = {}) {
+	const state = fs.mkdtempSync(path.join(os.tmpdir(), 'df-mcpguard-'));
+	const e = { ...process.env, DF_STATE_DIR: state, ...env };
+	delete e.DF_ACTIVE;
+	Object.assign(e, env);
+	return spawnSync(process.execPath, [ENTRY], { input: JSON.stringify(event), encoding: 'utf8', env: e });
+}
+const CONNECTOR_WRITE = 'mcp__claude_ai_Sentry__update_issue';
+
+test('a claude.ai connector write is refused inside a factory run and allowed in the person’s own session', () => {
+	const own = fs.mkdtempSync(path.join(os.tmpdir(), 'df-own-'));
+	assert.equal(hook({ tool_name: CONNECTOR_WRITE, tool_input: {}, cwd: own }).status, 0, 'no run, no flag: not guarded');
+	assert.equal(hook({ tool_name: CONNECTOR_WRITE, tool_input: {}, cwd: own }, { DF_ACTIVE: '1' }).status, 2, 'DF_ACTIVE marks a scheduled pass');
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), 'df-wt-'));
+	fs.mkdirSync(path.join(wt, '.dev-factory'));
+	fs.writeFileSync(path.join(wt, '.dev-factory/run.json'), JSON.stringify({ key: 'APP-1', role: 'builder' }));
+	const denied = hook({ tool_name: CONNECTOR_WRITE, tool_input: {}, cwd: wt });
+	assert.equal(denied.status, 2, 'a run.json in the working directory is a run');
+	assert.match(denied.stderr, /\S/);
+});
+
+test('the run’s role is passed through, so telemetry.allowedRoles decides who may read', () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), 'df-wt-'));
+	fs.mkdirSync(path.join(wt, '.dev-factory'));
+	fs.writeFileSync(path.join(wt, '.dev-factory/run.json'), JSON.stringify({ key: 'APP-1', role: 'builder' }));
+	fs.writeFileSync(path.join(wt, 'dev-factory.config.json'), JSON.stringify({ telemetry: { allowedRoles: ['debugger'] } }));
+	const read = { tool_name: 'mcp__plugin_dev-factory_sentry__get_issue_details', tool_input: {}, cwd: wt };
+	const builder = spawnSync(process.execPath, [ENTRY], {
+		input: JSON.stringify(read),
+		encoding: 'utf8',
+		cwd: wt,
+		env: { ...process.env, DF_STATE_DIR: wt },
+	});
+	assert.equal(builder.status, 2, builder.stderr);
+	fs.writeFileSync(path.join(wt, '.dev-factory/run.json'), JSON.stringify({ key: 'APP-1', role: 'debugger' }));
+	const debuggerRun = spawnSync(process.execPath, [ENTRY], {
+		input: JSON.stringify(read),
+		encoding: 'utf8',
+		cwd: wt,
+		env: { ...process.env, DF_STATE_DIR: wt },
+	});
+	assert.equal(debuggerRun.status, 0, debuggerRun.stderr);
+});
+
+test('input that is not JSON is let through rather than blocking every tool', () => {
+	const r = spawnSync(process.execPath, [ENTRY], { input: 'not json', encoding: 'utf8' });
+	assert.equal(r.status, 0);
+});

@@ -25,3 +25,16 @@ export const slug = (heading) =>
 		.replace(/`/g, '')
 		.replace(/[^\p{L}\p{N}\s_-]/gu, '')
 		.replace(/\s/g, '-');
+
+// Every anchor a document offers, with GitHub's numbering of a heading that repeats (-1, -2, ...).
+export function anchors(markdown) {
+	const seen = new Map();
+	const out = new Set();
+	for (const m of markdown.matchAll(/^#{1,6}\s+(.+?)\s*#*\s*$/gm)) {
+		const base = slug(m[1]);
+		const n = seen.get(base) ?? 0;
+		seen.set(base, n + 1);
+		out.add(n === 0 ? base : `${base}-${n}`);
+	}
+	return out;
+}

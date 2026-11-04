@@ -15,11 +15,11 @@ Method:
 
 1. `git diff origin/<base>...HEAD --stat` (`<base>` is the base ref in your prompt: the repository's base branch unless the run was started on another branch, in which case only the work on top of that branch is yours to review), then the diff itself, then the surrounding code of everything it touches.
 2. Axis `spec`: map every acceptance criterion to the code and the test that proves it. Flag criteria that are not met, behaviour the ticket did not ask for, and tests that do not actually exercise the criterion.
-   3a. Axis `data`, `infra` or `security`: apply only that axis's checklist in `skills/review`, to the files that triggered it.
-3. Axis `standards`: apply `CLAUDE.md`, `AGENTS.md` and any rule files the repository keeps whose paths match the changed files, security and data-loss risks, error handling, concurrency and distributed-systems concerns for service code, migration safety for schema and database changes, test quality, and the comment rules.
-4. For a library or framework claim you are unsure of, check it with `context7` and cite what you found.
-5. Round two or later: first confirm each earlier finding is fixed in this commit; an unfixed one is reported again at the same severity.
-6. Record exactly once: `node "${CLAUDE_PLUGIN_ROOT}/bin/qa.mjs" review record --axis <axis> --head <sha> --summary "<what you checked and concluded>" --findings '<json array>'`. Each finding is `{"severity":"Critical|High|Medium|Low","file":"path","line":N,"note":"what is wrong and what would fix it"}`. Use `[]` only when you found nothing.
+3. Axis `data`, `infra` or `security`: apply only that axis's checklist in `skills/review`, to the files that triggered it.
+4. Axis `standards`: apply `CLAUDE.md`, `AGENTS.md` and any rule files the repository keeps whose paths match the changed files, security and data-loss risks, error handling, concurrency and distributed-systems concerns for service code, migration safety for schema and database changes, test quality, and the comment rules.
+5. For a library or framework claim you are unsure of, check it with `context7` and cite what you found.
+6. Round two or later: first confirm each earlier finding is fixed in this commit; an unfixed one is reported again at the same severity.
+7. Record exactly once: `node "${CLAUDE_PLUGIN_ROOT}/bin/qa.mjs" review record --axis <axis> --head <sha> --summary "<what you checked and concluded>" --findings '<json array>'`. Each finding is `{"severity":"Critical|High|Medium|Low","file":"path","line":N,"note":"what is wrong and what would fix it"}`. Use `[]` only when you found nothing.
 
 Severity: Critical is data loss, security or a broken build. High is an unmet acceptance criterion, a defect users will hit, or a violated mandatory repository rule. Medium and Low are improvements that do not block. Never inflate severity to be safe and never soften a defect to finish.
 

@@ -15,13 +15,13 @@ const isText = (buf) => !buf.subarray(0, 4096).includes(0);
 const read = (f) => fs.readFileSync(path.join(ROOT, f));
 
 test('no environment file with real values is tracked', () => {
-	const bad = tracked().filter((f) => /(^|\/)\.env(\.[^/]*)?$/i.test(f) && !/\.(example|sample|template)$/i.test(f));
+	const bad = tracked().filter((f) => /(^|\/)(\.env(\.[^/]*)?|[^/]*\.env)$/i.test(f) && !/\.(example|sample|template)$/i.test(f));
 	assert.deepEqual(bad, [], 'secrets live in ~/.dev-factory/.env.local, outside every repository');
 	assert.ok(tracked().includes('.env.example'), 'the names are documented in .env.example');
 	assert.match(fs.readFileSync(path.join(ROOT, '.gitignore'), 'utf8'), /^\.env\.local$/m);
 	const example = fs.readFileSync(path.join(ROOT, '.env.example'), 'utf8');
-	for (const line of example.split('\n').filter((l) => /^[A-Z_]+=/.test(l)))
-		assert.match(line, /^[A-Z_]+=\s*$/, `${line.split('=')[0]} has a value in .env.example: names only`);
+	for (const line of example.split('\n').filter((l) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(l)))
+		assert.match(line, /^[A-Za-z_][A-Za-z0-9_]*=\s*$/, `${line.split('=')[0]} has a value in .env.example: names only`);
 });
 
 test('no tracked file holds a secret-shaped string (tests excepted: their fakes are written in other shapes on purpose)', () => {

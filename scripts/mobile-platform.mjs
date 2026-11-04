@@ -72,7 +72,11 @@ if (isMain(import.meta.url)) {
 			}
 			const r = resolvePlatform({ cfg, run, text });
 			if (argv.includes('--record') && run && worktree && r.source !== 'explicit') {
-				fs.writeFileSync(path.join(worktree, '.dev-factory', 'run.json'), JSON.stringify({ ...run, platform: r.platform }, null, 2) + '\n');
+				// written beside and renamed over: a hook reading run.json meanwhile sees the old file or the new one, never half of it
+				const file = path.join(worktree, '.dev-factory', 'run.json');
+				const tmp = `${file}.${process.pid}.tmp`;
+				fs.writeFileSync(tmp, JSON.stringify({ ...run, platform: r.platform }, null, 2) + '\n');
+				fs.renameSync(tmp, file);
 			}
 			console.log(r.platform);
 		} else if (argv[0] === 'metro-command') {

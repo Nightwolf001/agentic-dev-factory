@@ -222,7 +222,9 @@ const isImage = (buf) =>
 	(buf.length > 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff);
 
 // A recorded assertion must describe this walk, never lean on another one.
-const CITES_OTHER_RUN = /#\d+|\brun\s*\d+|previous(ly)?|same commit|already passed|as before/i;
+// (`#3b82f6` is a colour and `previous page` a button; what is refused is a pointer to another run, walk or result)
+const CITES_OTHER_RUN =
+	/\b(run|walk|case|attempt)\s*#?\d+|(^|[\s(])#\d{1,3}(?![0-9a-f])|\bprevious(ly)?\s+(run|walk|pass|attempt|result|screenshot|evidence|verdict)|\bpreviously\b|same commit|already passed|as before/i;
 
 // A video is recognised by what the file starts with, not by its name: an MP4 or QuickTime file has `ftyp` at byte 4, a WebM
 // or Matroska file starts with the EBML header.
@@ -382,7 +384,8 @@ export function record({
 		if (!fs.existsSync(evidenceFile)) throw new QaError(`evidence file not found: ${evidenceFile}`);
 		const raw = fs.readFileSync(evidenceFile, 'utf8').slice(0, 64 * 1024);
 		const t = redactText(raw, { extraPatterns: patterns, secrets });
-		if (t.text.replace(/\s+/g, '').length < MIN_WORKER_EVIDENCE_CHARS)
+		// what is left once the redaction markers are taken out: a file that is nothing but `[redacted:...]` shows nothing
+		if (t.text.replace(/\[redacted:[^\]]*\]/g, '').replace(/\s+/g, '').length < MIN_WORKER_EVIDENCE_CHARS)
 			throw new QaError(
 				`worker evidence needs at least ${MIN_WORKER_EVIDENCE_CHARS} characters of what the worker did (its output, the rows it wrote, the message it sent)`,
 			);
@@ -579,7 +582,8 @@ export function triggeredAxes({ root, head, specialistAxes = {}, base = baseFor(
 			.split('\n')
 			.filter(Boolean);
 	} catch {
-		return [];
+		// the diff cannot be read (the base is not resolvable): every configured axis is required rather than none
+		return SPECIALIST_AXES.filter((axis) => (specialistAxes[axis] ?? []).length > 0);
 	}
 	return SPECIALIST_AXES.filter((axis) => (specialistAxes[axis] ?? []).map(globToRegExp).some((re) => files.some((f) => re.test(f))));
 }
@@ -617,15 +621,16 @@ export function reviewRecord({ root, axis, head, summary, findings, by = null, b
 	if (dirty.length) throw new QaError(`working tree is not clean, review reads committed code: ${dirty.slice(0, 5).join(', ')}`);
 	const list = parseFindings(findings);
 	if (SPECIALIST_AXES.includes(axis)) {
-		const std = reviewFile(root, full, 'standards');
-		if (!fs.existsSync(std)) throw new QaError(`the standards step has not been recorded at this commit; run it before ${axis}`);
-		if (blocking(readJson(std).counts) > 0)
+		// a record made before a merge of the base stands for the same change (see diffHash), so it counts here too
+		const std = reviewAt(root, full, 'standards', base);
+		if (!std) throw new QaError(`the standards step has not been recorded at this commit; run it before ${axis}`);
+		if (blocking(std.record.counts) > 0)
 			throw new QaError(`the standards step has open Critical or High findings at this commit; fix them before ${axis}`);
 	}
 	if (axis === 'standards') {
-		const spec = reviewFile(root, full, 'spec');
-		if (!fs.existsSync(spec)) throw new QaError('step 1 (spec) has not been recorded at this commit; run it first');
-		const c = readJson(spec).counts;
+		const spec = reviewAt(root, full, 'spec', base);
+		if (!spec) throw new QaError('step 1 (spec) has not been recorded at this commit; run it first');
+		const c = spec.record.counts;
 		if (blocking(c) > 0) throw new QaError('step 1 (spec) has open Critical or High findings at this commit; fix them before step 2');
 	}
 	const heads = new Set(
@@ -725,7 +730,7 @@ export function attributionProblems(root, head, base) {
 	try {
 		log = git(root, 'log', `${base}..${head}`, '--format=%h%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%B%x1e');
 	} catch {
-		return [];
+		return [`the commits of ${head} could not be read against ${base}, so their authorship was not checked`];
 	}
 	const out = [];
 	for (const entry of log

@@ -131,24 +131,45 @@ function clearMarkers(worktree) {
 const stateDir = () => process.env.DF_STATE_DIR || path.join(os.homedir(), '.dev-factory');
 
 // The uncommitted changes of a worktree as one patch under <state>/backups, untracked files included, before anything is removed.
+// -> { file, skipped }: `file` is null when there was nothing to save, `skipped` names what the patch could not hold (a file over
+// 1 MiB, one past the first 200, one git could not diff), so that a caller about to delete the worktree can refuse instead.
 function backupDiff(worktree, branch) {
-	const tracked = spawnSync('git', ['-C', worktree, 'diff', 'HEAD', '--binary'], { encoding: 'utf8', maxBuffer: 256 << 20 }).stdout ?? '';
-	const untracked = git(worktree, 'ls-files', '--others', '--exclude-standard')
+	const t = spawnSync('git', ['-C', worktree, 'diff', 'HEAD', '--binary'], { encoding: 'utf8', maxBuffer: 256 << 20 });
+	if (t.error || t.status !== 0)
+		throw new BaseError(
+			`could not read the uncommitted changes of ${worktree} to back them up (${t.error?.code ?? `git exit ${t.status}`}); nothing was changed`,
+		);
+	const tracked = t.stdout ?? '';
+	const all = git(worktree, 'ls-files', '--others', '--exclude-standard')
 		.split('\n')
-		.filter((f) => f && !f.startsWith('.dev-factory/'))
-		.slice(0, 200);
+		.filter((f) => f && !f.startsWith('.dev-factory/'));
+	const skipped = all.slice(200);
 	let extra = '';
-	for (const f of untracked) {
-		const stat = fs.statSync(path.join(worktree, f));
-		if (!stat.isFile() || stat.size > 1 << 20) continue;
-		extra += spawnSync('git', ['-C', worktree, 'diff', '--no-index', '--binary', '--', '/dev/null', f], { encoding: 'utf8' }).stdout ?? '';
+	for (const f of all.slice(0, 200)) {
+		let stat;
+		try {
+			stat = fs.statSync(path.join(worktree, f));
+		} catch {
+			skipped.push(f);
+			continue;
+		}
+		if (!stat.isFile() || stat.size > 1 << 20) {
+			skipped.push(f);
+			continue;
+		}
+		const d = spawnSync('git', ['-C', worktree, 'diff', '--no-index', '--binary', '--', '/dev/null', f], {
+			encoding: 'utf8',
+			maxBuffer: 16 << 20,
+		});
+		if (d.error || (d.status !== 0 && d.status !== 1)) skipped.push(f);
+		else extra += d.stdout ?? '';
 	}
-	if (!tracked.trim() && !extra.trim()) return null;
+	if (!tracked.trim() && !extra.trim()) return { file: null, skipped };
 	const dir = path.join(stateDir(), 'backups');
 	fs.mkdirSync(dir, { recursive: true });
 	const file = path.join(dir, `${branch.replace(/[^\w.-]+/g, '-')}-${new Date().toISOString().replace(/[:.]/g, '-')}.patch`);
 	fs.writeFileSync(file, tracked + extra);
-	return file;
+	return { file, skipped };
 }
 
 const realOrSelf = (p) => {
@@ -208,9 +229,13 @@ function settle({ repo, branch, dest, baseRef }) {
 		throw new BaseError(
 			`${dest} holds ${count} commit${count === 1 ? '' : 's'} of ${branch} that ${count === 1 ? 'is' : 'are'} not pushed; push ${count === 1 ? 'it' : 'them'} or move the worktree, nothing was changed`,
 		);
-	const backup = backupDiff(abs, branch);
+	const { file: backup, skipped } = backupDiff(abs, branch);
 	if (!remote && Number(git(repo, 'rev-list', '--count', `${baseRef}..${branch}`)) === 0) {
-		// nothing committed anywhere: start clean
+		// nothing committed anywhere: start clean, unless that would delete files the backup does not hold
+		if (skipped.length)
+			throw new BaseError(
+				`${dest} holds ${skipped.length} untracked file${skipped.length === 1 ? '' : 's'} the backup cannot keep (${skipped.slice(0, 3).join(', ')}${skipped.length > 3 ? ', ...' : ''}); move ${skipped.length === 1 ? 'it' : 'them'} away or remove ${skipped.length === 1 ? 'it' : 'them'} yourself, nothing was changed`,
+			);
 		git(repo, 'worktree', 'remove', '--force', abs);
 		git(repo, 'branch', '-D', branch);
 		return { settled: 'recreated', backup };
@@ -255,10 +280,22 @@ export function addWorktree({ repo, branch, name, defaultBase, dest, fetch = tru
 
 export function attachWorktree({ repo, branch, dest }) {
 	if (!validName(branch)) throw new BaseError(`'${branch}' is not a usable branch name`, 2);
+	git(repo, 'worktree', 'prune');
+	const abs = path.resolve(dest);
+	const wt = registered(repo, abs);
+	if (wt) {
+		// a fix pass over a ticket whose worktree is still there: use it, clear the markers the last pass left
+		if (wt.branch !== branch)
+			throw new BaseError(`${dest} is a worktree of ${wt.branch ?? 'a detached head'}, not ${branch}; nothing was changed`, 3);
+		exclude(abs);
+		return { worktree: abs, branch, copied: copyLocalFiles(repo, abs), cleared: clearMarkers(abs), existing: true };
+	}
+	if (fs.existsSync(abs) && fs.readdirSync(abs).length)
+		throw new BaseError(`${dest} exists and is not a worktree of this repository; move it away, nothing was changed`, 3);
 	git(repo, 'fetch', '--quiet', 'origin', branch);
 	git(repo, 'worktree', 'add', '-q', '-B', branch, dest, `origin/${branch}`);
 	exclude(dest);
-	return { worktree: path.resolve(dest), branch, copied: copyLocalFiles(repo, dest) };
+	return { worktree: abs, branch, copied: copyLocalFiles(repo, dest) };
 }
 
 function args(argv) {

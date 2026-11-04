@@ -6,6 +6,7 @@
 //
 //   env-build-files.mjs seal --worktree DIR     seal the changed files that match mobile.nativeInputs (under mobile.appDir)
 //                                               and environment.buildFiles
+//   env-build-files.mjs snapshot --worktree DIR record the matching files already modified, which a later seal leaves alone
 //   env-build-files.mjs show --worktree DIR     print what is sealed
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -77,12 +78,34 @@ function changedFiles(worktree) {
 		.filter((f) => !f.includes(' -> ') && !f.startsWith('.dev-factory/'));
 }
 
+export const prechangedFile = (worktree) => path.join(worktree, '.dev-factory', 'env-prechanged.json');
+const readPrechanged = (worktree) => {
+	try {
+		const j = JSON.parse(fs.readFileSync(prechangedFile(worktree), 'utf8'));
+		return Array.isArray(j) ? j : [];
+	} catch {
+		return [];
+	}
+};
+
+// Before the environment step runs: the matching files that already differ from git and are not sealed. They are somebody's
+// edits (a ticket's own work in an adopted worktree), so a later seal leaves them alone instead of calling them the environment's.
+export function snapshot({ worktree, globs }) {
+	const res = globs.map(globToRegExp);
+	const sealed = readSealed(worktree);
+	const files = changedFiles(worktree).filter((f) => res.some((re) => re.test(f)) && !stillSealed(worktree, f, sealed));
+	fs.mkdirSync(path.dirname(prechangedFile(worktree)), { recursive: true });
+	fs.writeFileSync(prechangedFile(worktree), JSON.stringify(files, null, 2) + '\n');
+	return { prechanged: files };
+}
+
 export function seal({ worktree, globs }) {
 	const res = globs.map(globToRegExp);
 	const sealed = readSealed(worktree);
+	const before = new Set(readPrechanged(worktree));
 	const added = [];
 	for (const f of changedFiles(worktree)) {
-		if (!res.some((re) => re.test(f))) continue;
+		if (!res.some((re) => re.test(f)) || before.has(f)) continue;
 		const abs = path.join(worktree, f);
 		if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) continue;
 		sealed[f] = hashOf(abs);
@@ -100,9 +123,10 @@ if (isMain(import.meta.url)) {
 	const val = (n) => (argv.includes(`--${n}`) ? argv[argv.indexOf(`--${n}`) + 1] : undefined);
 	const worktree = path.resolve(val('worktree') ?? process.cwd());
 	try {
-		if (argv[0] === 'seal') console.log(JSON.stringify(seal({ worktree, globs: buildGlobs() })));
+		if (argv[0] === 'snapshot') console.log(JSON.stringify(snapshot({ worktree, globs: buildGlobs() })));
+		else if (argv[0] === 'seal') console.log(JSON.stringify(seal({ worktree, globs: buildGlobs() })));
 		else if (argv[0] === 'show') console.log(JSON.stringify(readSealed(worktree), null, 2));
-		else throw new Error('usage: env-build-files.mjs seal|show --worktree DIR');
+		else throw new Error('usage: env-build-files.mjs snapshot|seal|show --worktree DIR');
 	} catch (e) {
 		console.error(`env-build-files: ${e.message}`);
 		process.exit(1);

@@ -77,11 +77,20 @@ export function jiraSource(cfg, { env = process.env, fetchImpl = fetch } = {}) {
 		// the ticket's comments, oldest first, as text: [{ id, author, created, body }]
 		async comments(key) {
 			if (!/^[A-Za-z][A-Za-z0-9_]*-\d+$/.test(String(key))) throw new Error(`${key} is not a Jira issue key`);
-			const r = await fetchImpl(`https://${site}/rest/api/3/issue/${key}/comment?orderBy=created&maxResults=100`, {
-				headers: { Authorization: auth, Accept: 'application/json' },
-			});
-			if (!r.ok) throw new Error(`jira comments ${r.status}`);
-			return ((await r.json()).comments ?? []).map((c) => ({
+			// paged: a reply is the newest comment, which is on the last page of a long thread
+			const all = [];
+			for (let startAt = 0, pages = 0; pages < 50; pages++) {
+				const r = await fetchImpl(`https://${site}/rest/api/3/issue/${key}/comment?orderBy=created&maxResults=100&startAt=${startAt}`, {
+					headers: { Authorization: auth, Accept: 'application/json' },
+				});
+				if (!r.ok) throw new Error(`jira comments ${r.status}`);
+				const page = await r.json();
+				const got = page.comments ?? [];
+				all.push(...got);
+				startAt += got.length;
+				if (!got.length || startAt >= (page.total ?? startAt)) break;
+			}
+			return all.map((c) => ({
 				id: String(c.id),
 				author: c.author?.accountId ?? c.author?.displayName ?? null,
 				created: c.created,

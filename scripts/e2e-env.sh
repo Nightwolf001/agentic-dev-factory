@@ -299,7 +299,6 @@ do_up() {
   have="$(mode_rank "$(env_get mode)")"
   if [ "$recorded" = "$project" ] && [ "$have" -lt "$want" ]; then
     log "recorded stack is $(env_get mode), this run needs more: replacing $project"
-    [ "$(env_get mode)" = device ] && bash "$SELF_DIR/mobile-env.sh" down --worktree "$WORKTREE"
     do_down_quiet "$project"
     rm -f "$ENV_JSON"
     recorded=""
@@ -344,6 +343,8 @@ do_up() {
 
   local ok=0
   trap '[ "$ok" = 1 ] || { log "up failed, tearing down $project"; do_down_quiet "$project"; }' EXIT
+  # files the ticket itself already changed (an adopted worktree) are not the environment's rewrites: note them before anything runs
+  node "$SELF_DIR/env-build-files.mjs" snapshot --worktree "$WORKTREE" >&2 || true
   init_submodules || die "could not populate the submodules listed in environment.submodules"
   log "starting $project (ports $PORTS$([ "$DEVICE" = 1 ] && echo ", device"))"
   compose "$project" build >&2 || die "compose build failed"

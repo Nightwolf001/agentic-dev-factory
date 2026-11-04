@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 import { COMMANDS } from '../scripts/cli.mjs';
-import { slug } from './patterns.mjs';
+import { anchors } from './patterns.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const docs = () =>
@@ -35,7 +35,7 @@ test('the commands the README presents in code blocks run a real subcommand', ()
 	const known = new Set([...Object.keys(COMMANDS), 'path']);
 	const readme = text('README.md');
 	const bad = [];
-	for (const block of readme.match(/^```(?:bash|sh)?\n[\s\S]*?^```/gm) ?? [])
+	for (const block of readme.match(/^```(?:bash|sh|shell|zsh|console)?[ \t]*\n[\s\S]*?^```[ \t]*$/gm) ?? [])
 		for (const line of block.split('\n')) {
 			const m = /^\s*(?:\$ )?dev-factory ([a-z][a-z-]*)/.exec(line);
 			if (m && !known.has(m[1])) bad.push(line.trim());
@@ -47,7 +47,7 @@ test('relative links and anchors in the documentation resolve', () => {
 	const bad = [];
 	for (const f of docs()) {
 		const t = noFences(text(f)).replace(/`[^`\n]*`/g, ''); // a link inside code is an example, not a link
-		const own = new Set([...t.matchAll(/^#{1,6}\s+(.+?)\s*#*\s*$/gm)].map((m) => slug(m[1])));
+		const own = anchors(t);
 		for (const m of t.matchAll(/\[[^\]]*\]\(([^)\s]+)\)/g)) {
 			const href = m[1];
 			if (/^[a-z][a-z0-9+.-]*:/i.test(href)) continue; // https:, mailto:
@@ -61,7 +61,7 @@ test('relative links and anchors in the documentation resolve', () => {
 				}
 			}
 			if (anchor && target.endsWith('.md')) {
-				const set = target === f ? own : new Set([...noFences(text(target)).matchAll(/^#{1,6}\s+(.+?)\s*#*\s*$/gm)].map((x) => slug(x[1])));
+				const set = target === f ? own : anchors(noFences(text(target)));
 				if (!set.has(anchor.toLowerCase())) bad.push(`${f}: ${href} (no such heading)`);
 			}
 		}

@@ -348,6 +348,7 @@ const RUN_STATE = [
 	['.dev-factory', 'run.json'],
 	['.dev-factory', 'env.json'],
 	['.dev-factory', 'env-sealed.json'],
+	['.dev-factory', 'env-prechanged.json'],
 	['.dev-factory', 'metro.pid'],
 	['.dev-factory', 'emulator.pid'],
 	['.dev-factory', 'compose.override.yml'],

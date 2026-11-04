@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Machine preflight. Usage: doctor.sh [--ci] [--wizard]
+# Machine preflight. Usage: doctor.sh [--ci] [--lenient] [--wizard] (in any order)
 set -uo pipefail
-CI=0; [ "${1:-}" = "--ci" ] && CI=1
-LENIENT=0; for a in "$@"; do [ "$a" = "--lenient" ] && LENIENT=1; done; [ "$CI" = 1 ] && LENIENT=1
+CI=0; LENIENT=0; WIZARD=0
+for a in "$@"; do case "$a" in --ci) CI=1 ;; --lenient) LENIENT=1 ;; --wizard) WIZARD=1 ;; esac; done
+[ "$CI" = 1 ] && LENIENT=1
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 . "$DIR/scripts/runtime.sh"
 REPO="$(df_repo)"; REPO="${REPO:-$PWD}"; RUNTIME="$(df_runtime)"
 df_load_env   # the machine secrets file, so a token kept there counts as set (as it does for a scheduled pass)
-if [ "${1:-}" = "--wizard" ]; then exec bash "$DIR/scripts/wizard.sh"; fi
+if [ "$WIZARD" = 1 ]; then exec bash "$DIR/scripts/wizard.sh"; fi
 fail=0
 ok()   { printf 'ok    %s\n' "$1"; }
 bad()  { printf 'FAIL  %s\n' "$1"; fail=1; }

@@ -315,6 +315,9 @@ export function validate(config = load()) {
 		problems.push('tasks.questionLabel must be a label name (letters, digits, . _ : -)');
 	if (questionLabel !== undefined && questionLabel === dig(config, 'tasks.blockedLabel'))
 		problems.push('tasks.questionLabel must differ from tasks.blockedLabel');
+	const ignoreAuthors = dig(config, 'tasks.ignoreCommentAuthors');
+	if (ignoreAuthors !== undefined && !(Array.isArray(ignoreAuthors) && ignoreAuthors.every((a) => typeof a === 'string' && a.trim())))
+		problems.push('tasks.ignoreCommentAuthors must be a list of comment author ids or names');
 	const platform = dig(config, 'mobile.platform');
 	if (platform !== undefined && !['ios', 'android'].includes(platform))
 		problems.push('mobile.platform must be ios or android (leave it unset to infer it from the ticket)');

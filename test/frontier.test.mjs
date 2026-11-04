@@ -89,6 +89,16 @@ test('prNeedsAction: advance on approved or merged, fix on a fresh change reques
 	assert.equal(prNeedsAction({ ...base, reviews: [req] }), 'fix');
 	assert.equal(prNeedsAction({ ...base, headCommittedAt: '2026-10-15T12:00:00Z', reviews: [req] }), null);
 	assert.equal(prNeedsAction({ ...base, reviews: [{ ...req, author: 'bot' }] }), null, 'the factory never answers its own review');
+	// the same reviewer's later approval (or a dismissal) ends the request; another reviewer's request still stands
+	const later = '2026-10-15T11:30:00Z';
+	assert.equal(prNeedsAction({ ...base, reviews: [req, { state: 'APPROVED', submittedAt: later, author: 'fr' }] }), null);
+	assert.equal(prNeedsAction({ ...base, reviews: [req, { state: 'DISMISSED', submittedAt: later, author: 'fr' }] }), null);
+	assert.equal(prNeedsAction({ ...base, reviews: [req, { state: 'APPROVED', submittedAt: later, author: 'someone-else' }] }), 'fix');
+	assert.equal(
+		prNeedsAction({ ...base, reviews: [{ state: 'APPROVED', submittedAt: '2026-10-15T10:30:00Z', author: 'fr' }, req] }),
+		'fix',
+		'order of arrival does not matter, the later one wins',
+	);
 });
 
 test('comments, bot reviews, questions and an LGTM never start a fix pass', () => {
@@ -303,6 +313,8 @@ test('answers, fix requests and the ready queue are one decision, and the old fi
 	const b = decisionFingerprint({ queue, answers: [{ key: 'Q-1', ids: ['a1', 'a2'] }] });
 	const c2 = decisionFingerprint({ queue, fixes: [{ key: 'R', id: 'c1' }] });
 	assert.equal(new Set([queue, a, b, c2]).size, 4);
+	const c3 = decisionFingerprint({ queue, fixes: [{ key: 'R', id: 'c2' }] });
+	assert.notEqual(c3, c2, 'a second fix request on the same ticket is a new decision');
 	assert.equal(decisionFingerprint({ queue, answers: [{ key: 'Q-1', ids: ['a1'] }] }), a, 'stable');
 	// an old state (queue fingerprint only) still holds the session back while the queue is unchanged
 	const old = { fingerprint: queue, at: new Date().toISOString() };

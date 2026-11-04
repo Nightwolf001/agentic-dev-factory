@@ -17,6 +17,9 @@ test('the marketplace repository comes from the argument, else the plugin reposi
 	);
 	assert.equal(marketplaceRepo(undefined, { repository: 'git@github.com:o/r.git' }), 'o/r');
 	assert.throws(() => marketplaceRepo(undefined, {}), /--marketplace OWNER\/REPO/);
+	assert.equal(marketplaceRepo(undefined, { repository: 'https://github.com/acme/tools.v2' }), 'acme/tools.v2', 'a dot in the name is part of it');
+	assert.equal(marketplaceRepo(undefined, { repository: 'https://github.com/acme/tools.v2.git' }), 'acme/tools.v2');
+	assert.equal(marketplaceRepo(undefined, { repository: 'https://github.com/acme/tools/' }), 'acme/tools');
 });
 
 test('project settings gain the marketplace and the enabled plugins without losing anything else', () => {
@@ -139,4 +142,18 @@ test('the sandbox can be switched off for a cloud environment that supplies its 
 test('the worktree folder is configurable and resolves beside the repository by default', () => {
 	const r = spawnSync('node', [path.join(ROOT, 'scripts/worktree.mjs'), 'root', '--repo', ROOT], { encoding: 'utf8', cwd: ROOT });
 	assert.equal(r.stdout.trim(), path.resolve(ROOT, '../.worktrees'));
+});
+
+test('cloud init refuses a settings file it cannot read instead of overwriting it', () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'df-cloud-bad-'));
+	fs.mkdirSync(path.join(dir, '.claude'));
+	const file = path.join(dir, '.claude/settings.json');
+	fs.writeFileSync(file, '{\n  // a comment makes this invalid JSON\n  "permissions": {}\n}\n');
+	const r = spawnSync(process.execPath, [new URL('../scripts/cloud.mjs', import.meta.url).pathname, 'init', '--marketplace', 'o/r'], {
+		cwd: dir,
+		encoding: 'utf8',
+	});
+	assert.equal(r.status, 1);
+	assert.match(r.stderr, /cannot be read as JSON/);
+	assert.match(fs.readFileSync(file, 'utf8'), /a comment makes this invalid JSON/, 'the file is as it was');
 });

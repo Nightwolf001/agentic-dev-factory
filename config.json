@@ -5,6 +5,7 @@
 		"blockedLabel": "factory-blocked",
 		"questionLabel": "factory-question",
 		"fixComment": "dev-factory fix",
+		"ignoreCommentAuthors": [],
 		"placeholderKey": "TASK-000",
 		"bugTypes": ["bug"],
 		"unblockOnPr": false

@@ -27,6 +27,10 @@ const DIFF = `diff --git a/src/orders.ts b/src/orders.ts
 +++ b/src/orders.ts
 @@ -1,0 +1,5 @@
 +a
++b
++c
++d
++e
 @@ -8 +9 @@
 -old
 +new
@@ -34,6 +38,9 @@ diff --git a/src/gone.ts b/src/gone.ts
 --- a/src/gone.ts
 +++ /dev/null
 @@ -1,3 +0,0 @@
+-x
+-y
+-z
 diff --git a/src/orders.test.ts b/src/orders.test.ts
 --- /dev/null
 +++ b/src/orders.test.ts
@@ -55,6 +62,27 @@ test('the lines a change added are read from a zero-context diff, deletions and 
 	assert.deepEqual([...a.get('src/orders.ts')], [1, 2, 3, 4, 5, 9]);
 	assert.deepEqual([...a.get('src/orders.test.ts')], [1, 2]);
 	assert.equal(a.has('src/gone.ts'), false);
+});
+
+test('an added line that reads like a file header is not one, and a quoted name is read as the file it is', () => {
+	const tricky = [
+		'diff --git a/src/a.js b/src/a.js',
+		'--- a/src/a.js',
+		'+++ b/src/a.js',
+		'@@ -1,0 +1,2 @@',
+		'+++ looks like a header',
+		'+real line',
+		'diff --git "a/src/\\303\\274.js" "b/src/\\303\\274.js"',
+		'--- "a/src/\\303\\274.js"',
+		'+++ "b/src/\\303\\274.js"',
+		'@@ -0,0 +1 @@',
+		'+x',
+		'',
+	].join('\n');
+	const a = addedLines(tricky);
+	assert.deepEqual([...a.keys()], ['src/a.js', 'src/ü.js']);
+	assert.deepEqual([...a.get('src/a.js')], [1, 2], 'both lines are the change’s own');
+	assert.deepEqual([...a.get('src/ü.js')], [1]);
 });
 
 test('an lcov path is matched to a repository file by absolute path, by suffix, and not at all when it is another file', () => {

@@ -65,6 +65,8 @@ export function diffDigest({ root, base, head = 'HEAD', hunkFiles = 3, hunkLines
 	const git = (...a) => execFileSync('git', ['-C', root, ...a], { encoding: 'utf8', maxBuffer: 128 << 20, stdio: ['ignore', 'pipe', 'ignore'] });
 	let stat = '';
 	let patch = '';
+	// a base or head that starts with "-" would be read by git as an option (--output=FILE writes a file)
+	if (/^-/.test(String(base)) || /^-/.test(String(head))) return { stat: '', hunks: '', note: `the diff against ${base} could not be read` };
 	try {
 		stat = git('diff', '--stat', '--no-color', `${base}...${head}`);
 		patch = git('diff', '-U2', '--no-color', '--no-ext-diff', `${base}...${head}`);
@@ -108,7 +110,8 @@ export function summaryText({ root, run, listing, digest, secrets = [], patterns
 		for (const t of texts)
 			out.push(
 				`${t.name}:`,
-				redactText(fs.readFileSync(t.file, 'utf8').slice(0, excerptChars), { secrets, extraPatterns: patterns }).text.trimEnd(),
+				// redacted first and cut after: a secret that straddles the cut would otherwise survive as a prefix no pattern recognises
+				redactText(fs.readFileSync(t.file, 'utf8'), { secrets, extraPatterns: patterns }).text.slice(0, excerptChars).trimEnd(),
 				'',
 			);
 	}

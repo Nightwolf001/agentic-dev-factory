@@ -29,6 +29,10 @@ test('Blocked by is read from a line, a list under a heading, #n and issue URLs'
 test('references normalise to task keys', () => {
 	assert.equal(normaliseRef('#12'), 'GH-12');
 	assert.equal(normaliseRef('https://github.com/o/r/issues/13'), 'GH-13');
+	assert.equal(normaliseRef('https://github.com/o/r/issues/13', 'GH', 'o/r'), 'GH-13');
+	assert.equal(normaliseRef('https://github.com/O/R/issues/13', 'GH', 'o/r'), 'GH-13', 'owner and name are compared without regard to case');
+	assert.equal(normaliseRef('https://github.com/other/repo/issues/13', 'GH', 'o/r'), null, 'another repository’s issue is not this one’s blocker');
+	assert.equal(normaliseRef('#13', 'GH', 'o/r'), 'GH-13');
 	assert.equal(normaliseRef('app-4'), 'APP-4');
 	assert.equal(normaliseRef('nonsense'), null);
 });
@@ -473,4 +477,58 @@ test('local: the activity lines are the comments, a person’s reply is a line u
 	assert.equal(c.length, 2);
 	assert.equal(c[1].body, 'use CSV');
 	assert.equal(c[1].created, '2026-10-01T11:00:00.000Z');
+});
+
+test('jira: comments are read page by page, so a reply at the end of a long thread is seen', async () => {
+	const urls = [];
+	const mk = (from, n) =>
+		Array.from({ length: n }, (_, i) => ({
+			id: String(from + i),
+			author: { accountId: 'a' },
+			created: '2026-10-01T10:00:00.000+0000',
+			body: `c${from + i}`,
+		}));
+	const fetchImpl = async (u) => {
+		urls.push(String(u));
+		const startAt = Number(new URL(String(u)).searchParams.get('startAt'));
+		const page = startAt === 0 ? mk(0, 100) : startAt === 100 ? mk(100, 100) : mk(200, 5);
+		return new Response(JSON.stringify({ comments: page, total: 205, startAt }), { status: 200 });
+	};
+	const src = jiraSource(jiraCfg(), { env: { JIRA_EMAIL: 'a@b.c', JIRA_API_TOKEN: 't' }, fetchImpl });
+	const c = await src.comments('APP-12');
+	assert.equal(c.length, 205);
+	assert.equal(c.at(-1).body, 'c204');
+	assert.equal(urls.length, 3);
+	// a source that never reports a total or an empty page cannot loop forever
+	const stuck = jiraSource(jiraCfg(), {
+		env: { JIRA_EMAIL: 'a@b.c', JIRA_API_TOKEN: 't' },
+		fetchImpl: async () => new Response(JSON.stringify({ comments: [] }), { status: 200 }),
+	});
+	assert.deepEqual(await stuck.comments('APP-12'), []);
+});
+
+test('local: a comment keeps its lines, so the marker line is found and a reply to a block is seen', async () => {
+	const { findReplies } = await import('../scripts/comment-lib.mjs');
+	const { src } = localFixture();
+	const a = await src.create({ title: 'Add CSV export', body: 'Body' });
+	await src.comment(a.key, '@Jane\n\nWhich format should the export use?\n\n[dev-factory] blocked: question');
+	let c = await src.comments(a.key);
+	assert.equal(c.length, 1);
+	assert.match(c[0].body, /\n\[dev-factory\] blocked: question$/, 'the marker is a line of its own');
+	assert.equal(findReplies(c).question?.id, c[0].id, 'and so the question is found');
+	// a person answers by adding a line under Activity, as before
+	const file = a.file;
+	fs.appendFileSync(file, '- 2099-01-01T00:00:00.000Z use CSV, please\n');
+	c = await src.comments(a.key);
+	assert.equal(c.length, 2);
+	assert.equal(findReplies(c).replies.at(-1).body, 'use CSV, please');
+});
+
+test('local: a title that starts with "[" stays a title, and a list field is still a list', async () => {
+	const { src } = localFixture();
+	const a = await src.create({ title: '[Bug] Export fails', body: 'Body', labels: ['dev-factory', 'bug'] });
+	await src.setState(a.key, 'inProgress');
+	const t = await src.get(a.key);
+	assert.equal(t.title, '[Bug] Export fails');
+	assert.deepEqual(t.labels, ['dev-factory', 'bug']);
 });
