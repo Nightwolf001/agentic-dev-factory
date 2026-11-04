@@ -35,7 +35,7 @@ The flow at a glance: [docs/dev-factory-flow.svg](docs/dev-factory-flow.svg).
 | **Blocked**         | The label `factory-blocked` on a task the factory gave up on, with a comment saying what decision it needs. A person answers and removes the label.                                        |
 | **Worktree**        | A separate git checkout (`<worktrees>/<KEY>`) where one task is built, so your own checkout is never touched.                                                                              |
 | **Environment**     | What the task is tested against: nothing special (`none`, tests run on the host) or an isolated docker compose project (`compose`).                                                        |
-| **QA evidence**     | A recorded walk of each UI-facing criterion, with a screenshot taken at the exact commit being shipped. Only `qa.mjs` can mark a case as passed.                                           |
+| **QA evidence**     | A recorded walk of each acceptance criterion (a screen, an API behaviour or a worker), with a screenshot taken at the exact commit being shipped. Only `qa.mjs` can mark a case as passed. |
 | **Two reviews**     | A **spec** reviewer (does it do what the task asks, nothing more) and a **standards** reviewer (rules, safety, tests), each in a fresh read-only session.                                  |
 | **Gate**            | A check that must pass before work moves on: the readiness lint at claim, the verify gate before a PR moves to review, the stop gate that stops an agent ending without its hand-off file. |
 | **Tick**            | One unattended pass: a scheduler runs `scripts/tick.sh`, which runs `claude -p /dev-factory:tick`. A cheap preflight decides whether a paid session starts at all.                         |
@@ -171,7 +171,7 @@ Share the database with an internal integration and put its secret in `~/.dev-fa
 }
 ```
 
-Put `JIRA_EMAIL` and `JIRA_API_TOKEN` in `~/.dev-factory/.env.local` for the preflight. For the writes, either enable the Atlassian server with `dev-factory mcp enable atlassian` and log in once with `/mcp` (that login does not survive unattended passes), or run `node scripts/jira-mcp-config.mjs` to add this plugin's token server to `.mcp.json` (see [Jira over an API token](#jira-over-an-api-token)). Transitions are chosen by target status, never by name, because workflows differ per issue type. Ask a Jira admin to allow the labels the factory adds (`factory-blocked`, `factory-validated`, `factory-regression`, `needs-research`).
+Put `JIRA_EMAIL` and `JIRA_API_TOKEN` in `~/.dev-factory/.env.local` for the preflight. For the writes, either enable the Atlassian server with `dev-factory mcp enable atlassian` and log in once with `/mcp` (that login does not survive unattended passes), or run `node "$(dev-factory path)/scripts/jira-mcp-config.mjs"` to add this plugin's token server to `.mcp.json` (see [Jira over an API token](#jira-over-an-api-token)). Transitions are chosen by target status, never by name, because workflows differ per issue type. Ask a Jira admin to allow the labels the factory adds (`factory-blocked`, `factory-question`, `factory-validated`, `factory-regression`, `needs-research`).
 
 Switching source later changes only `tasks.source`; existing tasks stay where they are.
 
@@ -269,7 +269,7 @@ OAuth servers need one login that no script can do for you: start `claude` and r
 6. The builder ships: pushes the branch, opens the draft PR with the evidence attached. The pass then records where the work is on the task (`LINK`): the branch and PR links, the QA verdict and the screenshots, as properties and files in Notion, remote links in Jira, a comment on a GitHub issue, or frontmatter and a copy of the images in the local task files. The pass re-verifies the QA manifest and both review records against the PR head, comments on the task, sets it `inReview`, and tears the environment down.
 7. You review the PR. Two optional settings shape what comes next: `pr.reviewedOnMergeInto` / `pr.doneOnMergeInto` say which merge makes a task reviewed and which makes it done (for a develop-then-main flow, `"develop"` and `"main"`), and `review.bugbot` has Bugbot review each push and the factory fix what it finds. A comment starting `dev-factory fix` (no slash needed), followed by what to change, asks for a fix pass on any PR. A change request (not a plain comment) from someone other than the PR author sends the task back for a fix pass; an approval or merge sets it `reviewed`. After that, QA, release and anything else belong to people.
 
-When the factory cannot continue it labels the task `factory-blocked`, comments the reason and the decision it needs, and returns it to `ready` (the label keeps it out of the queue). Answer in a comment and remove the label. If `caps.breakerThreshold` tasks were blocked within `caps.breakerWindowHours` the pass stops claiming until you look.
+When the factory cannot continue it labels the task `factory-blocked`, comments the reason and the decision it needs, and returns it to `ready` (the label keeps it out of the queue). Answer in a comment: the next pass sees a reply to a question and removes the labels itself, and for a block that is not a question you remove the label. If `caps.breakerThreshold` tasks were blocked within `caps.breakerWindowHours` the pass stops claiming until you look.
 
 ![The dev-factory flow: from task to merged PR, what the factory does and where people decide](docs/dev-factory-flow.svg)
 
@@ -326,6 +326,18 @@ dev-factory config validate                   # lists every problem; also part o
 | `scheduler.intervalMinutes` | `DF_SCHEDULER_INTERVAL_MINUTES` |
 
 Secrets are read from `~/.dev-factory/.env.local` (the state folder) and from nowhere else. `dev-factory import-env` moves the values of an older setup into it: a dry run unless you pass `--apply`, it lists names and never prints a value, appends only names the state file does not have (mode 600), and never copies `DF_TAKEOVER`. A command you type by hand (`dev-factory tasks list`) fills only `JIRA_EMAIL`, `JIRA_API_TOKEN` and `NOTION_TOKEN` from that file, read as text and never executed. A `.env.local` inside the plugin's own directory is not read: a run working in a clone of the plugin can write one, and the scheduler would have loaded it. `dev-factory doctor` warns when it finds such a file; move its values to the state folder and delete it.
+
+One-run switches that are not settings:
+
+| Variable                      | Default | What it does                                                                                     |
+| ----------------------------- | ------- | ------------------------------------------------------------------------------------------------ |
+| `DF_MAX_STACKS`               | `2`     | How many isolated environments `e2e-env.sh` keeps at once before refusing with exit 75.          |
+| `DF_PING_URL`                 | unset   | Overrides `environment.pingUrl` for one `verify`.                                                |
+| `DF_SWEEP_SPARE_MINUTES`      | `180`   | `sweep` leaves a `df-*` project alone that was started within this many minutes.                 |
+| `DF_EMULATOR_BOOT_TIMEOUT`    | `300`   | Seconds `mobile-env.sh` waits for an Android emulator to finish booting.                         |
+| `DF_FORCE_NATIVE_BUILD`       | `0`     | `1` rebuilds the native app even when its inputs have not changed.                               |
+| `DF_GH_RETRY_SECONDS`         | `2`     | Seconds `doctor` waits before it asks `gh auth status` a second time.                            |
+| `DF_APP_ID`, `DF_DEVICE_NAME` | unset   | The app id and device name for one run of the device lane (`mobile.appId`, `mobile.deviceName`). |
 
 A list setting such as `DF_JIRA_PROJECTS` takes a comma-separated value. Other variables are not settings but switches for one run: `DF_TAKEOVER` (the machine owner's, see [Clean-up after every run](#clean-up-after-every-run)), `DF_RUNTIME`, `DF_REPO`, `DF_STATE_DIR`, `DF_LOG`, `DF_CONFIG`, `DF_PREFLIGHT=off`, `DF_READY_TIMEOUT`, `DF_PLUGIN_DIR`, `DF_MCP_FILE`.
 
@@ -458,9 +470,9 @@ Every setting, with its default. `see config.json` means the default is a longer
 
 #### Blocked tasks
 
-| Key                    | Default | What it does                                                                                                                                                                                                                                                                                            |
-| ---------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `blocked.agentDecides` | `false` | When a build stops on a question (a choice between options, an ambiguity in scope), a fresh-context agent settles it and the build continues, so one open question does not hold up every task that waits on it. Off, the task is labelled and waits for a person. See [Blocked tasks](#blocked-tasks). |
+| Key                    | Default | What it does                                                                                                                                                                                                                                                                                              |
+| ---------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `blocked.agentDecides` | `false` | When a build stops on a question (a choice between options, an ambiguity in scope), a fresh-context agent settles it and the build continues, so one open question does not hold up every task that waits on it. Off, the task is labelled and waits for a person. See [Blocked tasks](#blocked-tasks-1). |
 
 #### Models
 
@@ -551,7 +563,7 @@ The platform is **not** a default setting (a default would always win, and the t
 | `coverage.unitGlobs`       | `see config.json`      | Changed files that count as unit tests in the report.                                                                                              |
 | `coverage.functionalGlobs` | `see config.json`      | Changed files that count as functional tests (checked first).                                                                                      |
 
-`dev-factory`'s coverage report is about the change, not the repository: `node scripts/coverage.mjs record-tests --kind unit|functional --tests N` keeps the counts the builder reports (shown as reported), and `report` takes the lines the change added from `git diff -U0` and says how many of the executable ones a test run reached and which it did not. When no changed file is in the lcov data it says so plainly instead of a number. The PR body carries it under `## Tests`.
+`dev-factory`'s coverage report is about the change, not the repository: `node "$(dev-factory path)/scripts/coverage.mjs" record-tests --kind unit|functional --tests N` keeps the counts the builder reports (shown as reported), and `report` takes the lines the change added from `git diff -U0` and says how many of the executable ones a test run reached and which it did not. When no changed file is in the lcov data it says so plainly instead of a number. The PR body carries it under `## Tests`.
 
 #### Telemetry limits
 
@@ -682,7 +694,7 @@ A scheduled job runs in a real environment: `TERM=xterm-256color` (project scrip
 
 A pass that cannot reach a tool it needs (the task source, GitHub) waits for MCP servers still connecting, then ends with `tick: aborted <reason>` and claims, comments and blocks nothing. The scheduler does not remember that queue as looked at, so the next pass reads it again. The open-PR cap counts only the factory's own PRs (`scripts/open-prs.mjs`): those whose title or branch carries, as a whole word, the key of a task in progress or in review. A count that fails is "unknown", and unknown never claims.
 
-Every agent a command dispatches runs with the model and effort its settings name: `node scripts/config.mjs agent <role>` prints `{"model","effort"}` from `models.<role>`, `models.efforts.<role>` and `models.effort`, and the commands pass both to the Agent tool, so `models.reviewer` and the others take effect. A pass record (`~/.dev-factory/runs/runs.jsonl`) carries `wallMs`, the clock time of the whole pass (`durationMs` covers only the last session), and `subtype`, how the session ended.
+Every agent a command dispatches runs with the model and effort its settings name: `dev-factory config agent <role>` prints `{"model","effort"}` from `models.<role>`, `models.efforts.<role>` and `models.effort`, and the commands pass both to the Agent tool, so `models.reviewer` and the others take effect. A pass record (`~/.dev-factory/runs/runs.jsonl`) carries `wallMs`, the clock time of the whole pass (`durationMs` covers only the last session), and `subtype`, how the session ended.
 
 In a Claude session the same thing is `/dev-factory:scheduler on|off|status`. `off` keeps the jobs and the configuration; `on` restores them. What each scheduler does:
 
@@ -734,7 +746,7 @@ What the factory writes for a person is short and tagged: the assignee and the r
 
 ### Jira over an API token
 
-The Atlassian MCP server signs in with OAuth, which does not survive an unattended pass. `scripts/jira-mcp.mjs` is a small MCP server over Jira's REST API that offers the same tool names the Jira task-source skill uses, plus `uploadAttachmentToJiraIssue`. `node scripts/jira-mcp-config.mjs` adds it to `.mcp.json` as `jira`: the entry holds only the Jira host and starts the server through the launcher in the state folder (which finds the newest installed copy of the plugin); the credentials are read from the environment of the pass. Comment bodies are text in and out (`scripts/adf.mjs` converts to and from Atlassian Document Format), and `[~accountid:ID]` becomes a real mention node, because a wiki token written through some clients arrives as literal text. `scripts/evidence.mjs plan` lists a finished QA run's files for the ticket (taken from the manifest, hashed, none over `evidence.maxAttachmentMb`, nothing that resolves outside the run folder) and writes a redacted `summary.md` with the verdict, each case, the diff stat, key hunks and excerpts; the upload tool reads only that ticket's `.dev-factory/evidence/<KEY>/run-N/`, takes a bare file name and skips a file already attached with the same name and size.
+The Atlassian MCP server signs in with OAuth, which does not survive an unattended pass. `scripts/jira-mcp.mjs` is a small MCP server over Jira's REST API that offers the same tool names the Jira task-source skill uses, plus `uploadAttachmentToJiraIssue`. `node "$(dev-factory path)/scripts/jira-mcp-config.mjs"` adds it to `.mcp.json` as `jira`: the entry holds only the Jira host and starts the server through the launcher in the state folder (which finds the newest installed copy of the plugin); the credentials are read from the environment of the pass. Comment bodies are text in and out (`scripts/adf.mjs` converts to and from Atlassian Document Format), and `[~accountid:ID]` becomes a real mention node, because a wiki token written through some clients arrives as literal text. `scripts/evidence.mjs plan` lists a finished QA run's files for the ticket (taken from the manifest, hashed, none over `evidence.maxAttachmentMb`, nothing that resolves outside the run folder) and writes a redacted `summary.md` with the verdict, each case, the diff stat, key hunks and excerpts; the upload tool reads only that ticket's `.dev-factory/evidence/<KEY>/run-N/`, takes a bare file name and skips a file already attached with the same name and size.
 
 ## Using the factory
 
@@ -858,7 +870,7 @@ Set `DF_TAKEOVER=1` in `~/.dev-factory/.env.local` (or export it for one run) wh
 
 Takeover never reaches the shell, Claude, the terminal, launchd, window-server or other system processes, the parent of the run, `kill` of pid 0, 1 or -1, `docker prune`, mass `docker stop $(docker ps -q)` forms, `simctl erase` or `delete`, or the factory's own scheduler job. Agents cannot switch it on. It is read from the environment alone (`scripts/takeover.mjs`): there is no `--takeover` flag (`cleanup.mjs` refuses it), no config key, and the shell guard refuses any command inside a run that writes the name `DF_TAKEOVER` however it is spelled (quoted in pieces, in a brace list, built from other variables, through `${!x}`, a nameref or `printf -v`). `dev-factory doctor` warns while it is on.
 
-What takeover stopped can be given back. `cleanup.mjs` records the containers and processes it stopped in `~/.dev-factory/takeover-stopped.json`, and `node scripts/cleanup.mjs --restore` starts those containers again and lists the processes (a stopped process cannot be restarted from here). A container that will not start stays on the list. The web address frees a port only when it is this machine (`localhost`, `127.0.0.1`, `::1`, `*.local`, `*.localhost`, `*.test`), never the port of a deployed host, and a ports lock with no owner file counts as abandoned.
+What takeover stopped can be given back. `cleanup.mjs` records the containers and processes it stopped in `~/.dev-factory/takeover-stopped.json`, and `dev-factory cleanup --restore` starts those containers again and lists the processes (a stopped process cannot be restarted from here). A container that will not start stays on the list. The web address frees a port only when it is this machine (`localhost`, `127.0.0.1`, `::1`, `*.local`, `*.localhost`, `*.test`), never the port of a deployed host, and a ports lock with no owner file counts as abandoned.
 
 ## QA evidence
 
@@ -970,27 +982,35 @@ The improver cannot edit what enforces the factory's own limits (the guards, the
 
 ## Layout
 
-| Path                           | Purpose                                                                                                    |
-| ------------------------------ | ---------------------------------------------------------------------------------------------------------- |
-| `commands/`                    | `setup`, `plan`, `build`, `quick`, `tick`, `scheduler`, `status`, `validate`, `improve`, `doctor`          |
-| `agents/`                      | `factory-builder`, `-reviewer`, `-debugger`, `-researcher`, `-improver`, `-promoter`                       |
-| `skills/`                      | `task-source`, `implement`, `qa`, `review`, `ship`, `environment`, `diagnose`, `telemetry`, `improve`      |
-| `scripts/sources/`             | One file per task source (`local`, `github`, `jira`, `notion`) and their shared model                      |
-| `scripts/tasks.mjs`            | List, read, create and move tasks for the sources a script can drive                                       |
-| `scripts/stack.mjs`            | Stacked PRs: plan a base, write the PR note, merge a moved blocker (rules in `stack-lib.mjs`)              |
-| `scripts/mcp.mjs`, `mcp/`      | The optional MCP catalog and the commands that enable it                                                   |
-| `scripts/factory-settings.mjs` | Builds the scheduled pass's sandbox and permissions from what is enabled                                   |
-| `hooks/hooks.json`             | Shell guard, edit guard, telemetry guard and stop gate; active only inside a factory run                   |
-| `scripts/guard-lib.mjs`        | The shell and edit guard rules; `guard-paths.mjs` resolves the paths, globs and env files they judge       |
-| `plugins.json`                 | Plugins the factory relies on and the one it disables                                                      |
-| `scripts/`                     | `e2e-env.sh`, `mobile-env.sh`, `cleanup.mjs`, `tick.sh`, `install.sh`, `doctor.sh`, hook scripts           |
-| `bin/qa.mjs`                   | QA, review, debug, scrub, ticket and learnings CLI                                                         |
-| `qa/profiles.yaml`             | Default web and mobile QA profiles                                                                         |
-| `config.json`                  | Defaults; the repository's `dev-factory.config.json` merges over them                                      |
-| `settings.factory.json`        | Base sandbox and permission settings for scheduled runs                                                    |
-| `launchd/`                     | Scheduler templates rendered by `install.sh`                                                               |
-| `test/`                        | `node --test test/*.test.mjs` (from the plugin repository root); `hygiene` and `docs` sweep the repository |
-| `CONTRIBUTING.md`              | The loop for changing the factory: branch, test first, checks, version                                     |
+| Path                                                                                                       | Purpose                                                                                                    |
+| ---------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `commands/`                                                                                                | `setup`, `plan`, `build`, `quick`, `tick`, `scheduler`, `status`, `validate`, `improve`, `doctor`          |
+| `agents/`                                                                                                  | `factory-builder`, `-reviewer`, `-debugger`, `-researcher`, `-improver`, `-promoter`                       |
+| `skills/`                                                                                                  | `task-source`, `implement`, `qa`, `review`, `ship`, `environment`, `diagnose`, `telemetry`, `improve`      |
+| `scripts/sources/`                                                                                         | One file per task source (`local`, `github`, `jira`, `notion`) and their shared model                      |
+| `scripts/tasks.mjs`                                                                                        | List, read, create and move tasks for the sources a script can drive                                       |
+| `scripts/stack.mjs`                                                                                        | Stacked PRs: plan a base, write the PR note, merge a moved blocker (rules in `stack-lib.mjs`)              |
+| `scripts/mcp.mjs`, `mcp/`                                                                                  | The optional MCP catalog and the commands that enable it                                                   |
+| `scripts/factory-settings.mjs`                                                                             | Builds the scheduled pass's sandbox and permissions from what is enabled                                   |
+| `hooks/hooks.json`                                                                                         | Shell guard, edit guard, telemetry guard and stop gate; active only inside a factory run                   |
+| `scripts/guard-lib.mjs`                                                                                    | The shell and edit guard rules; `guard-paths.mjs` resolves the paths, globs and env files they judge       |
+| `plugins.json`                                                                                             | Plugins the factory relies on and the one it disables                                                      |
+| `scripts/`                                                                                                 | `e2e-env.sh`, `mobile-env.sh`, `cleanup.mjs`, `tick.sh`, `install.sh`, `doctor.sh`, hook scripts           |
+| `scripts/import-env.sh`                                                                                    | Moves the secrets of an older setup into the state folder (`dev-factory import-env`)                       |
+| `scripts/update.mjs`                                                                                       | `dev-factory update`: refresh marketplaces, update every installed copy, prune old cached versions         |
+| `scripts/preflight-alert.mjs`                                                                              | Records the scheduler's last preflight failure and notifies once per distinct reason                       |
+| `scripts/state-env.mjs`                                                                                    | Fills the tracker credentials of hand-run commands from the state folder                                   |
+| `scripts/mobile-platform.mjs`                                                                              | Chooses ios or android for a task                                                                          |
+| `scripts/env-build-files.mjs`                                                                              | Seals the build files an environment rewrites, so they do not dirty the tree                               |
+| `scripts/probe-lib.mjs`, `scripts/coverage-lib.mjs`, `scripts/evidence-lib.mjs`, `scripts/comment-lib.mjs` | The libraries behind `qa.mjs probe`, `coverage.mjs`, `evidence.mjs` and `comment.mjs`                      |
+| `templates/`                                                                                               | The GitHub Actions workflow `dev-factory cloud init` copies into a repository                              |
+| `bin/qa.mjs`                                                                                               | QA, review, debug, scrub, ticket and learnings CLI                                                         |
+| `qa/profiles.yaml`                                                                                         | Default web and mobile QA profiles                                                                         |
+| `config.json`                                                                                              | Defaults; the repository's `dev-factory.config.json` merges over them                                      |
+| `settings.factory.json`                                                                                    | Base sandbox and permission settings for scheduled runs                                                    |
+| `launchd/`                                                                                                 | Scheduler templates rendered by `install.sh`                                                               |
+| `test/`                                                                                                    | `node --test test/*.test.mjs` (from the plugin repository root); `hygiene` and `docs` sweep the repository |
+| `CONTRIBUTING.md`                                                                                          | The loop for changing the factory: branch, test first, checks, version                                     |
 
 Developing the plugin: `claude --plugin-dir .` from this repository, `node --test test/*.test.mjs`, `claude plugin validate .`, `npx prettier@3.2.5 --check "**/*.{md,json,mjs}"`, `bash scripts/lint-vocabulary.sh`. Release by bumping `version` in `.claude-plugin/plugin.json` and the marketplace entry together (a test checks they agree); installed copies update with `claude plugin update`.
 
