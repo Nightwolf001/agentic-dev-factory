@@ -243,6 +243,8 @@ dev-factory mcp connect --all   # every server in the catalog
 
 Servers are written to the repository's own `.mcp.json` (merged, never overwriting yours). The scheduled pass builds its sandbox and permission settings from what is enabled, so a server that is off opens no network access.
 
+A server can be flagged `"required": true` in `mcp/catalog.json` (the catalog flags none: which servers a deployment cannot do without is its own choice). `dev-factory mcp connect` and setup always enable a required server, and `dev-factory doctor` fails while it is missing or not connected (a warning under `--lenient` or `--ci`, which a scheduled pass uses so an MCP outage does not stop the preflight).
+
 A server you already have, at user scope or as a claude.ai connector, is used as it is: `enable` and `connect` skip it and say so rather than writing a second copy into `.mcp.json` (Claude warns about duplicates and runs both). `--force` adds it anyway. The scheduled pass is allowed to use those servers too. `dev-factory mcp doctor` (part of `dev-factory doctor`) reports each server in use and where it comes from, any that wait for your approval or a login, and a Playwright configured without `--isolated`, which makes QA walks share one browser profile; the fix is printed with it.
 
 | Server                | What it adds                                  | Without it                                                           |
@@ -323,7 +325,7 @@ dev-factory config validate                   # lists every problem; also part o
 | `blocked.agentDecides`      | `DF_AGENT_DECIDES`              |
 | `scheduler.intervalMinutes` | `DF_SCHEDULER_INTERVAL_MINUTES` |
 
-Secrets are read from `~/.dev-factory/.env.local` (the state folder) and from nowhere else. A `.env.local` inside the plugin's own directory is not read: a run working in a clone of the plugin can write one, and the scheduler would have loaded it. `dev-factory doctor` warns when it finds such a file; move its values to the state folder and delete it.
+Secrets are read from `~/.dev-factory/.env.local` (the state folder) and from nowhere else. `dev-factory import-env` moves the values of an older setup into it: a dry run unless you pass `--apply`, it lists names and never prints a value, appends only names the state file does not have (mode 600), and never copies `DF_TAKEOVER`. A command you type by hand (`dev-factory tasks list`) fills only `JIRA_EMAIL`, `JIRA_API_TOKEN` and `NOTION_TOKEN` from that file, read as text and never executed. A `.env.local` inside the plugin's own directory is not read: a run working in a clone of the plugin can write one, and the scheduler would have loaded it. `dev-factory doctor` warns when it finds such a file; move its values to the state folder and delete it.
 
 A list setting such as `DF_JIRA_PROJECTS` takes a comma-separated value. Other variables are not settings but switches for one run: `DF_TAKEOVER` (the machine owner's, see [Clean-up after every run](#clean-up-after-every-run)), `DF_RUNTIME`, `DF_REPO`, `DF_STATE_DIR`, `DF_LOG`, `DF_CONFIG`, `DF_PREFLIGHT=off`, `DF_READY_TIMEOUT`, `DF_PLUGIN_DIR`, `DF_MCP_FILE`.
 
@@ -418,12 +420,13 @@ Every setting, with its default. `see config.json` means the default is a longer
 
 #### Git
 
-| Key                    | Default           | What it does                                                                                                                                              |
-| ---------------------- | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `git.baseBranch`       | `null`            | Branch a run builds on and PRs target. `null` is the repository's default branch.                                                                         |
-| `git.agentAttribution` | `false`           | `false`: commits and PRs are always the person's own (no Co-Authored-By, no author override, no "generated with" text). `true` switches those checks off. |
-| `git.branchTypes`      | `see config.json` | Task type (lower case) to branch prefix. An unlisted type is `task`.                                                                                      |
-| `git.worktreeRoot`     | `"../.worktrees"` | Folder worktrees are created in, relative to the repository. Set it somewhere writable in the cloud.                                                      |
+| Key                    | Default           | What it does                                                                                                                                                                                                                                                                                 |
+| ---------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `git.baseBranch`       | `null`            | Branch a run builds on and PRs target. `null` is the repository's default branch.                                                                                                                                                                                                            |
+| `git.agentAttribution` | `false`           | `false`: commits and PRs are always the person's own (no Co-Authored-By, no author override, no "generated with" text). `true` switches those checks off.                                                                                                                                    |
+| `git.branchTypes`      | `see config.json` | Task type (lower case) to branch prefix. An unlisted type is `task`.                                                                                                                                                                                                                         |
+| `git.skipCommitHooks`  | `false`           | `true`: the builder commits with `-n` every time and ship pushes with `--no-verify`, for a repository whose hooks cannot run in a worktree (a hook that needs the main checkout, or tools only the container has). The narrower `environment.preCommit` runs a check in the container first. |
+| `git.worktreeRoot`     | `"../.worktrees"` | Folder worktrees are created in, relative to the repository. Set it somewhere writable in the cloud.                                                                                                                                                                                         |
 
 #### Pull requests
 
@@ -585,14 +588,25 @@ The platform is **not** a default setting (a default would always win, and the t
 | `improvement.maxPromotionsPerScan` | `3`                         | Learnings promoted into `AGENTS.md` per scan.                                                       |
 | `improvement.agentsRuleCap`        | `15`                        | Learned rules allowed per `AGENTS.md` section.                                                      |
 
+#### Repository skills
+
+| Key                    | Default | What it does                                                                                                                                 |
+| ---------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `repoSkills.implement` | `[]`    | Skills (names such as `repo-rules` or `plugin:skill`) the builder invokes at the start of the implement phase, on top of the plugin's steps. |
+| `repoSkills.qa`        | `[]`    | The same for the QA phase.                                                                                                                   |
+| `repoSkills.review`    | `[]`    | The same for each reviewer.                                                                                                                  |
+| `repoSkills.ship`      | `[]`    | The same for the ship phase.                                                                                                                 |
+| `repoSkills.diagnose`  | `[]`    | The same for the debugger. Each skill adds to the phase's steps and never replaces them.                                                     |
+
 #### Review
 
-| Key                     | Default           | What it does                                                                                                                                            |
-| ----------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `review.specialistAxes` | `see config.json` | Globs that trigger the extra `data`, `infra` and `security` review steps.                                                                               |
-| `review.bugbot`         | `false`           | `true`: after every push the factory comments `review.bugbotComment`, watches Bugbot's review, fixes its findings and resolves the threads it answered. |
-| `review.bugbotComment`  | `"bugbot run"`    | The comment that starts a Bugbot review.                                                                                                                |
-| `review.bugbotAuthor`   | `"cursor[bot]"`   | The login Bugbot's review comments come from.                                                                                                           |
+| Key                     | Default           | What it does                                                                                                                                                                                                     |
+| ----------------------- | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `review.readFirst`      | `[]`              | Files (paths inside the repository) every reviewer reads before the diff: a conventions file, an architecture note. A read-only role may run `config.mjs get` for this one setting, and for `repoSkills.review`. |
+| `review.specialistAxes` | `see config.json` | Globs that trigger the extra `data`, `infra` and `security` review steps.                                                                                                                                        |
+| `review.bugbot`         | `false`           | `true`: after every push the factory comments `review.bugbotComment`, watches Bugbot's review, fixes its findings and resolves the threads it answered.                                                          |
+| `review.bugbotComment`  | `"bugbot run"`    | The comment that starts a Bugbot review.                                                                                                                                                                         |
+| `review.bugbotAuthor`   | `"cursor[bot]"`   | The login Bugbot's review comments come from.                                                                                                                                                                    |
 
 #### Guard
 
@@ -956,26 +970,27 @@ The improver cannot edit what enforces the factory's own limits (the guards, the
 
 ## Layout
 
-| Path                           | Purpose                                                                                               |
-| ------------------------------ | ----------------------------------------------------------------------------------------------------- |
-| `commands/`                    | `setup`, `plan`, `build`, `quick`, `tick`, `scheduler`, `status`, `validate`, `improve`, `doctor`     |
-| `agents/`                      | `factory-builder`, `-reviewer`, `-debugger`, `-researcher`, `-improver`, `-promoter`                  |
-| `skills/`                      | `task-source`, `implement`, `qa`, `review`, `ship`, `environment`, `diagnose`, `telemetry`, `improve` |
-| `scripts/sources/`             | One file per task source (`local`, `github`, `jira`, `notion`) and their shared model                 |
-| `scripts/tasks.mjs`            | List, read, create and move tasks for the sources a script can drive                                  |
-| `scripts/stack.mjs`            | Stacked PRs: plan a base, write the PR note, merge a moved blocker (rules in `stack-lib.mjs`)         |
-| `scripts/mcp.mjs`, `mcp/`      | The optional MCP catalog and the commands that enable it                                              |
-| `scripts/factory-settings.mjs` | Builds the scheduled pass's sandbox and permissions from what is enabled                              |
-| `hooks/hooks.json`             | Shell guard, edit guard, telemetry guard and stop gate; active only inside a factory run              |
-| `scripts/guard-lib.mjs`        | The shell and edit guard rules; `guard-paths.mjs` resolves the paths, globs and env files they judge  |
-| `plugins.json`                 | Plugins the factory relies on and the one it disables                                                 |
-| `scripts/`                     | `e2e-env.sh`, `mobile-env.sh`, `cleanup.mjs`, `tick.sh`, `install.sh`, `doctor.sh`, hook scripts      |
-| `bin/qa.mjs`                   | QA, review, debug, scrub, ticket and learnings CLI                                                    |
-| `qa/profiles.yaml`             | Default web and mobile QA profiles                                                                    |
-| `config.json`                  | Defaults; the repository's `dev-factory.config.json` merges over them                                 |
-| `settings.factory.json`        | Base sandbox and permission settings for scheduled runs                                               |
-| `launchd/`                     | Scheduler templates rendered by `install.sh`                                                          |
-| `test/`                        | `node --test test/*.test.mjs` (from the plugin repository root)                                       |
+| Path                           | Purpose                                                                                                    |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| `commands/`                    | `setup`, `plan`, `build`, `quick`, `tick`, `scheduler`, `status`, `validate`, `improve`, `doctor`          |
+| `agents/`                      | `factory-builder`, `-reviewer`, `-debugger`, `-researcher`, `-improver`, `-promoter`                       |
+| `skills/`                      | `task-source`, `implement`, `qa`, `review`, `ship`, `environment`, `diagnose`, `telemetry`, `improve`      |
+| `scripts/sources/`             | One file per task source (`local`, `github`, `jira`, `notion`) and their shared model                      |
+| `scripts/tasks.mjs`            | List, read, create and move tasks for the sources a script can drive                                       |
+| `scripts/stack.mjs`            | Stacked PRs: plan a base, write the PR note, merge a moved blocker (rules in `stack-lib.mjs`)              |
+| `scripts/mcp.mjs`, `mcp/`      | The optional MCP catalog and the commands that enable it                                                   |
+| `scripts/factory-settings.mjs` | Builds the scheduled pass's sandbox and permissions from what is enabled                                   |
+| `hooks/hooks.json`             | Shell guard, edit guard, telemetry guard and stop gate; active only inside a factory run                   |
+| `scripts/guard-lib.mjs`        | The shell and edit guard rules; `guard-paths.mjs` resolves the paths, globs and env files they judge       |
+| `plugins.json`                 | Plugins the factory relies on and the one it disables                                                      |
+| `scripts/`                     | `e2e-env.sh`, `mobile-env.sh`, `cleanup.mjs`, `tick.sh`, `install.sh`, `doctor.sh`, hook scripts           |
+| `bin/qa.mjs`                   | QA, review, debug, scrub, ticket and learnings CLI                                                         |
+| `qa/profiles.yaml`             | Default web and mobile QA profiles                                                                         |
+| `config.json`                  | Defaults; the repository's `dev-factory.config.json` merges over them                                      |
+| `settings.factory.json`        | Base sandbox and permission settings for scheduled runs                                                    |
+| `launchd/`                     | Scheduler templates rendered by `install.sh`                                                               |
+| `test/`                        | `node --test test/*.test.mjs` (from the plugin repository root); `hygiene` and `docs` sweep the repository |
+| `CONTRIBUTING.md`              | The loop for changing the factory: branch, test first, checks, version                                     |
 
 Developing the plugin: `claude --plugin-dir .` from this repository, `node --test test/*.test.mjs`, `claude plugin validate .`, `npx prettier@3.2.5 --check "**/*.{md,json,mjs}"`, `bash scripts/lint-vocabulary.sh`. Release by bumping `version` in `.claude-plugin/plugin.json` and the marketplace entry together (a test checks they agree); installed copies update with `claude plugin update`.
 

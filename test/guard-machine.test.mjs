@@ -385,3 +385,26 @@ test('the sealed-build-file record is run state: a ticket cannot seal its own ed
 	assert.equal(e.deny, true);
 	allowed('cat .dev-factory/env-sealed.json');
 });
+
+// ---- a read-only role may read one setting ----
+
+test('reviewers, debuggers and researchers may run config.mjs get for one setting, and nothing else of it', async () => {
+	const { PLUGIN_ROOT } = await import('../scripts/plugin-root.mjs');
+	const cfg = `node "${PLUGIN_ROOT}/scripts/config.mjs"`;
+	for (const role of ['reviewer', 'debugger', 'researcher']) {
+		const ok = (c) => assert.equal(run(c, { role }).deny, false, `${role}: ${c} (${run(c, { role }).reason ?? ''})`);
+		const no = (c) => assert.equal(run(c, { role }).deny, true, `${role}: ${c}`);
+		ok(`${cfg} get review.readFirst`);
+		ok(`${cfg} get repoSkills.review`);
+		ok(`node ${PLUGIN_ROOT}/scripts/config.mjs get tasks.source`);
+		ok(`cd /work/app && ${cfg} get review.readFirst`);
+		no(`${cfg} get`);
+		no(`${cfg} get a.b c`);
+		no(`${cfg} validate`);
+		no(`${cfg} get x > out.txt`);
+		no(`${cfg} get $(echo x)`);
+		no(`${cfg} get review.readFirst; touch x`);
+		no('node /tmp/config.mjs get review.readFirst');
+	}
+	assert.equal(run(`${cfg} get review.readFirst`, { role: 'builder' }).deny, false, 'and nothing changes for the builder');
+});

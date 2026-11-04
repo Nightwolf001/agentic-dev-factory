@@ -224,3 +224,46 @@ test('scheduler.intervalMinutes and alerts.notify are validated', () => {
 		assert.match(validate(merge(load(), { scheduler: { intervalMinutes: bad } })).join('\n'), /scheduler\.intervalMinutes/);
 	assert.match(validate(merge(load(), { alerts: { notify: 'yes' } })).join('\n'), /alerts\.notify/);
 });
+
+test('repository skills per phase, the reviewer’s reading list and skipping commit hooks are settings with validation', () => {
+	assert.deepEqual(load().repoSkills, { implement: [], qa: [], review: [], ship: [], diagnose: [] });
+	assert.deepEqual(load().review.readFirst, []);
+	assert.equal(load().git.skipCommitHooks, false);
+	assert.deepEqual(
+		validate(
+			merge(load(), {
+				repoSkills: { implement: ['repo-rules', 'acme:testing'] },
+				review: { readFirst: ['docs/architecture.md', 'CONVENTIONS.md'] },
+				git: { skipCommitHooks: true },
+			}),
+		),
+		[],
+	);
+	for (const [over, re] of [
+		[{ repoSkills: { deploy: ['x'] } }, /repoSkills\.deploy is not a phase/],
+		[{ repoSkills: { qa: 'x' } }, /repoSkills\.qa must be a list/],
+		[{ repoSkills: { qa: ['a b'] } }, /repoSkills\.qa must be a list/],
+		[{ repoSkills: { qa: ['x; rm'] } }, /repoSkills\.qa/],
+		[{ review: { readFirst: ['/etc/passwd'] } }, /review\.readFirst/],
+		[{ review: { readFirst: ['../outside.md'] } }, /review\.readFirst/],
+		[{ review: { readFirst: 'docs/a.md' } }, /review\.readFirst/],
+		[{ git: { skipCommitHooks: 'yes' } }, /git\.skipCommitHooks/],
+	])
+		assert.match(validate(merge(load(), over)).join('\n'), re, JSON.stringify(over));
+});
+
+test('every phase skill and the reviewer tell the agent to read what the repository added', () => {
+	for (const phase of ['implement', 'qa', 'review', 'ship', 'diagnose'])
+		assert.match(
+			fs.readFileSync(new URL(`../skills/${phase}/SKILL.md`, import.meta.url), 'utf8'),
+			new RegExp(`config\\.mjs" get repoSkills\\.${phase}`),
+			phase,
+		);
+	assert.match(fs.readFileSync(new URL('../skills/review/SKILL.md', import.meta.url), 'utf8'), /get review\.readFirst/);
+	assert.match(fs.readFileSync(new URL('../agents/factory-reviewer.md', import.meta.url), 'utf8'), /get review\.readFirst/);
+	assert.match(fs.readFileSync(new URL('../skills/implement/SKILL.md', import.meta.url), 'utf8'), /git\.skipCommitHooks[\s\S]*commit with `-n`/);
+	assert.match(
+		fs.readFileSync(new URL('../skills/ship/SKILL.md', import.meta.url), 'utf8'),
+		/--no-verify.*git\.skipCommitHooks|git\.skipCommitHooks.*--no-verify/,
+	);
+});

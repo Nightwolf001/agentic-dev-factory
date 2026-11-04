@@ -9,6 +9,8 @@ You review one commit on one axis. You did not write this code and you have not 
 
 Your shell starts in the scheduler's directory, not the worktree, and a `cd` does not carry from one call to the next: put `cd <worktree> &&` in front of every `git` command, and `qa.mjs` finds the worktree itself (or pass `--worktree <path>`). You cannot edit, install or push; your shell only allows reading (git diff/log/show, grep, ls, cat) and `qa.mjs review`. Read `skills/review` first and follow it.
 
+Before the diff, read the files named by `node "${CLAUDE_PLUGIN_ROOT}/scripts/config.mjs" get review.readFirst` (this is the one setting a read-only role may fetch; an empty list or an error means none) and the repository skills `get repoSkills.review` names.
+
 Method:
 
 1. `git diff origin/<base>...HEAD --stat` (`<base>` is the base ref in your prompt: the repository's base branch unless the run was started on another branch, in which case only the work on top of that branch is yours to review), then the diff itself, then the surrounding code of everything it touches.

@@ -30,6 +30,13 @@ export function qaBin(rest = '') {
 	return new RegExp(`^node\\s+(?:${own}|\\S*dev-factory/bin/qa\\.mjs)\\s${rest ? `+${rest}` : ''}`);
 }
 
+// `node <plugin>/scripts/config.mjs get <one.setting>`: a read-only role may read one setting of the merged configuration (the
+// repository skills of its phase, the files a reviewer reads first). Nothing but a dotted name follows `get`.
+export function configGet() {
+	const own = `"?${escapeRe(PLUGIN_ROOT)}/scripts/config\\.mjs"?`;
+	return new RegExp(`^node\\s+(?:${own}|\\S*dev-factory/scripts/config\\.mjs)\\s+get\\s+[A-Za-z][\\w.]*$`);
+}
+
 const PROTECTED = new Set(['develop', 'preprod', 'main', 'master']);
 const READ_ONLY_ROLES = new Set(['reviewer', 'debugger', 'researcher']);
 
@@ -441,6 +448,7 @@ const REVIEWER_ALLOWED = [
 	/^cd\s+[\w./~-]+$/,
 	/^git\s+(diff|log|show|status|rev-parse|merge-base|ls-files|cat-file|blame|grep|rev-list|diff-tree)\b/,
 	qaBin('(review|learnings)\\b'),
+	configGet(),
 	/^(grep|rg|ls|cat|head|tail|wc|sort|uniq|jq|nl|pwd|echo|basename|dirname|stat|file)\b/,
 	// print-only sed: any other script (w, e) can write or run a command
 	/^sed\s+-n\s+(['"]?)\d+(,(\d+|\$))?p\1\s+[^\s;&|<>$`]+$/,

@@ -22,6 +22,7 @@ import fs from 'node:fs';
 import { compose } from './comment-lib.mjs';
 import { get, load } from './config.mjs';
 import { isMain } from './is-main.mjs';
+import { loadTrackerEnv } from './state-env.mjs';
 import { STATES } from './sources/common.mjs';
 import { SCRIPTED, makeSource, missingCredentials } from './sources/index.mjs';
 
@@ -172,6 +173,8 @@ export async function run(argv, { cfg = load(), source, resolveRepoUrl: resolver
 }
 
 if (isMain(import.meta.url)) {
+	// a command typed in a terminal has no scheduler to have loaded the tracker credentials from the state folder
+	loadTrackerEnv();
 	run(process.argv.slice(2))
 		.then((r) => console.log(JSON.stringify(r)))
 		.catch((e) => {
