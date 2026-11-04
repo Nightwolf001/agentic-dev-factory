@@ -35,7 +35,8 @@ if [ "$gid" = " <>" ]; then bad "git user.name and user.email are not set: commi
 elif printf '%s' "$gid" | grep -qiE 'claude|anthropic'; then bad "git identity is an agent ($gid): set your own user.name and user.email"
 else ok "commits are made as $gid"; fi
 command -v claude >/dev/null && ok "claude $(claude --version 2>/dev/null | head -1)" || bad "claude not installed"
-gh auth status >/dev/null 2>&1 && ok "gh authenticated (pull requests)" || bad "gh not authenticated (gh auth login)"
+# one retry: a scheduled pass that starts while the network is still waking would otherwise fail on a blip
+if gh auth status >/dev/null 2>&1 || { sleep "${DF_GH_RETRY_SECONDS:-2}"; gh auth status >/dev/null 2>&1; }; then ok "gh authenticated (pull requests)"; else bad "gh not authenticated (gh auth login)"; fi
 
 if [ "$ENV_TYPE" = compose ]; then
   docker info >/dev/null 2>&1 && ok "docker reachable" || bad "docker daemon unreachable"
@@ -82,6 +83,25 @@ fi
 for pl in $(node -e 'for(const x of require(process.argv[1]).plugins) if(x.required) console.log(x.id)' "$DIR/plugins.json"); do
   claude plugin list 2>/dev/null | grep -q "$pl" && ok "plugin $pl" || bad "plugin $pl not installed (claude plugin install superpowers@claude-plugins-official, or: dev-factory install --apply)"
 done
+
+# optional plugins are reported, not required: say what a missing one costs and how to add it
+for pl in $(node -e 'for(const x of require(process.argv[1]).plugins) if(!x.required) console.log(x.id)' "$DIR/plugins.json"); do
+  claude plugin list 2>/dev/null | grep -q "$pl" && ok "optional plugin $pl" || warn "optional plugin $pl is not installed (dev-factory install --apply installs it; DF_INSTALL_OPTIONAL=0 skips optional plugins)"
+done
+
+# a scheduled job needs a real terminal type and a UTF-8 locale (project scripts that call tput or pod install fail without them)
+if [ "$(uname)" = Darwin ] && [ "$CI" = 0 ]; then
+  for job in tick improve; do
+    pl="$HOME/Library/LaunchAgents/com.dev-factory.$(df_slug "$REPO").$job.plist"
+    [ -f "$pl" ] || continue
+    miss=""
+    for k in TERM LANG LC_ALL; do grep -q "<key>$k</key>" "$pl" || miss="$miss $k"; done
+    grep -A1 '<key>WorkingDirectory</key>' "$pl" | grep -q "$(df_state_dir)" || miss="$miss WorkingDirectory"
+    [ -z "$miss" ] && ok "scheduled job $job has TERM, LANG, LC_ALL and the state folder as working directory" || warn "the installed $job job lacks:$miss (dev-factory install --apply --load renders it again)"
+  done
+fi
+alert="$(node "$DIR/scripts/preflight-alert.mjs" show 2>/dev/null)"
+[ -z "$alert" ] || warn "$alert"
 
 # MCP servers are all optional: report what is in use, wherever it is configured, and say what a missing one costs
 MCP_FILE="${DF_MCP_FILE:-$REPO/.mcp.json}"

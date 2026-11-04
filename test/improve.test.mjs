@@ -182,3 +182,20 @@ test('the CLI writes a pass record from a claude result file', () => {
 	assert.equal(out.result, 'tick: claimed=1 shipped=1');
 	assert.equal(readRuns(path.join(dir, 'runs', 'runs.jsonl')).length, 1);
 });
+
+test('a pass record carries the wall-clock time and how the session ended, since duration_ms covers only the last session', async () => {
+	const { passRecord } = await import('../scripts/run-record.mjs');
+	const r = passRecord(
+		{ total_cost_usd: 2, duration_ms: 60_000, subtype: 'error_max_turns', num_turns: 90, result: 'x\ntick: claimed=1' },
+		{ started: '2026-10-15T00:00:00Z', exit: 1, now: new Date('2026-10-15T00:42:00Z') },
+	);
+	assert.equal(r.wallMs, 42 * 60_000);
+	assert.equal(r.durationMs, 60_000);
+	assert.equal(r.subtype, 'error_max_turns');
+	assert.equal(r.exit, 1);
+	assert.equal(r.result, 'tick: claimed=1');
+	const none = passRecord({}, { now: new Date() });
+	assert.equal(none.wallMs, null);
+	assert.equal(none.subtype, null);
+	assert.equal(passRecord({}, { started: 'garbage' }).wallMs, null);
+});

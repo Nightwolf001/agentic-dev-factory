@@ -5,11 +5,12 @@
 //
 //   (always)          merge the marketplace and enabledPlugins into .claude/settings.json so a fresh cloud session
 //                     installs dev-factory and its required plugins on start
-//   --github-actions  write .github/workflows/dev-factory-tick.yml (a pass every 15 minutes, state cached between runs)
+//   --github-actions  write .github/workflows/dev-factory-tick.yml (a pass every scheduler.intervalMinutes, state cached between runs)
 //   --routine         print how to schedule /dev-factory:tick as a Claude Code routine
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { get, load } from './config.mjs';
 import { isMain } from './is-main.mjs';
 import { PLUGIN_ROOT } from './plugin-root.mjs';
 
@@ -36,15 +37,38 @@ export function mergeSettings(existing, repo, required = ['superpowers@claude-pl
 	return out;
 }
 
-export function renderWorkflow(template, repo) {
-	return template.replaceAll('__MARKETPLACE__', repo);
+// GitHub Actions runs a schedule at most every 5 minutes, and a cron step has to divide the hour or the day.
+// -> { cron, minutes, note }: the interval actually used, and why when it is not the one asked for.
+export function cronFor(minutes) {
+	const asked = Number(minutes);
+	if (!Number.isInteger(asked) || asked < 1) throw new Error(`scheduler.intervalMinutes must be a whole number of minutes (got ${minutes})`);
+	if (asked < 5) return { cron: '*/5 * * * *', minutes: 5, note: `GitHub Actions runs a schedule at most every 5 minutes, so ${asked} became 5` };
+	if (asked < 60) {
+		const step = [5, 6, 10, 12, 15, 20, 30].reduce((best, d) => (Math.abs(d - asked) < Math.abs(best - asked) ? d : best), 5);
+		return {
+			cron: `*/${step} * * * *`,
+			minutes: step,
+			note: step === asked ? null : `a cron step has to divide the hour, so ${asked} minutes became ${step}`,
+		};
+	}
+	const hours = Math.min(24, Math.max(1, Math.round(asked / 60)));
+	return {
+		cron: hours === 24 ? '0 0 * * *' : `0 */${hours} * * *`,
+		minutes: hours * 60,
+		note: hours * 60 === asked ? null : `a cron schedule is whole hours here, so ${asked} minutes became ${hours * 60}`,
+	};
 }
 
-export const ROUTINE_HELP = `Claude Code routine: in a Claude Code session in this repository run /schedule and ask for
-  "a routine that runs /dev-factory:tick every 15 minutes in this repository".
+export function renderWorkflow(template, repo, minutes = 15) {
+	return template.replaceAll('__MARKETPLACE__', repo).replaceAll('__CRON__', cronFor(minutes).cron);
+}
+
+export const routineHelp = (minutes = 15) => `Claude Code routine: in a Claude Code session in this repository run /schedule and ask for
+  "a routine that runs /dev-factory:tick every ${minutes} minutes in this repository".
 The routine runs in Claude's cloud, installs the plugin from .claude/settings.json, and uses your connected GitHub account.
 Set runtime.mode to cloud in dev-factory.config.json if it is not detected, and use tasks.source github, notion or jira
 (a local task source needs the task files committed, since the cloud checkout has only what is pushed).`;
+export const ROUTINE_HELP = routineHelp();
 
 if (isMain(import.meta.url)) {
 	const argv = process.argv.slice(2);
@@ -73,10 +97,14 @@ if (isMain(import.meta.url)) {
 			);
 			const file = path.resolve('.github', 'workflows', 'dev-factory-tick.yml');
 			fs.mkdirSync(path.dirname(file), { recursive: true });
-			fs.writeFileSync(file, renderWorkflow(template, repo));
-			console.log(`wrote ${file}; add the secrets listed at its top, then run it once with workflow_dispatch`);
+			const wanted = get('scheduler.intervalMinutes', { config: load() }) ?? 15;
+			const { minutes, note } = cronFor(wanted);
+			fs.writeFileSync(file, renderWorkflow(template, repo, wanted));
+			console.log(
+				`wrote ${file} (a pass every ${minutes} minutes${note ? `: ${note}` : ''}); add the secrets listed at its top, then run it once with workflow_dispatch`,
+			);
 		}
-		if (flag('routine')) console.log(ROUTINE_HELP);
+		if (flag('routine')) console.log(routineHelp(get('scheduler.intervalMinutes', { config: load() }) ?? 15));
 	} catch (e) {
 		console.error(`cloud: ${e.message}`);
 		process.exit(1);

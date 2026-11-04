@@ -132,6 +132,7 @@
 		"debugger": "sonnet",
 		"researcher": "haiku",
 		"improver": "sonnet",
+		"promoter": "sonnet",
 		"effort": "high",
 		"efforts": {
 			"debugger": "high",
@@ -152,6 +153,12 @@
 		"submodules": [],
 		"buildFiles": [],
 		"preCommit": null
+	},
+	"scheduler": {
+		"intervalMinutes": 15
+	},
+	"alerts": {
+		"notify": false
 	},
 	"guard": {
 		"trackerHosts": []

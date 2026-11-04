@@ -2,7 +2,18 @@
 	"sandbox": {
 		"enabled": true,
 		"autoAllowBashIfSandboxed": true,
-		"excludedCommands": ["docker *", "xcrun *", "maestro *", "pod *", "yarn *", "git *", "gh *"],
+		"excludedCommands": [
+			"docker *",
+			"xcrun *",
+			"maestro *",
+			"pod *",
+			"yarn *",
+			"git *",
+			"gh *",
+			"bash *e2e-env.sh*",
+			"dev-factory env*",
+			"node *open-prs.mjs*"
+		],
 		"filesystem": {
 			"denyRead": ["~/.ssh", "~/.aws", "~/.config/gh"]
 		},

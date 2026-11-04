@@ -182,3 +182,45 @@ test('blocked.agentDecides is off by default, is a boolean, and DF_AGENT_DECIDES
 	assert.ok(validate(merge(load(), { blocked: { agentDecides: 'yes' } })).some((p) => p.includes('blocked.agentDecides')));
 	assert.ok(validate(merge(load(), { caps: { maxDecisions: -1 } })).some((p) => p.includes('caps.maxDecisions')));
 });
+
+test('config.mjs agent prints the model and effort a role runs with, so the settings reach every dispatch', async () => {
+	const { agentSettings, ROLES } = await import('../scripts/config.mjs');
+	const cfg = load();
+	assert.deepEqual(agentSettings('builder', { config: cfg, env: {} }), { model: 'sonnet', effort: 'high' });
+	assert.deepEqual(agentSettings('researcher', { config: cfg, env: {} }), { model: 'haiku', effort: 'low' });
+	assert.deepEqual(agentSettings('debugger', { config: cfg, env: {} }), { model: 'sonnet', effort: 'high' });
+	const custom = merge(cfg, { models: { reviewer: 'opus', effort: 'medium', efforts: { builder: 'max' } } });
+	assert.deepEqual(
+		agentSettings('reviewer', { config: custom, env: {} }),
+		{ model: 'opus', effort: 'medium' },
+		'a role without its own effort follows models.effort',
+	);
+	assert.equal(agentSettings('builder', { config: custom, env: {} }).effort, 'max', 'models.efforts.<role> wins');
+	assert.equal(
+		agentSettings('builder', { config: cfg, env: { DF_BUILDER_MODEL: 'haiku' } }).model,
+		'haiku',
+		'an environment override reaches the dispatch',
+	);
+	for (const role of ROLES) assert.ok(agentSettings(role, { config: cfg, env: {} }).model, role);
+	assert.throws(() => agentSettings('wizard', { config: cfg }), /no such agent role/);
+	const { spawnSync } = await import('node:child_process');
+	const r = spawnSync('node', [new URL('../scripts/config.mjs', import.meta.url).pathname, 'agent', 'reviewer'], { encoding: 'utf8' });
+	assert.equal(r.status, 0);
+	assert.equal(typeof JSON.parse(r.stdout).model, 'string');
+	assert.equal(spawnSync('node', [new URL('../scripts/config.mjs', import.meta.url).pathname, 'agent', 'nope'], { encoding: 'utf8' }).status, 3);
+	for (const f of ['tick', 'build', 'quick', 'improve', 'validate'])
+		assert.match(
+			fs.readFileSync(new URL(`../commands/${f}.md`, import.meta.url), 'utf8'),
+			/config\.mjs" agent <role>/,
+			`${f}.md passes the settings to its dispatches`,
+		);
+});
+
+test('scheduler.intervalMinutes and alerts.notify are validated', () => {
+	assert.equal(load().scheduler.intervalMinutes, 15);
+	assert.equal(load().alerts.notify, false);
+	assert.deepEqual(validate(merge(load(), { scheduler: { intervalMinutes: 5 }, alerts: { notify: true } })), []);
+	for (const bad of [0, 1441, 2.5, '5'])
+		assert.match(validate(merge(load(), { scheduler: { intervalMinutes: bad } })).join('\n'), /scheduler\.intervalMinutes/);
+	assert.match(validate(merge(load(), { alerts: { notify: 'yes' } })).join('\n'), /alerts\.notify/);
+});

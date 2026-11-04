@@ -5,6 +5,8 @@ argument-hint: '"<change>" [--base <branch>] | --pr <number> ["<extra instructio
 
 Run one small change through the factory in this session, visibly, without a task. Same worktree, environment, test-first build, QA walk and two-step review as `/dev-factory:build`; only the task is missing.
 
+Every agent you dispatch with the Agent tool runs with the model and effort the settings name for its role: run `node "${CLAUDE_PLUGIN_ROOT}/scripts/config.mjs" agent <role>` (role: `builder`, `reviewer`, `debugger`, `researcher`, `improver` or `promoter`), which prints `{"model","effort"}`, and pass both as the tool's `model` and `effort`. The agent's own frontmatter is only the fallback.
+
 `<worktrees>` below is the folder worktrees live in: the output of `node "${CLAUDE_PLUGIN_ROOT}/scripts/worktree.mjs" root` (`git.worktreeRoot`, by default a `.worktrees` folder beside the repository; point it at a writable folder in a cloud environment).
 
 Arguments: $ARGUMENTS. Two forms:

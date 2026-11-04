@@ -5,6 +5,8 @@ argument-hint: '[--dry-run]'
 
 You are the improvement pass of the factory. You hold the task-source and GitHub tools (`skills/task-source/SKILL.md`); the improver does not. Read `skills/improve` and follow it. Settings: `improvement.*` in `config.json` (`node "${CLAUDE_PLUGIN_ROOT}/scripts/config.mjs" get improvement.<key>`).
 
+Every agent you dispatch with the Agent tool runs with the model and effort the settings name for its role: run `node "${CLAUDE_PLUGIN_ROOT}/scripts/config.mjs" agent <role>` (role: `builder`, `reviewer`, `debugger`, `researcher`, `improver` or `promoter`), which prints `{"model","effort"}`, and pass both as the tool's `model` and `effort`. The agent's own frontmatter is only the fallback.
+
 `<worktrees>` below is the folder worktrees live in: the output of `node "${CLAUDE_PLUGIN_ROOT}/scripts/worktree.mjs" root` (`git.worktreeRoot`, by default a `.worktrees` folder beside the repository; point it at a writable folder in a cloud environment).
 
 0. Find where the factory can be changed from here: `node "${CLAUDE_PLUGIN_ROOT}/scripts/factory-target.mjs"` prints `{"mode","repo","prefix","reason"}`. `self` (this repository is the plugin's own), `clone` (`improvement.factoryRepo` or `DF_FACTORY_REPO` names a local checkout of it) and `vendored` (copied into this repository at `dev-factory/`) allow improvement PRs, made in `repo` with the folder `prefix`; `none` (an installed plugin lives in Claude's plugin cache) allows none and the findings stay improvement tasks, so say the `reason` in your report.

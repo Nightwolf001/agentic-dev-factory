@@ -39,6 +39,7 @@ export const ENV_OVERRIDES = {
 	'improvement.factoryRepo': 'DF_FACTORY_REPO',
 	'runtime.scheduler': 'DF_SCHEDULER',
 	'blocked.agentDecides': 'DF_AGENT_DECIDES',
+	'scheduler.intervalMinutes': 'DF_SCHEDULER_INTERVAL_MINUTES',
 };
 
 // Keys every source needs; the active source's own keys are added by requiredFor().
@@ -164,6 +165,16 @@ export function get(dotted, { config = load(), env = process.env } = {}) {
 	return dig(config, dotted);
 }
 
+// The model and effort an agent of `role` runs with: models.<role>, and models.efforts.<role> over models.effort. Commands
+// pass these to every Agent dispatch, so the settings reach the agents; an agent's own frontmatter is only the fallback.
+export function agentSettings(role, { config = load(), env = process.env } = {}) {
+	if (!ROLES.includes(role)) throw new Error(`no such agent role: ${role} (one of ${ROLES.join(', ')})`);
+	return {
+		model: get(`models.${role}`, { config, env }) ?? get('models.builder', { config, env }),
+		effort: get(`models.efforts.${role}`, { config, env }) ?? get('models.effort', { config, env }),
+	};
+}
+
 export function requiredFor(config) {
 	const source = dig(config, 'tasks.source');
 	if (!SOURCES.includes(source)) return REQUIRED;
@@ -265,6 +276,11 @@ export function validate(config = load()) {
 				problems.push(`environments.${name}.axiomDatasets must be a list`);
 		}
 	}
+	const interval = dig(config, 'scheduler.intervalMinutes');
+	if (interval !== undefined && !(Number.isInteger(interval) && interval >= 1 && interval <= 1440))
+		problems.push('scheduler.intervalMinutes must be a whole number of minutes from 1 to 1440');
+	const notify = dig(config, 'alerts.notify');
+	if (notify !== undefined && typeof notify !== 'boolean') problems.push('alerts.notify must be true or false');
 	const trackerHosts = dig(config, 'guard.trackerHosts');
 	if (
 		trackerHosts !== undefined &&
@@ -294,6 +310,13 @@ if (isMain(import.meta.url)) {
 			process.exit(1);
 		}
 		console.log(typeof v === 'object' ? JSON.stringify(v) : v);
+	} else if (cmd === 'agent') {
+		try {
+			console.log(JSON.stringify(agentSettings(arg)));
+		} catch (e) {
+			console.error(`config: ${e.message}`);
+			process.exit(3);
+		}
 	} else if (cmd === 'validate') {
 		const problems = validate();
 		if (problems.length) {
@@ -302,7 +325,7 @@ if (isMain(import.meta.url)) {
 		}
 		console.log('config: ok');
 	} else {
-		console.error('usage: config.mjs get <path> | validate');
+		console.error('usage: config.mjs get <path> | agent <role> | validate');
 		process.exit(3);
 	}
 }

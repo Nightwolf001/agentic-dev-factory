@@ -22,7 +22,7 @@ The flow at a glance: [docs/dev-factory-flow.svg](docs/dev-factory-flow.svg).
 | **Out**   | A draft pull request on its own branch, with the tests that drove it, QA screenshots tied to the exact commit, two independent reviews, and a root-cause note for bugs.       |
 | **Never** | Merges, approves, marks a PR ready, force-pushes, pushes any branch but the task's own, or writes to your task tracker from the builder. A person always decides what merges. |
 | **Needs** | Claude Code, git, the GitHub CLI and Node 20. Docker only if your tests need a container; a tracker and MCP servers only if you want them.                                    |
-| **Runs**  | In your own session (`/dev-factory:build`, `quick`, `plan`) or unattended every 15 minutes (`tick`), the same agents either way.                                              |
+| **Runs**  | In your own session (`/dev-factory:build`, `quick`, `plan`) or unattended on a schedule, every 15 minutes by default (`tick`), the same agents either way.                    |
 
 ## Concepts
 
@@ -95,7 +95,7 @@ You see the worktree and branch being created, the test written first, the QA wa
 
 **5. Review the PR like any other.** Request changes and the next pass fixes them on the same branch; approve and merge when you are happy.
 
-**6. When you trust it, let it run.** On a Mac, `dev-factory install --apply --load` schedules `tick` every 15 minutes; in the cloud use GitHub Actions or a Claude Code routine (see [Unattended passes](#set-up-for-unattended-passes) and [Cloud and Claude environments](#cloud-and-claude-environments)).
+**6. When you trust it, let it run.** On a Mac, `dev-factory install --apply --load` schedules `tick` every `scheduler.intervalMinutes` (15 by default); in the cloud use GitHub Actions or a Claude Code routine (see [Unattended passes](#set-up-for-unattended-passes) and [Cloud and Claude environments](#cloud-and-claude-environments)).
 
 No tracker at all and just a small change? Skip steps 3 and 4:
 
@@ -297,29 +297,30 @@ dev-factory config validate                   # lists every problem; also part o
 
 #### Variables that override a setting
 
-| Setting                     | Variable                   |
-| --------------------------- | -------------------------- |
-| `caps.maxOpenPrs`           | `DF_MAX_OPEN_PRS`          |
-| `caps.maxConcurrent`        | `DF_MAX_CONCURRENT`        |
-| `caps.maxBudgetUsd`         | `DF_MAX_BUDGET_USD`        |
-| `caps.maxResumes`           | `DF_MAX_RESUMES`           |
-| `caps.frontierRepeatHours`  | `DF_FRONTIER_REPEAT_HOURS` |
-| `tasks.source`              | `DF_TASK_SOURCE`           |
-| `tasks.label`               | `DF_TASK_LABEL`            |
-| `sources.github.repo`       | `DF_GITHUB_REPO`           |
-| `sources.notion.databaseId` | `DF_NOTION_DATABASE_ID`    |
-| `sources.notion.project`    | `DF_NOTION_PROJECT`        |
-| `sources.jira.cloudId`      | `DF_JIRA_CLOUD_ID`         |
-| `sources.jira.projects`     | `DF_JIRA_PROJECTS`         |
-| `models.orchestrator`       | `DF_MODEL`                 |
-| `models.builder`            | `DF_BUILDER_MODEL`         |
-| `models.reviewer`           | `DF_REVIEWER_MODEL`        |
-| `models.debugger`           | `DF_DEBUGGER_MODEL`        |
-| `models.effort`             | `DF_EFFORT`                |
-| `mobile.metroPort`          | `DF_METRO_PORT`            |
-| `runtime.scheduler`         | `DF_SCHEDULER`             |
-| `improvement.factoryRepo`   | `DF_FACTORY_REPO`          |
-| `blocked.agentDecides`      | `DF_AGENT_DECIDES`         |
+| Setting                     | Variable                        |
+| --------------------------- | ------------------------------- |
+| `caps.maxOpenPrs`           | `DF_MAX_OPEN_PRS`               |
+| `caps.maxConcurrent`        | `DF_MAX_CONCURRENT`             |
+| `caps.maxBudgetUsd`         | `DF_MAX_BUDGET_USD`             |
+| `caps.maxResumes`           | `DF_MAX_RESUMES`                |
+| `caps.frontierRepeatHours`  | `DF_FRONTIER_REPEAT_HOURS`      |
+| `tasks.source`              | `DF_TASK_SOURCE`                |
+| `tasks.label`               | `DF_TASK_LABEL`                 |
+| `sources.github.repo`       | `DF_GITHUB_REPO`                |
+| `sources.notion.databaseId` | `DF_NOTION_DATABASE_ID`         |
+| `sources.notion.project`    | `DF_NOTION_PROJECT`             |
+| `sources.jira.cloudId`      | `DF_JIRA_CLOUD_ID`              |
+| `sources.jira.projects`     | `DF_JIRA_PROJECTS`              |
+| `models.orchestrator`       | `DF_MODEL`                      |
+| `models.builder`            | `DF_BUILDER_MODEL`              |
+| `models.reviewer`           | `DF_REVIEWER_MODEL`             |
+| `models.debugger`           | `DF_DEBUGGER_MODEL`             |
+| `models.effort`             | `DF_EFFORT`                     |
+| `mobile.metroPort`          | `DF_METRO_PORT`                 |
+| `runtime.scheduler`         | `DF_SCHEDULER`                  |
+| `improvement.factoryRepo`   | `DF_FACTORY_REPO`               |
+| `blocked.agentDecides`      | `DF_AGENT_DECIDES`              |
+| `scheduler.intervalMinutes` | `DF_SCHEDULER_INTERVAL_MINUTES` |
 
 Secrets are read from `~/.dev-factory/.env.local` (the state folder) and from nowhere else. A `.env.local` inside the plugin's own directory is not read: a run working in a clone of the plugin can write one, and the scheduler would have loaded it. `dev-factory doctor` warns when it finds such a file; move its values to the state folder and delete it.
 
@@ -406,6 +407,13 @@ Every setting, with its default. `see config.json` means the default is a longer
 | `runtime.mode`      | `"auto"` | `auto` detects local or cloud; `local` or `cloud` forces it.                          |
 | `runtime.scheduler` | `"auto"` | What runs scheduled passes: `auto`, `launchd`, `github-actions`, `routine` or `none`. |
 
+#### Scheduler
+
+| Key                         | Default | What it does                                                                                                                                                                                                                                                                   |
+| --------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `scheduler.intervalMinutes` | `15`    | Minutes between scheduled ticks, from 1 to 1440. It sets the launchd `StartInterval`, the GitHub Actions cron and the routine text. GitHub Actions runs a schedule at most every 5 minutes and a cron step must divide the hour, so `cloud init` rounds and says what it used. |
+| `alerts.notify`             | `false` | `true` on a Mac: one notification per distinct reason when a scheduled pass cannot start (the doctor fails, the task source cannot be read). The last failure is also shown by `dev-factory doctor` and `dev-factory scheduler status`.                                        |
+
 #### Git
 
 | Key                    | Default           | What it does                                                                                                                                              |
@@ -459,6 +467,7 @@ Every setting, with its default. `see config.json` means the default is a longer
 | `models.debugger`     | `"sonnet"`        | Model of the debugger.                                                              |
 | `models.researcher`   | `"haiku"`         | Model of the researcher.                                                            |
 | `models.improver`     | `"sonnet"`        | Model of the improver.                                                              |
+| `models.promoter`     | `"sonnet"`        | Model of the promoter.                                                              |
 | `models.effort`       | `"high"`          | Default effort level.                                                               |
 | `models.efforts`      | `see config.json` | Effort per role (`debugger`, `researcher`, `improver`), overriding `models.effort`. |
 
@@ -612,10 +621,20 @@ Switch the schedule on and off with one command, whichever scheduler you use:
 
 ```bash
 dev-factory scheduler status            # which scheduler, running or stopped, pause switch
-dev-factory scheduler off               # stop the scheduled passes (add tick or improve to stop one)
+dev-factory scheduler off               # stop the scheduled passes (add tick or improve to stop just that job)
 dev-factory scheduler on                # start them again
 dev-factory tick                        # one pass by hand, in the current repository: not affected by the switch
 ```
+
+Each job has its own pause switch, so `off improve` never pauses the tick and `on tick` never resumes the improvement pass (the older single switch is still honoured, and turning one job on leaves the other paused). `on` also starts a tick at once, so a switched-on repository does not wait a whole interval. GitHub Actions has only the tick workflow: `off improve` and `on improve` are refused there.
+
+A scheduled job runs in a real environment: `TERM=xterm-256color` (project scripts that call `tput` fail without it), `LANG` and `LC_ALL` as `en_US.UTF-8` (`pod install` dies on encoding), and the state folder as its working directory. `dev-factory doctor` warns when an installed job lacks any of them; `dev-factory install --apply --load` renders it again. The sandbox of a pass may write the state folder and runs `e2e-env.sh` outside it.
+
+`dev-factory install --apply` installs the optional plugins too (`DF_INSTALL_OPTIONAL=0` skips them) and exits 1 when a plugin or marketplace cannot be installed, after trying the rest. `dev-factory update` refreshes the marketplaces, updates every installed copy of the plugin, checks each copy's version and files on disk, and removes cached versions nothing refers to (not an installed one, not the newest of a plugin, not one changed in the last 24 hours, `DF_PRUNE_KEEP_HOURS`); `--check` changes nothing and says what would change. A running session keeps the version it started with.
+
+A pass that cannot reach a tool it needs (the task source, GitHub) waits for MCP servers still connecting, then ends with `tick: aborted <reason>` and claims, comments and blocks nothing. The scheduler does not remember that queue as looked at, so the next pass reads it again. The open-PR cap counts only the factory's own PRs (`scripts/open-prs.mjs`): those whose title or branch carries, as a whole word, the key of a task in progress or in review. A count that fails is "unknown", and unknown never claims.
+
+Every agent a command dispatches runs with the model and effort its settings name: `node scripts/config.mjs agent <role>` prints `{"model","effort"}` from `models.<role>`, `models.efforts.<role>` and `models.effort`, and the commands pass both to the Agent tool, so `models.reviewer` and the others take effect. A pass record (`~/.dev-factory/runs/runs.jsonl`) carries `wallMs`, the clock time of the whole pass (`durationMs` covers only the last session), and `subtype`, how the session ended.
 
 In a Claude session the same thing is `/dev-factory:scheduler on|off|status`. `off` keeps the jobs and the configuration; `on` restores them. What each scheduler does:
 
@@ -653,7 +672,7 @@ dev-factory cloud init --routine          # also print how to schedule /dev-fact
 | Task source     | any                                          | `github`, `notion` or `jira`; `local` works only for task files that are committed and pushed                                         |
 | MCP servers     | `dev-factory mcp connect`, then `/mcp` login | commit `.mcp.json`; OAuth servers need a login the cloud session cannot do, so prefer API-token or no-MCP sources                     |
 
-The GitHub Actions workflow runs one pass every 15 minutes under a `concurrency` group so two passes never overlap, restores the factory's state between runs from the Actions cache, sets the commit identity from the repository variables, installs the plugin from the marketplace, and runs `dev-factory tick`. Its header lists the secrets it needs.
+The GitHub Actions workflow runs one pass every `scheduler.intervalMinutes` (at least 5) under a `concurrency` group so two passes never overlap, restores the factory's state between runs from the Actions cache, sets the commit identity from the repository variables, installs the plugin from the marketplace, and runs `dev-factory tick`. Its header lists the secrets it needs.
 
 ## Using the factory
 
@@ -677,7 +696,7 @@ The GitHub Actions workflow runs one pass every 15 minutes under a `concurrency`
 
 |             | Tick (unattended)                                                                                            | Inline (your session)                                 |
 | ----------- | ------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------- |
-| Started by  | a scheduler every 15 minutes, or `dev-factory tick`                                                          | you typing a command                                  |
+| Started by  | a scheduler every `scheduler.intervalMinutes`, or `dev-factory tick`                                         | you typing a command                                  |
 | Which tasks | every `ready` task in queue order, up to the caps                                                            | the one you name (`build`), or none (`quick`)         |
 | Permissions | `settings.factory.json` plus what you enabled; sandboxed, no prompts, a budget cap                           | your own                                              |
 | Login       | `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`                                                          | your normal login                                     |

@@ -2,7 +2,7 @@
 description: One unattended pass - pick up labelled tasks from the configured task source, build each to a draft PR, advance finished ones. Scheduled by scripts/tick.sh.
 ---
 
-You are the scheduler pass of the factory. You hold the task-source and GitHub tools; the builder does not. Be mechanical. Never ask a question: a situation you cannot resolve becomes a `factory-blocked` label and a comment, then you move on. Read state from the task source and GitHub, never from a builder's narrative.
+You are the scheduler pass of the factory. You hold the task-source and GitHub tools; the builder does not. Be mechanical. Never ask a question: a situation you cannot resolve becomes a `factory-blocked` label and a comment, then you move on. Read state from the task source and GitHub, never from a builder's narrative. Every agent you dispatch with the Agent tool runs with the model and effort the settings name for its role: run `node "${CLAUDE_PLUGIN_ROOT}/scripts/config.mjs" agent <role>` (role: `builder`, `reviewer`, `debugger`, `researcher`, `improver` or `promoter`), which prints `{"model","effort"}`, and pass both as the tool's `model` and `effort`. The agent's own frontmatter is only the fallback.
 
 `<worktrees>` below is the folder worktrees live in: the output of `node "${CLAUDE_PLUGIN_ROOT}/scripts/worktree.mjs" root` (`git.worktreeRoot`, by default a `.worktrees` folder beside the repository; point it at a writable folder in a cloud environment).
 
@@ -12,6 +12,10 @@ Phase comments: every phase exit writes one COMMENT `[dev-factory] phase: <name>
 
 ## 0. Housekeeping
 
+First make sure the tools this pass depends on answer: the task source (a LIST of `ready` tasks) and GitHub (`gh auth status`). An MCP server can still be connecting when the pass starts: when a tool you need is not there yet, use ToolSearch to wait for it (a few tries with a short pause) before deciding it is down. If a needed tool is still unreachable, claim nothing, comment nothing and block nobody (an outage is not the tasks' fault), print `tick: aborted <short reason>` as the last line and end the turn. The scheduler sees that line and does not remember this queue as looked at, so the next pass reads it again.
+
+Run `gh` and `git` as bare commands, one per call: `git -C <path> ...` instead of `cd <path> && git ...`, `gh ... --jq '<filter>'` instead of a pipe to `jq`. The sandbox's rules match on the command's first word, so a wrapped or piped call can be refused for a reason that has nothing to do with GitHub. Retry a refused or failed bare call once before you call GitHub unreachable.
+
 1. `bash "${CLAUDE_PLUGIN_ROOT}/scripts/e2e-env.sh" sweep`.
 2. Advance finished work first (section 5), so capacity frees before new claims.
 
@@ -19,7 +23,7 @@ Phase comments: every phase exit writes one COMMENT `[dev-factory] phase: <name>
 
 Stop claiming (still do section 5) when any holds:
 
--   Open factory PRs: `gh pr list --author @me --state open --json number | jq length` is at least `DF_MAX_OPEN_PRS`. Stacked PRs are open factory PRs and count.
+-   Open factory PRs: `node "${CLAUDE_PLUGIN_ROOT}/scripts/open-prs.mjs"` exits 20 (at or over `DF_MAX_OPEN_PRS`, printed as `max`) or 21 (could not count, which also means do not claim). It counts only the PRs whose title or branch carries the key of a task that is in progress or in review, so your own PRs do not use up the cap. Stacked PRs are open factory PRs and count.
 -   Breaker: tasks labelled `tasks.blockedLabel` and updated within `caps.breakerWindowHours` number `caps.breakerThreshold` or more (`node "${CLAUDE_PLUGIN_ROOT}/scripts/tasks.mjs" list --label <blockedLabel> --updated-within-minutes <hours*60>` for local and github; the breaker search in `skills/task-source/jira.md` for jira).
 -   Canonical-ports environment busy: `ls ~/.dev-factory/ports.lock` exists (every ticket while `caps.maxConcurrent` is 1).
 
@@ -149,4 +153,4 @@ BLOCK the task (the label keeps it out of the queue until a person removes it) a
 
 ## 7. Exit
 
-Print one line: `tick: claimed=<n> resumed=<n> shipped=<n> blocked=<n> merged=<n> skipped=<n>`. End the turn. Do not schedule a wakeup; the scheduler runs the next pass.
+Print one line: `tick: claimed=<n> resumed=<n> shipped=<n> blocked=<n> merged=<n> skipped=<n>` (or `tick: aborted <reason>` as section 0 says). End the turn. Do not schedule a wakeup; the scheduler runs the next pass.

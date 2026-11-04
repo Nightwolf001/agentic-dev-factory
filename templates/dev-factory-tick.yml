@@ -6,7 +6,7 @@
 name: dev-factory tick
 on:
   schedule:
-    - cron: '*/15 * * * *'
+    - cron: '__CRON__'
   workflow_dispatch:
 concurrency:
   group: dev-factory

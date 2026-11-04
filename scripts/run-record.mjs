@@ -63,6 +63,29 @@ export function buildTicketRecord({ worktree, env = null, costUsd = null, durati
 	};
 }
 
+// One scheduled pass. `duration_ms` in claude's result covers only the last session, so a pass that resumed or ran several
+// looked short: `wallMs` is the clock time from the start of the pass to its end. `subtype` says how it ended (success,
+// error_max_turns, error_during_execution, ...).
+export function passRecord(res, { started = null, exit = 0, now = new Date() } = {}) {
+	const t0 = Date.parse(started ?? '');
+	return {
+		type: 'pass',
+		at: now.toISOString(),
+		startedAt: started,
+		exit: Number(exit ?? 0),
+		costUsd: res.total_cost_usd ?? null,
+		durationMs: res.duration_ms ?? null,
+		wallMs: Number.isFinite(t0) ? Math.max(0, now.getTime() - t0) : null,
+		subtype: res.subtype ?? null,
+		turns: res.num_turns ?? null,
+		result:
+			String(res.result ?? '')
+				.split('\n')
+				.filter((l) => l.startsWith('tick:'))
+				.pop() ?? null,
+	};
+}
+
 export function append(record, file = runsFile()) {
 	fs.mkdirSync(path.dirname(file), { recursive: true });
 	fs.appendFileSync(file, JSON.stringify(record) + '\n');
@@ -128,25 +151,7 @@ if (isMain(import.meta.url)) {
 			),
 		);
 	} else if (cmd === 'pass') {
-		const res = readJson(a['result-file']) ?? {};
-		console.log(
-			JSON.stringify(
-				append({
-					type: 'pass',
-					at: new Date().toISOString(),
-					startedAt: a.started,
-					exit: Number(a.exit ?? 0),
-					costUsd: res.total_cost_usd ?? null,
-					durationMs: res.duration_ms ?? null,
-					turns: res.num_turns ?? null,
-					result:
-						String(res.result ?? '')
-							.split('\n')
-							.filter((l) => l.startsWith('tick:'))
-							.pop() ?? null,
-				}),
-			),
-		);
+		console.log(JSON.stringify(append(passRecord(readJson(a['result-file']) ?? {}, { started: a.started, exit: a.exit }))));
 	} else if (cmd === 'learnings') {
 		const text = fs.readFileSync(path.join(a.worktree, '.dev-factory', 'learnings.md'), 'utf8');
 		const rows = parseLearnings(text)
