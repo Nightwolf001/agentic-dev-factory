@@ -331,3 +331,32 @@ test('worktreeRoots lists the repository’s worktrees, and nothing outside a re
 	assert.ok(here.length >= 1);
 	assert.deepEqual(worktreeRoots(fs.mkdtempSync(path.join(os.tmpdir(), 'df-norepo-'))), []);
 });
+
+test('tools/list describes each tool’s input as a typed schema with its required fields', async () => {
+	const { schemaFor } = await import('../scripts/jira-mcp.mjs');
+	assert.deepEqual(
+		schemaFor({ jql: 'string', maxResults: 'number?', fields: 'string[]?', transition: '{ id: string }', body: 'string | object' }),
+		{
+			type: 'object',
+			properties: {
+				jql: { type: 'string', description: 'string' },
+				maxResults: { type: 'number', description: 'number?' },
+				fields: { type: 'array', items: { type: 'string' }, description: 'string[]?' },
+				transition: { type: 'object', description: '{ id: string }' },
+				body: { anyOf: [{ type: 'string' }, { type: 'object' }], description: 'string | object' },
+			},
+			required: ['jql', 'transition', 'body'],
+			additionalProperties: true,
+		},
+	);
+	const listed = await handle(
+		{ jsonrpc: '2.0', id: 1, method: 'tools/list' },
+		makeTools({ site: 'example.atlassian.net', email: 'a@b.c', token: 't' }),
+	);
+	for (const t of listed.result.tools) {
+		assert.equal(t.inputSchema.type, 'object', t.name);
+		for (const [k, p] of Object.entries(t.inputSchema.properties)) assert.ok(p.type || p.anyOf, `${t.name}.${k} has a type`);
+	}
+	const create = listed.result.tools.find((t) => t.name === 'createJiraIssue');
+	assert.deepEqual(create.inputSchema.required, ['projectKey', 'issueTypeName', 'summary']);
+});

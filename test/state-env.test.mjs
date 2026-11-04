@@ -180,3 +180,32 @@ test('import-env copies only values the shell reads back as themselves, and keep
 	assert.equal(sourced.stdout, '1|abc123|a b $c|a b');
 	assert.equal(fs.existsSync(pwned), false);
 });
+
+test('import-env skips the lines of a multi-line value, and a name written twice is taken once', () => {
+	const s = setup();
+	const pwned = path.join(s.root, 'pwned');
+	fs.writeFileSync(
+		s.old,
+		[
+			'PRIVATE_KEY="-----BEGIN KEY-----',
+			'INSIDE_THE_VALUE=1',
+			`touch ${pwned}`,
+			'-----END KEY-----"',
+			"NOTE='first line",
+			'ALSO_INSIDE=2',
+			"last line'",
+			'REPEATED=one',
+			'REPEATED=two',
+			'AFTER=ok',
+		].join('\n'),
+	);
+	const r = s.run('--from', s.old, '--apply');
+	assert.equal(r.status, 0, r.stderr);
+	assert.match(r.stdout, /skip {2}PRIVATE_KEY/);
+	assert.match(r.stdout, /skip {2}NOTE/);
+	assert.match(r.stdout, /skip {2}REPEATED \(named again/);
+	assert.doesNotMatch(r.stdout, /INSIDE_THE_VALUE|ALSO_INSIDE/);
+	assert.equal(fs.readFileSync(s.target, 'utf8'), 'REPEATED=one\nAFTER=ok\n');
+	assert.match(r.stdout, /2 name\(s\) added/);
+	assert.equal(fs.existsSync(pwned), false);
+});

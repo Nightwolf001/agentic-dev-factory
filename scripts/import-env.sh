@@ -34,16 +34,33 @@ plain() {
   printf '%s\n' "$1" | grep -Eq "^[[:space:]]*(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*=([A-Za-z0-9_@%+=:,./~-]*|'[^']*'|\"[^\"\$\`\\\\]*\")[[:space:]]*$"
 }
 have() { [ -f "$TARGET" ] && grep -Eq "^[[:space:]]*(export[[:space:]]+)?$1=" "$TARGET"; }
-added=0; kept=0
+added=0; kept=0; seen=" "
 for f in "${FROM[@]}"; do
   [ -f "$f" ] || { echo "import-env: $f does not exist" >&2; exit 1; }
   echo "from $f"
+  open=""   # the quote of a value that continues on the next line, while one does
   while IFS= read -r line || [ -n "$line" ]; do
+    if [ -n "$open" ]; then
+      # inside a multi-line value: none of its lines is a setting of its own
+      case "$line" in *"$open"*) open="" ;; esac
+      continue
+    fi
     case "$line" in ''|'#'*) continue ;; esac
     name="$(printf '%s' "$line" | sed -n 's/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}\([A-Za-z_][A-Za-z0-9_]*\)=.*/\2/p')"
     [ -n "$name" ] || continue
     if [ "$name" = DF_TAKEOVER ]; then echo "  skip  $name (the owner turns takeover on in the new place; not copied)"; continue; fi
-    if ! plain "$line"; then echo "  skip  $name (its value is not plain text the shell reads back as itself; add it by hand)"; continue; fi
+    if ! plain "$line"; then
+      echo "  skip  $name (its value is not plain text the shell reads back as itself; add it by hand)"
+      # a quote that is opened and not closed on this line runs on to a later one
+      val="${line#*=}"
+      case "$val" in
+        \'*) rest="${val#\'}"; case "$rest" in *\'*) ;; *) open="'" ;; esac ;;
+        \"*) rest="${val#\"}"; case "$rest" in *\"*) ;; *) open='"' ;; esac ;;
+      esac
+      continue
+    fi
+    case "$seen" in *" $name "*) echo "  skip  $name (named again in $f; the first one is used)"; continue ;; esac
+    seen="$seen$name "
     if have "$name"; then echo "  keep  $name (already in $TARGET)"; kept=$((kept + 1)); continue; fi
     if [ "$APPLY" = 1 ]; then
       mkdir -p "$STATE"

@@ -116,7 +116,7 @@ export function makeTools({ site, email, token, fetchImpl = fetch, roots = null 
 		addCommentToJiraIssue: {
 			description:
 				'Add a comment. commentBody is text (blank lines separate paragraphs, [~accountid:ID] is a real mention) or an Atlassian Document Format document ({ type: "doc", ... }), which is sent as it is.',
-			input: { issueIdOrKey: 'string', commentBody: 'string' },
+			input: { issueIdOrKey: 'string', commentBody: 'string | object' },
 			async run({ issueIdOrKey, commentBody }) {
 				const isDoc = commentBody && typeof commentBody === 'object' && commentBody.type === 'doc' && Array.isArray(commentBody.content);
 				if (!isDoc && (typeof commentBody !== 'string' || !commentBody.trim())) throw new Error('commentBody is required');
@@ -213,6 +213,28 @@ export function makeTools({ site, email, token, fetchImpl = fetch, roots = null 
 	};
 }
 
+// The input notation of a tool ('string', 'number?', 'string[]?', '{ ... }', 'string | object') as a JSON schema: the type of each
+// property, and which of them are required (those not marked with a trailing ?).
+export function schemaFor(input) {
+	const TYPES = { string: 'string', number: 'number', object: 'object', boolean: 'boolean' };
+	const one = (t) => {
+		if (t.endsWith('[]')) return { type: 'array', items: one(t.slice(0, -2)) };
+		if (t.startsWith('{')) return { type: 'object' };
+		return TYPES[t] ? { type: TYPES[t] } : {};
+	};
+	const properties = {};
+	const required = [];
+	for (const [name, notation] of Object.entries(input)) {
+		const optional = notation.endsWith('?');
+		const text = optional ? notation.slice(0, -1) : notation;
+		const parts = text.split('|').map((x) => x.trim());
+		const schemas = parts.map(one);
+		properties[name] = { ...(schemas.length > 1 ? { anyOf: schemas } : schemas[0]), description: notation };
+		if (!optional) required.push(name);
+	}
+	return { type: 'object', properties, ...(required.length ? { required } : {}), additionalProperties: true };
+}
+
 // ---- the MCP protocol: newline-delimited JSON-RPC over stdio ----
 export async function handle(msg, tools) {
 	const { id, method, params } = msg;
@@ -233,11 +255,7 @@ export async function handle(msg, tools) {
 				tools: Object.entries(tools).map(([name, t]) => ({
 					name,
 					description: t.description,
-					inputSchema: {
-						type: 'object',
-						properties: Object.fromEntries(Object.entries(t.input).map(([k, v]) => [k, { description: v }])),
-						additionalProperties: true,
-					},
+					inputSchema: schemaFor(t.input),
 				})),
 			});
 		case 'tools/call': {
