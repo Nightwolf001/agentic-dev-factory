@@ -75,6 +75,20 @@ export function githubSource(cfg, { env = process.env, gh = defaultGh } = {}) {
 			const i = json(['issue', 'view', numberOf(key), '--json', `${FIELDS},comments`, ...repoArgs]);
 			return { ...normalise(i), body: i.body ?? '', comments: (i.comments ?? []).map((c) => c.body) };
 		},
+		async people(key) {
+			const i = json(['issue', 'view', numberOf(key), '--json', 'assignees,author', ...repoArgs]);
+			const tag = (l) => (l ? `@${l}` : null);
+			return { assignee: tag(i.assignees?.[0]?.login), reporter: tag(i.author?.login) };
+		},
+		async comments(key) {
+			const i = json(['issue', 'view', numberOf(key), '--json', 'comments', ...repoArgs]);
+			return (i.comments ?? []).map((c) => ({
+				id: String(c.id ?? c.url ?? c.createdAt),
+				author: c.author?.login ?? null,
+				created: c.createdAt,
+				body: c.body ?? '',
+			}));
+		},
 		async create({ title, body, type, labels = [label], blockedBy = [], parent }) {
 			const refs = blockedBy.length ? `\n\nBlocked by: ${blockedBy.join(', ')}` : '';
 			const par = parent ? `\n\nParent: ${parent}` : '';
@@ -128,6 +142,7 @@ export function githubSource(cfg, { env = process.env, gh = defaultGh } = {}) {
 			for (const l of [
 				label,
 				blocked,
+				g('tasks.questionLabel'),
 				...stateLabels,
 				'factory-validated',
 				'factory-regression',

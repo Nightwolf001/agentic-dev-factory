@@ -9,7 +9,7 @@ import { commitPending, decide, discardPending, fingerprintOf, isBuildable, prNe
 const cfg = load();
 const task = (key, extra = {}) => ({ key, state: 'ready', updated: '2026-10-15T10:00:00Z', labels: ['dev-factory'], blockedBy: [], ...extra });
 // list() answers by the first state in the filter, so a test sets up the queue, the strays and the tasks in review separately
-const deps = (byState, prs = {}) => ({ list: async ({ states }) => byState[states[0]] ?? [], prState: async (key) => prs[key] ?? null });
+const deps = (byState, prs = {}) => ({ list: async ({ states }) => byState[states?.[0]] ?? [], prState: async (key) => prs[key] ?? null });
 
 test('an unresolved blocker makes a task unbuildable', () => {
 	assert.equal(isBuildable(task('A', { blockedBy: [{ key: 'B', done: false }] })), false);
@@ -61,7 +61,7 @@ test('prStateFor finds the PR by the key in its title', () => {
 	const calls = [];
 	const run = (args) => {
 		calls.push(args.join(' '));
-		if (args[1] === 'list') return JSON.stringify([{ number: 7 }]);
+		if (args[1] === 'list') return JSON.stringify([{ number: 7, title: 'Add thing [GH-12]', state: 'OPEN' }]);
 		return JSON.stringify({
 			state: 'OPEN',
 			reviewDecision: 'APPROVED',
@@ -165,7 +165,7 @@ test('prStateFor reads the base, comments, Bugbot threads and whether the merge 
 	let state = 'MERGED';
 	const run = (args) => {
 		calls.push(args.join(' '));
-		if (args[0] === 'pr' && args[1] === 'list') return JSON.stringify([{ number: 7 }]);
+		if (args[0] === 'pr' && args[1] === 'list') return JSON.stringify([{ number: 7, title: 'Add thing [GH-12]', state: 'MERGED' }]);
 		if (args[0] === 'repo') return JSON.stringify({ owner: { login: 'o' }, name: 'r' });
 		if (args[0] === 'pr') {
 			return JSON.stringify({
@@ -203,4 +203,145 @@ test('prStateFor reads the base, comments, Bugbot threads and whether the merge 
 	const quiet = prStateFor('GH-12', run);
 	assert.equal(quiet.bugbotOpen, 0);
 	assert.equal(quiet.reachedDone, false);
+});
+
+// ---- answers, fix requests on the ticket, and one decision ----
+import { decisionFingerprint } from '../scripts/frontier.mjs';
+
+const Q = '@jane\n\nWhich format?\n\n[dev-factory] blocked: question';
+const cm = (body, id) => ({ id, body });
+const withComments = (byState, prs, comments) => ({ ...deps(byState, prs), comments: async (key) => comments[key] ?? [] });
+const asked = (extra = {}) => task('Q-1', { labels: ['dev-factory', 'factory-blocked', 'factory-question'], ...extra });
+const lists = (byLabel, byState = {}) => ({
+	list: async (f) => (f.label ? (byLabel[f.label] ?? []).filter((t) => !f.notStates?.includes(t.state)) : byState[f.states?.[0]] ?? []),
+	prState: async () => null,
+});
+
+test('a person’s answer to a question the factory asked starts a session; a question still waiting does not', async () => {
+	const base = lists({ 'factory-question': [asked()] });
+	const waiting = await decide({ cfg, deps: { ...base, comments: async () => [cm(Q, 'q')] }, state: null });
+	assert.equal(waiting.run, false);
+	const answered = await decide({ cfg, deps: { ...base, comments: async () => [cm(Q, 'q'), cm('Use CSV', 'a1')] }, state: null });
+	assert.equal(answered.run, true);
+	assert.match(answered.reason, /1 answered question\(s\) \(Q-1\)/);
+	assert.match(answered.fingerprint, /^v2:[0-9a-f]{40}$/);
+	// a done task that still carries the label is not asked about
+	const done = lists({ 'factory-question': [asked({ state: 'done' })] });
+	assert.equal((await decide({ cfg, deps: { ...done, comments: async () => [cm(Q, 'q'), cm('Use CSV', 'a1')] }, state: null })).run, false);
+	// withdrawn by the factory, or already taken up
+	const cancelled = [cm(Q, 'q'), cm('Use CSV', 'a1'), cm('[dev-factory] blocked: factory', 'f')];
+	assert.equal((await decide({ cfg, deps: { ...base, comments: async () => cancelled }, state: null })).run, false);
+	const taken = [cm(Q, 'q'), cm('Use CSV', 'a1'), cm('[dev-factory] phase: resume started', 'p')];
+	assert.equal((await decide({ cfg, deps: { ...base, comments: async () => taken }, state: null })).run, false);
+	// a source whose comments cannot be read is no evidence of an answer
+	assert.equal(
+		(
+			await decide({
+				cfg,
+				deps: {
+					...base,
+					comments: async () => {
+						throw new Error('403');
+					},
+				},
+				state: null,
+			})
+		).run,
+		false,
+	);
+	assert.equal((await decide({ cfg, deps: base, state: null })).run, false, 'a source with no comments at all');
+});
+
+test('the same answer is not started twice within the repeat window, a new reply is, and so is the same one after the window', async () => {
+	const base = lists({ 'factory-question': [asked()] });
+	const make = (comments) => ({ ...base, comments: async () => comments });
+	const first = await decide({ cfg, deps: make([cm(Q, 'q'), cm('Use CSV', 'a1')]), state: null });
+	const state = { fingerprint: first.fingerprint, at: new Date().toISOString() };
+	const again = await decide({ cfg, deps: make([cm(Q, 'q'), cm('Use CSV', 'a1')]), state });
+	assert.equal(again.run, false);
+	assert.match(again.reason, /nothing new/);
+	assert.equal((await decide({ cfg, deps: make([cm(Q, 'q'), cm('Use CSV', 'a1'), cm('and a header', 'a2')]), state })).run, true, 'a new reply');
+	const old = { fingerprint: first.fingerprint, at: new Date(Date.now() - 48 * 3600_000).toISOString() };
+	assert.equal((await decide({ cfg, deps: make([cm(Q, 'q'), cm('Use CSV', 'a1')]), state: old })).run, true, 'after the window');
+});
+
+test('a fix request written on the ticket starts a session while the PR is open, once, until the factory answers it', async () => {
+	const open = { state: 'OPEN', author: 'bot', headCommittedAt: '2026-10-15T10:00:00Z', reviews: [], comments: [] };
+	const fix = [cm('looks fine', 'c0'), cm('dev-factory fix rename the helper', 'c1')];
+	const d1 = await decide({ cfg, deps: withComments({ inReview: [task('R', { state: 'inReview' })] }, { R: open }, { R: fix }), state: null });
+	assert.equal(d1.run, true);
+	assert.match(d1.reason, /1 fix request\(s\) on the ticket \(R\)/);
+	const state = { fingerprint: d1.fingerprint, at: new Date().toISOString() };
+	assert.equal(
+		(await decide({ cfg, deps: withComments({ inReview: [task('R')] }, { R: open }, { R: fix }), state })).run,
+		false,
+		'a pass that posted no marker is not repeated',
+	);
+	const closed = { ...open, state: 'CLOSED' };
+	assert.equal(
+		(await decide({ cfg, deps: withComments({ inReview: [task('R')] }, { R: closed }, { R: fix }), state: null })).run,
+		false,
+		'no open PR',
+	);
+	const answeredByFactory = [...fix, cm('[dev-factory] phase: fix round=1 started', 'c2')];
+	assert.equal(
+		(await decide({ cfg, deps: withComments({ inReview: [task('R')] }, { R: open }, { R: answeredByFactory }), state: null })).run,
+		false,
+	);
+	const fixed = [cm('I fixed it', 'c1')];
+	assert.equal(
+		(await decide({ cfg, deps: withComments({ inReview: [task('R')] }, { R: open }, { R: fixed }), state: null })).run,
+		false,
+		'"fixed" is not the phrase',
+	);
+});
+
+test('answers, fix requests and the ready queue are one decision, and the old fingerprint is still read', async () => {
+	const queue = fingerprintOf([task('A')]);
+	assert.equal(decisionFingerprint({ queue }), queue, 'nothing else: the queue’s own, which is what older versions stored');
+	const a = decisionFingerprint({ queue, answers: [{ key: 'Q-1', ids: ['a1'] }] });
+	const b = decisionFingerprint({ queue, answers: [{ key: 'Q-1', ids: ['a1', 'a2'] }] });
+	const c2 = decisionFingerprint({ queue, fixes: [{ key: 'R', id: 'c1' }] });
+	assert.equal(new Set([queue, a, b, c2]).size, 4);
+	assert.equal(decisionFingerprint({ queue, answers: [{ key: 'Q-1', ids: ['a1'] }] }), a, 'stable');
+	// an old state (queue fingerprint only) still holds the session back while the queue is unchanged
+	const old = { fingerprint: queue, at: new Date().toISOString() };
+	const same = await decide({ cfg, deps: deps({ ready: [task('A')] }), state: old });
+	assert.equal(same.run, false);
+	// ...and a new answer is a different decision, so it runs even though the queue is the one the old state knew
+	const withAnswer = { ...lists({ 'factory-question': [asked()] }, { ready: [task('A')] }), comments: async () => [cm(Q, 'q'), cm('CSV', 'a1')] };
+	const next = await decide({ cfg, deps: withAnswer, state: old });
+	assert.equal(next.run, true);
+	assert.match(next.reason, /1 answered question\(s\).*1 claimable task\(s\)/);
+});
+
+test('prStateFor takes the PR whose title ends in the key, preferring an open one', () => {
+	const run = (list) => (args) =>
+		args[1] === 'list'
+			? JSON.stringify(list)
+			: JSON.stringify({ state: 'OPEN', reviewDecision: null, author: { login: 'b' }, commits: [], reviews: [] });
+	const calls = [];
+	const pick = (list) => {
+		let chosen;
+		prStateFor('GH-1', (args) => (args[1] === 'view' ? ((chosen = args[2]), run(list)(args)) : run(list)(args)));
+		return chosen;
+	};
+	void calls;
+	assert.equal(
+		pick([
+			{ number: 5, title: 'Other [GH-12]', state: 'OPEN' },
+			{ number: 6, title: 'Mine [GH-1]', state: 'OPEN' },
+		]),
+		'6',
+		'GH-1 is not GH-12',
+	);
+	assert.equal(
+		pick([
+			{ number: 4, title: 'Old try [GH-1]', state: 'CLOSED' },
+			{ number: 8, title: 'Retry [GH-1]', state: 'OPEN' },
+		]),
+		'8',
+		'open first',
+	);
+	assert.equal(prStateFor('GH-1', run([{ number: 5, title: 'Mentions GH-1 in the middle', state: 'OPEN' }])), null);
 });

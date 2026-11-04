@@ -66,10 +66,13 @@ export function fingerprintOf(tasks) {
 
 export const minutesSince = (iso, now = Date.now()) => (now - Date.parse(iso)) / 60000;
 
-// Whether a task passes a list filter ({ states, staleMinutes }); adapters push what they can into the query and
+// Whether a task passes a list filter ({ states, staleMinutes, label, notLabel, notStates }); adapters push what they can into the query and
 // rely on this for the rest.
-export function matches(task, { states, staleMinutes } = {}, now = Date.now()) {
+export function matches(task, { states, staleMinutes, label, notLabel, notStates } = {}, now = Date.now()) {
 	if (states && !states.includes(task.state)) return false;
+	if (notStates?.includes(task.state)) return false;
+	if (label && !(task.labels ?? []).includes(label)) return false;
+	if (notLabel && (task.labels ?? []).includes(notLabel)) return false;
 	if (staleMinutes != null && !(minutesSince(task.updated, now) >= staleMinutes)) return false;
 	return true;
 }

@@ -43,7 +43,9 @@ test('the CLI drives a local plan end to end: init, create with blockers, list, 
 	const blocked = JSON.parse(cli('get', 'TASK-1').stdout);
 	assert.equal(blocked.state, 'ready');
 	assert.ok(blocked.labels.includes('factory-blocked'));
-	assert.match(blocked.comments.at(-1), /blocked: needs acceptance criteria\. Decision needed: add some/);
+	assert.match(blocked.comments.at(-1), /needs acceptance criteria\. Decision needed: add some/);
+	assert.match(blocked.comments.at(-1), /\[dev-factory\] blocked: question$/, 'a question: the marker line is last');
+	assert.ok(blocked.labels.includes('factory-question'));
 	assert.deepEqual(
 		JSON.parse(cli('list', '--state', 'ready').stdout).map((t) => t.key),
 		['TASK-2'],
@@ -147,4 +149,78 @@ test('link is a tracker write: refused to factory agents, and Jira or Notion sen
 	const r = jira.cli('link', 'APP-1', '--pr', 'https://x/pull/1');
 	assert.equal(r.status, 4);
 	assert.match(r.stderr, /skills\/task-source\/jira\.md/);
+});
+
+// ---- credentials, questions, labels ----
+
+test('listing a source that needs credentials fails with 21 instead of answering an empty queue', () => {
+	for (const [source, extra] of [
+		['jira', { jira: { site: 's', cloudId: 'c', projects: ['APP'] } }],
+		['notion', { notion: { databaseId: 'd' } }],
+	]) {
+		const r = repo({ tasks: { source }, sources: extra });
+		const env = { ...process.env, DF_STATE_DIR: r.root, JIRA_EMAIL: '', JIRA_API_TOKEN: '', NOTION_TOKEN: '' };
+		const out = spawnSync('node', [SCRIPT, 'list', '--state', 'ready'], { cwd: r.root, encoding: 'utf8', env });
+		assert.equal(out.status, 21, source);
+		assert.match(out.stderr, /cannot list .* tasks: no .* (token|Token)/i);
+		assert.equal(out.stdout, '', 'no empty list on stdout for a script to take as "no work"');
+	}
+	// an injected source (a test, an adapter) is not asked for credentials, and local and github need none
+	assert.doesNotMatch(repo().cli('list', '--state', 'ready').stderr, /cannot list/);
+});
+
+test('a question block carries the question label, a factory block does not, and unblock removes both', () => {
+	const { cli, file } = repo();
+	cli('init');
+	cli('create', '--title', 'A', '--file', file('b.md', '## Acceptance criteria\n- works\n'));
+	cli('create', '--title', 'B', '--file', file('b2.md', '## Acceptance criteria\n- works\n'));
+	assert.equal(
+		cli('block', 'TASK-1', '--reason', 'two formats', '--decision', 'which one', '--assignee', '@jane', '--reporter', '@omar').status,
+		0,
+	);
+	const q = JSON.parse(cli('get', 'TASK-1').stdout);
+	assert.ok(q.labels.includes('factory-blocked') && q.labels.includes('factory-question'));
+	assert.match(q.comments.at(-1), /@jane @omar/);
+	assert.match(q.comments.at(-1), /\[dev-factory\] blocked: question$/);
+	assert.equal(cli('block', 'TASK-2', '--reason', 'environment would not start', '--decision', 'fix the stack', '--kind', 'factory').status, 0);
+	const f = JSON.parse(cli('get', 'TASK-2').stdout);
+	assert.ok(f.labels.includes('factory-blocked'));
+	assert.ok(!f.labels.includes('factory-question'), 'a failure is not a question');
+	assert.match(f.comments.at(-1), /\[dev-factory\] blocked: factory$/);
+	// the breaker counts the failures, not the questions
+	const breaker = JSON.parse(cli('list', '--label', 'factory-blocked', '--not-label', 'factory-question', '--updated-within-minutes', '60').stdout);
+	assert.deepEqual(
+		breaker.map((t) => t.key),
+		['TASK-2'],
+	);
+	// done tasks with a leftover label are found and cleared
+	cli('set-state', 'TASK-1', 'done');
+	assert.deepEqual(
+		JSON.parse(cli('list', '--label', 'factory-blocked', '--not-state', 'inReview').stdout)
+			.map((t) => t.key)
+			.sort(),
+		['TASK-1', 'TASK-2'],
+	);
+	assert.deepEqual(
+		JSON.parse(cli('list', '--label', 'factory-blocked', '--not-state', 'done').stdout).map((t) => t.key),
+		['TASK-2'],
+		'the breaker leaves Done tickets out',
+	);
+	const un = JSON.parse(cli('unblock', 'TASK-1').stdout);
+	assert.deepEqual(un.removed.sort(), ['factory-blocked', 'factory-question']);
+	assert.deepEqual(
+		JSON.parse(cli('get', 'TASK-1').stdout).labels.filter((l) => l.startsWith('factory-')),
+		[],
+	);
+});
+
+test('comments reads the activity of a task through the CLI, and a source without them says where to look', async () => {
+	const { cli, file } = repo();
+	cli('init');
+	cli('create', '--title', 'A', '--file', file('b.md', '## Acceptance criteria\n- works\n'));
+	cli('comment', 'TASK-1', '--file', file('c.txt', 'first'));
+	const c = JSON.parse(cli('comments', 'TASK-1').stdout);
+	assert.equal(c.at(-1).body, 'first');
+	const cfg = merge(load(), { tasks: { source: 'notion' } });
+	await assert.rejects(run(['comments', 'N-1'], { cfg, source: {} }), /through its MCP server/);
 });

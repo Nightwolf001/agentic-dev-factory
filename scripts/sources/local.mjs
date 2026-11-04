@@ -109,6 +109,13 @@ export function localSource(cfg, { root = process.cwd(), env = process.env, now 
 			const index = new Map(all().map((x) => [x.meta.key, stateName(x)]));
 			return { ...normalise(d, index), body: d.body, comments: d.comments };
 		},
+		// an activity line is "<ISO time> <text>"; a person's reply is a line added under ## Activity the same way
+		async comments(key) {
+			return read(key).comments.map((line, i) => {
+				const m = /^(\d{4}-\d{2}-\d{2}T[\d:.]+Z?)\s+([\s\S]*)$/.exec(line);
+				return { id: `${key}#${i}`, author: null, created: m?.[1] ?? null, body: m ? m[2] : line };
+			});
+		},
 		async create({ title, body, type = 'task', labels = [label], blockedBy = [], parent }) {
 			fs.mkdirSync(dir, { recursive: true });
 			const n = Math.max(0, ...all().map((d) => Number(/-(\d+)$/.exec(d.meta.key)?.[1] ?? 0))) + 1;

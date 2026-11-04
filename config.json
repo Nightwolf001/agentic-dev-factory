@@ -3,6 +3,7 @@
 		"source": "local",
 		"label": "dev-factory",
 		"blockedLabel": "factory-blocked",
+		"questionLabel": "factory-question",
 		"fixComment": "dev-factory fix",
 		"placeholderKey": "TASK-000",
 		"bugTypes": ["bug"],
@@ -156,6 +157,9 @@
 	},
 	"scheduler": {
 		"intervalMinutes": 15
+	},
+	"evidence": {
+		"maxAttachmentMb": 9
 	},
 	"coverage": {
 		"command": null,

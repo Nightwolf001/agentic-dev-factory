@@ -333,3 +333,144 @@ test('makeSource picks the configured source; tokens are required only where a s
 	assert.match(missingCredentials(cfgFor({ tasks: { source: 'notion' } }), {}), /NOTION_TOKEN/);
 	assert.equal(missingCredentials(cfgFor({ tasks: { source: 'jira' } }), { JIRA_EMAIL: 'e', JIRA_API_TOKEN: 't' }), null);
 });
+
+// ---- comments, label filters, query safety ----
+import { adfToText, textToAdf } from '../scripts/adf.mjs';
+import { matches } from '../scripts/sources/common.mjs';
+
+const jiraCfg = (jira = {}) =>
+	cfgFor({ tasks: { source: 'jira' }, sources: { jira: { site: 'example.atlassian.net', cloudId: 'c', projects: ['APP'], ...jira } } });
+
+test('a list filter can ask for a label, without one, and without a state', () => {
+	const t = { state: 'ready', updated: '2026-01-01T00:00:00Z', labels: ['dev-factory', 'factory-question'] };
+	assert.equal(matches(t, { label: 'factory-question' }), true);
+	assert.equal(matches(t, { label: 'other' }), false);
+	assert.equal(matches(t, { notLabel: 'factory-question' }), false);
+	assert.equal(matches(t, { notLabel: 'other' }), true);
+	assert.equal(matches(t, { notStates: ['done'] }), true);
+	assert.equal(matches({ ...t, state: 'done' }, { notStates: ['done'] }), false);
+});
+
+test('jira: a label and an excluded state reach the query, and nothing with a quote in it can', () => {
+	const q = jql(jiraCfg(), { label: 'factory-question', notStates: ['done'] }, {});
+	assert.match(q, /labels = "factory-question"/);
+	assert.match(q, /status not in \("Done"/);
+	for (const bad of [{ projects: ['APP") OR project = ("X'] }, { projects: ['app'] }, { projects: ['A B'] }])
+		assert.throws(() => jql(jiraCfg(bad), { states: ['ready'] }, {}), /project key is not usable/, JSON.stringify(bad));
+	assert.throws(
+		() => jql(cfgFor({ tasks: { source: 'jira', label: 'x" OR labels = "y' }, sources: { jira: { projects: ['APP'] } } }), {}, {}),
+		/tasks\.label is not usable/,
+	);
+	assert.throws(
+		() => jql(cfgFor({ tasks: { source: 'jira', blockedLabel: 'a b' }, sources: { jira: { projects: ['APP'] } } }), { states: ['ready'] }, {}),
+		/blockedLabel is not usable/,
+	);
+	assert.throws(() => jql(jiraCfg(), { label: 'x" OR 1=1 OR labels = "' }, {}), /a label is not usable/);
+	assert.throws(
+		() => jql(jiraCfg({ states: { ready: ['Ready" OR 1=1 OR status = "x'] } }), { states: ['ready'] }, {}),
+		/status name is not usable/,
+	);
+	assert.match(jql(jiraCfg({ projects: ['MAX', 'AP_P2'] }), { staleMinutes: '45' }, {}), /project in \("MAX", "AP_P2"\).*updated <= -45m/);
+	assert.throws(() => jql(jiraCfg(), { staleMinutes: '45m OR 1=1' }, {}), /stale window is not usable/);
+});
+
+test('jira: comments come back oldest first as text, with mentions read as @name', async () => {
+	let url;
+	const fetchImpl = async (u) => {
+		url = String(u);
+		return new Response(
+			JSON.stringify({
+				comments: [
+					{
+						id: '10',
+						author: { accountId: 'acc-1', displayName: 'Jane' },
+						created: '2026-10-01T10:00:00.000+0000',
+						body: textToAdf('Which format?\n\n[dev-factory] blocked: question'),
+					},
+					{ id: '11', author: { accountId: 'acc-2' }, created: '2026-10-01T11:00:00.000+0000', body: 'a plain string body' },
+				],
+			}),
+			{ status: 200 },
+		);
+	};
+	const src = jiraSource(jiraCfg(), { env: { JIRA_EMAIL: 'a@b.c', JIRA_API_TOKEN: 't' }, fetchImpl });
+	const c = await src.comments('APP-12');
+	assert.match(url, /\/rest\/api\/3\/issue\/APP-12\/comment\?orderBy=created/);
+	assert.deepEqual(
+		c.map((x) => [x.id, x.author]),
+		[
+			['10', 'acc-1'],
+			['11', 'acc-2'],
+		],
+	);
+	assert.match(c[0].body, /\[dev-factory\] blocked: question$/);
+	assert.equal(c[1].body, 'a plain string body');
+	await assert.rejects(src.comments('APP-12/../../x'), /not a Jira issue key/);
+	await assert.rejects(
+		jiraSource(jiraCfg(), { env: { JIRA_EMAIL: 'a', JIRA_API_TOKEN: 't' }, fetchImpl: async () => new Response('', { status: 403 }) }).comments(
+			'APP-1',
+		),
+		/jira comments 403/,
+	);
+});
+
+test('adf: text out of a document, and a document out of text with real mentions', () => {
+	const doc = {
+		type: 'doc',
+		content: [
+			{
+				type: 'paragraph',
+				content: [
+					{ type: 'mention', attrs: { id: 'a1', text: '@Jane' } },
+					{ type: 'text', text: ' please look' },
+					{ type: 'hardBreak' },
+					{ type: 'text', text: 'at https://x.test' },
+				],
+			},
+			{
+				type: 'bulletList',
+				content: [
+					{ type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'one' }] }] },
+					{ type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'two' }] }] },
+				],
+			},
+			{ type: 'blockquote', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'quoted' }] }] },
+			{ type: 'codeBlock', content: [{ type: 'text', text: 'x = 1' }] },
+		],
+	};
+	assert.equal(adfToText(doc), '@Jane please look\nat https://x.test\n\n- one\n- two\n\n> quoted\n\n```\nx = 1\n```');
+	assert.equal(adfToText(null), '');
+	const back = textToAdf('[~accountid:abc123] and @[def456|Omar] check\nthis\n\nsecond paragraph');
+	assert.deepEqual(back.content[0].content[0], { type: 'mention', attrs: { id: 'abc123', text: '@abc123' } });
+	assert.deepEqual(back.content[0].content[2], { type: 'mention', attrs: { id: 'def456', text: '@Omar' } });
+	assert.ok(back.content[0].content.some((n) => n.type === 'hardBreak'));
+	assert.equal(back.content.length, 2);
+	assert.equal(textToAdf('').content.length, 1);
+});
+
+test('github: comments are read with their ids, authors and times, and the people on an issue are taggable', async () => {
+	const cfg = cfgFor({ tasks: { source: 'github' }, sources: { github: { repo: 'o/r' } } });
+	const gh = (args) => {
+		if (args.includes('comments'))
+			return JSON.stringify({ comments: [{ id: 'IC_1', author: { login: 'jane' }, createdAt: '2026-10-01T10:00:00Z', body: 'hello' }] });
+		return JSON.stringify({ assignees: [{ login: 'jane' }], author: { login: 'omar' } });
+	};
+	const src = githubSource(cfg, { env: {}, gh });
+	assert.deepEqual(await src.comments('GH-5'), [{ id: 'IC_1', author: 'jane', created: '2026-10-01T10:00:00Z', body: 'hello' }]);
+	assert.deepEqual(await src.people('GH-5'), { assignee: '@jane', reporter: '@omar' });
+});
+
+test('local: the activity lines are the comments, a person’s reply is a line under Activity', async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'df-local-c-'));
+	const cfg = cfgFor({ tasks: { source: 'local' }, sources: { local: { dir: 'tasks' } } });
+	fs.mkdirSync(path.join(root, 'tasks'));
+	fs.writeFileSync(
+		path.join(root, 'tasks/TASK-1-x.md'),
+		'---\nkey: TASK-1\ntitle: X\nstate: ready\nlabels: [dev-factory]\nupdated: 2026-10-01T10:00:00.000Z\n---\nBody\n\n## Activity\n- 2026-10-01T10:00:00.000Z Which format?\n\n[dev-factory] blocked: question\n- 2026-10-01T11:00:00.000Z use CSV\n',
+	);
+	const src = localSource(cfg, { root, env: {} });
+	const c = await src.comments('TASK-1');
+	assert.equal(c.length, 2);
+	assert.equal(c[1].body, 'use CSV');
+	assert.equal(c[1].created, '2026-10-01T11:00:00.000Z');
+});

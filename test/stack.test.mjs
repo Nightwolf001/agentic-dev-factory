@@ -252,7 +252,7 @@ test('prStateFor reads the stack note, the blocker and the containment of its co
 	const calls = [];
 	const run = (args) => {
 		calls.push(args.join(' '));
-		if (args[1] === 'list') return JSON.stringify([{ number: 7 }]);
+		if (args[1] === 'list') return JSON.stringify([{ number: 7, title: 'Add thing [B-2]', state: 'OPEN' }]);
 		if (args[1] === 'view' && args[2] === '7')
 			return JSON.stringify({
 				number: 7,
@@ -376,7 +376,7 @@ test('livePlan reads each blocker PR and the files it changes, then decides', as
 	const { livePlan } = await import('../scripts/stack.mjs');
 	const cfg = { ...load(), tasks: { ...load().tasks, unblockOnPr: true } };
 	const run = (args) => {
-		if (args[1] === 'list') return JSON.stringify([{ number: 4 }]);
+		if (args[1] === 'list') return JSON.stringify([{ number: 4, title: 'Blocker work [A-1]', state: 'OPEN' }]);
 		if (args[1] === 'view')
 			return JSON.stringify({
 				number: 4,
