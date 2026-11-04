@@ -7,7 +7,7 @@
 #   df_log_file JOB       DF_LOG, else the macOS log folder for a local Mac, else <state>/logs/JOB.log
 #   df_slug REPO          a name for the repository, used in launchd labels and the pause switch
 #   df_paused_file REPO   the pause switch file of the repository (see scripts/scheduler.sh)
-#   df_load_env           secrets: <state>/.env.local, then the plugin's own .env.local when an older setup has one
+#   df_load_env           secrets: <state>/.env.local only, never a file inside the plugin directory
 # DIR is the plugin directory and must be set by the caller.
 df_runtime() {
   case "${DF_RUNTIME:-}" in local|cloud) echo "$DF_RUNTIME"; return ;; esac
@@ -27,9 +27,8 @@ df_slug() { printf '%s-%s' "$(basename "$1" | tr -c 'A-Za-z0-9\n' '-' | sed 's/-
 # The pause switch: while this file exists, scheduled passes (DF_SCHEDULED=1) for the repository do nothing; manual runs are unaffected.
 df_paused_file() { printf '%s' "$(df_state_dir)/paused.$(df_slug "$1")"; }
 df_load_env() {
-  local f
-  for f in "$(df_state_dir)/.env.local" "$DIR/.env.local"; do
-    [ -f "$f" ] && { set -a; . "$f"; set +a; }
-  done
+  # Only the state folder: a run working in a clone of the plugin can write a file inside it, and the scheduler would load it.
+  local f; f="$(df_state_dir)/.env.local"
+  [ -f "$f" ] && { set -a; . "$f"; set +a; }
   return 0
 }

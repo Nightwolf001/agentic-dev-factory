@@ -171,7 +171,7 @@ Share the database with an internal integration and put its secret in `~/.dev-fa
 }
 ```
 
-Put `JIRA_EMAIL` and `JIRA_API_TOKEN` in `.env.local` for the preflight, enable the MCP server with `dev-factory mcp enable atlassian`, and log in once with `/mcp`. Transitions are chosen by target status, never by name, because workflows differ per issue type. Ask a Jira admin to allow the labels the factory adds (`factory-blocked`, `factory-validated`, `factory-regression`, `needs-research`).
+Put `JIRA_EMAIL` and `JIRA_API_TOKEN` in `~/.dev-factory/.env.local` for the preflight, enable the MCP server with `dev-factory mcp enable atlassian`, and log in once with `/mcp`. Transitions are chosen by target status, never by name, because workflows differ per issue type. Ask a Jira admin to allow the labels the factory adds (`factory-blocked`, `factory-validated`, `factory-regression`, `needs-research`).
 
 Switching source later changes only `tasks.source`; existing tasks stay where they are.
 
@@ -319,10 +319,11 @@ dev-factory config validate                   # lists every problem; also part o
 | `mobile.metroPort`          | `DF_METRO_PORT`            |
 | `runtime.scheduler`         | `DF_SCHEDULER`             |
 | `improvement.factoryRepo`   | `DF_FACTORY_REPO`          |
-| `cleanup.takeover`          | `DF_TAKEOVER`              |
 | `blocked.agentDecides`      | `DF_AGENT_DECIDES`         |
 
-A list setting such as `DF_JIRA_PROJECTS` takes a comma-separated value. Other variables are not settings but switches for one run: `DF_RUNTIME`, `DF_REPO`, `DF_STATE_DIR`, `DF_LOG`, `DF_CONFIG`, `DF_PREFLIGHT=off`, `DF_READY_TIMEOUT`, `DF_PLUGIN_DIR`, `DF_MCP_FILE`.
+Secrets are read from `~/.dev-factory/.env.local` (the state folder) and from nowhere else. A `.env.local` inside the plugin's own directory is not read: a run working in a clone of the plugin can write one, and the scheduler would have loaded it. `dev-factory doctor` warns when it finds such a file; move its values to the state folder and delete it.
+
+A list setting such as `DF_JIRA_PROJECTS` takes a comma-separated value. Other variables are not settings but switches for one run: `DF_TAKEOVER` (the machine owner's, see [Clean-up after every run](#clean-up-after-every-run)), `DF_RUNTIME`, `DF_REPO`, `DF_STATE_DIR`, `DF_LOG`, `DF_CONFIG`, `DF_PREFLIGHT=off`, `DF_READY_TIMEOUT`, `DF_PLUGIN_DIR`, `DF_MCP_FILE`.
 
 #### Common changes
 
@@ -344,20 +345,20 @@ A list setting such as `DF_JIRA_PROJECTS` takes a comma-separated value. Other v
 }
 ```
 
-| You want                                   | Change                                                                                     |
-| ------------------------------------------ | ------------------------------------------------------------------------------------------ |
-| A bigger debug or fix budget               | `debug.maxDebugRounds`, `debug.debugMinutes`, `caps.maxFixRounds`, `caps.maxQaFixAttempts` |
-| A different spend or concurrency limit     | `caps.maxBudgetUsd` (per scheduled session), `caps.maxOpenPrs`, `caps.maxConcurrent`       |
-| A different model for one role             | `models.<role>`; raise or lower thinking with `models.effort` and `models.efforts`         |
-| Another tracker, or other status names     | `tasks.source`, then `sources.<name>` (the `states` mapping carries your workflow)         |
-| A different release label or parking label | `tasks.label`, `tasks.blockedLabel`                                                        |
-| Build on another branch                    | `git.baseBranch`, or a `Base branch:` line in one task                                     |
-| Different branch prefixes or PR labels     | `git.branchTypes`, `pr.sizeLabels`, `pr.areaLabels`, `pr.categoryByBranchType`             |
-| Which paths need extra reviews             | `review.specialistAxes`                                                                    |
-| Which paths need a browser or device walk  | `dev-factory.qa.yaml` (same shape as `qa/profiles.yaml`)                                   |
-| A stack per task                           | `environment.*` (see [Environments](#environments))                                        |
-| Agents may stop whatever blocks a run      | `cleanup.takeover` (see [Clean-up after every run](#clean-up-after-every-run))             |
-| Where and how it is scheduled              | `runtime.scheduler`; `dev-factory scheduler on` and `off`                                  |
+| You want                                   | Change                                                                                                     |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| A bigger debug or fix budget               | `debug.maxDebugRounds`, `debug.debugMinutes`, `caps.maxFixRounds`, `caps.maxQaFixAttempts`                 |
+| A different spend or concurrency limit     | `caps.maxBudgetUsd` (per scheduled session), `caps.maxOpenPrs`, `caps.maxConcurrent`                       |
+| A different model for one role             | `models.<role>`; raise or lower thinking with `models.effort` and `models.efforts`                         |
+| Another tracker, or other status names     | `tasks.source`, then `sources.<name>` (the `states` mapping carries your workflow)                         |
+| A different release label or parking label | `tasks.label`, `tasks.blockedLabel`                                                                        |
+| Build on another branch                    | `git.baseBranch`, or a `Base branch:` line in one task                                                     |
+| Different branch prefixes or PR labels     | `git.branchTypes`, `pr.sizeLabels`, `pr.areaLabels`, `pr.categoryByBranchType`                             |
+| Which paths need extra reviews             | `review.specialistAxes`                                                                                    |
+| Which paths need a browser or device walk  | `dev-factory.qa.yaml` (same shape as `qa/profiles.yaml`)                                                   |
+| A stack per task                           | `environment.*` (see [Environments](#environments))                                                        |
+| Agents may stop whatever blocks a run      | `DF_TAKEOVER=1` in `~/.dev-factory/.env.local` (see [Clean-up after every run](#clean-up-after-every-run)) |
+| Where and how it is scheduled              | `runtime.scheduler`; `dev-factory scheduler on` and `off`                                                  |
 
 What config cannot change: the guards, the hooks, the stop gate, the base sandbox and permissions, and the rule that a person merges. Those live in the plugin's code on purpose, so a repository's file cannot loosen them. To change one, change the plugin itself (see [Improving the factory itself](#improving-the-factory-itself)).
 
@@ -479,10 +480,11 @@ Every setting, with its default. `see config.json` means the default is a longer
 
 #### Clean-up and takeover
 
-| Key                | Default | What it does                                                                                                                                                                                                                                                   |
-| ------------------ | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cleanup.takeover` | `false` | Lets a run stop, kill and quit whatever blocks it: processes and containers on the ports it needs, leftover Playwright and Maestro sessions, simulators. Off, a run tears down only what it started. Also `DF_TAKEOVER=1` for one run. Only the owner sets it. |
-| `cleanup.ports`    | `[]`    | Extra host ports a takeover frees before a run (the compose file's published ports, `mobile.metroPort` and the port of `environment.webBaseUrl` are always included).                                                                                          |
+| Key             | Default | What it does                                                                                                                                                                                            |
+| --------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cleanup.ports` | `[]`    | Extra host ports a takeover frees before a run (the compose file's published ports, `mobile.metroPort` and the port of `environment.webBaseUrl` when that address is this machine are always included). |
+
+Takeover itself is not a setting: a repository file is something a run can edit, so it cannot grant it. The machine's owner turns it on with `DF_TAKEOVER=1` in `~/.dev-factory/.env.local` (or in the shell that starts a run). A `cleanup.takeover` left in a `dev-factory.config.json` is reported by `dev-factory config validate`.
 
 #### Mobile lane
 
@@ -506,11 +508,12 @@ Every setting, with its default. `see config.json` means the default is a longer
 
 #### Telemetry limits
 
-| Key                       | Default | What it does                                                                 |
-| ------------------------- | ------- | ---------------------------------------------------------------------------- |
-| `telemetry.maxRows`       | `200`   | Largest result a telemetry query may ask for.                                |
-| `telemetry.maxWindowDays` | `14`    | Longest time window a telemetry query may span.                              |
-| `telemetry.scrubPatterns` | `[]`    | Extra regular expressions the scrub check refuses in comments and PR bodies. |
+| Key                       | Default | What it does                                                                                                                                                     |
+| ------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `telemetry.maxRows`       | `200`   | Largest result a telemetry query may ask for.                                                                                                                    |
+| `telemetry.maxWindowDays` | `14`    | Longest time window a telemetry query may span.                                                                                                                  |
+| `telemetry.allowedRoles`  | `[]`    | Roles that may read telemetry inside a run (`builder`, `reviewer`, `debugger`, `researcher`, `improver`, `promoter`). Empty: every role the agent's tools allow. |
+| `telemetry.scrubPatterns` | `[]`    | Extra regular expressions the scrub check refuses in comments and PR bodies.                                                                                     |
 
 #### Debug budget
 
@@ -546,6 +549,12 @@ Every setting, with its default. `see config.json` means the default is a longer
 | `review.bugbot`         | `false`           | `true`: after every push the factory comments `review.bugbotComment`, watches Bugbot's review, fixes its findings and resolves the threads it answered. |
 | `review.bugbotComment`  | `"bugbot run"`    | The comment that starts a Bugbot review.                                                                                                                |
 | `review.bugbotAuthor`   | `"cursor[bot]"`   | The login Bugbot's review comments come from.                                                                                                           |
+
+#### Guard
+
+| Key                  | Default | What it does                                                                                                                                                                                                                       |
+| -------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `guard.trackerHosts` | `[]`    | Host names of the task tracker beyond the built-in ones and `sources.jira.site`, such as a self-hosted Jira. A command inside a run that names one is refused, whatever program it runs; the scheduler alone talks to the tracker. |
 
 #### Sandbox
 
@@ -745,9 +754,11 @@ A finished run leaves nothing running, whatever its outcome (shipped, blocked or
 
 It prints JSON: `done` lists what it stopped, `left` lists what it found and did not touch, with the reason. By default it touches only what the run started.
 
-Set `cleanup.takeover` to `true` (or export `DF_TAKEOVER=1` for one run) when the machine is dedicated to the factory and you want a run to clear its own way: before a canonical-ports start it stops whatever process or container holds the stack's ports (instead of refusing with exit 75), and at the end it also stops those holding `cleanup.ports`, the dev server's port and any browser or Maestro session. The sandbox then lets `kill`, `pkill`, `killall`, `lsof`, `ps` and `pgrep` run, and the guard lets a builder use them and `docker stop`/`rm`/`kill` and `xcrun simctl shutdown` directly.
+Set `DF_TAKEOVER=1` in `~/.dev-factory/.env.local` (or export it for one run) when the machine is dedicated to the factory and you want a run to clear its own way: before a canonical-ports start it stops whatever process or container holds the stack's ports (instead of refusing with exit 75), and at the end it also stops those holding `cleanup.ports`, the dev server's port and any browser or Maestro session. The sandbox then lets `kill`, `pkill`, `killall`, `lsof`, `ps` and `pgrep` run, and the guard lets a builder use them and `docker stop`/`rm`/`kill` and `xcrun simctl shutdown` directly.
 
-Takeover never reaches the shell, Claude, the terminal, launchd, window-server or other system processes, the parent of the run, `kill` of pid 0, 1 or -1, `docker prune`, mass `docker stop $(docker ps -q)` forms, `simctl erase` or `delete`, or the factory's own scheduler job. Agents cannot switch it on: `--takeover`, `DF_TAKEOVER` and edits to `dev-factory.config.json` are refused inside a run, so the toggle is only ever the owner's. `dev-factory doctor` warns while it is on.
+Takeover never reaches the shell, Claude, the terminal, launchd, window-server or other system processes, the parent of the run, `kill` of pid 0, 1 or -1, `docker prune`, mass `docker stop $(docker ps -q)` forms, `simctl erase` or `delete`, or the factory's own scheduler job. Agents cannot switch it on. It is read from the environment alone (`scripts/takeover.mjs`): there is no `--takeover` flag (`cleanup.mjs` refuses it), no config key, and the shell guard refuses any command inside a run that writes the name `DF_TAKEOVER` however it is spelled (quoted in pieces, in a brace list, built from other variables, through `${!x}`, a nameref or `printf -v`). `dev-factory doctor` warns while it is on.
+
+What takeover stopped can be given back. `cleanup.mjs` records the containers and processes it stopped in `~/.dev-factory/takeover-stopped.json`, and `node scripts/cleanup.mjs --restore` starts those containers again and lists the processes (a stopped process cannot be restarted from here). A container that will not start stays on the list. The web address frees a port only when it is this machine (`localhost`, `127.0.0.1`, `::1`, `*.local`, `*.localhost`, `*.test`), never the port of a deployed host, and a ports lock with no owner file counts as abandoned.
 
 ## QA evidence
 
@@ -776,11 +787,15 @@ Cases are committed with the change, in your repository under `.factory/qa/cases
 -   Inside a run, the installed plugin (and a vendored `dev-factory/`), `.claude/`, `.github/`, the local task files in `.factory/tasks/`, other tasks' QA cases, run state, and QA and review records cannot be edited by a task, by tool or by shell. Review records can only be written by `qa.mjs review record`, which refuses anyone whose `run.json` role is not that axis's reviewer; debug rounds likewise need the debugger role.
 -   The factory agents cannot write the task tracker (`gh issue` writes and `tasks.mjs` writes are refused to them); only the scheduler pass and your own commands do.
 -   Edits under a vendored `dev-factory/` are always checked against the vocabulary lint.
+-   A run changes its worktree, not the machine. The shell guard refuses a command that names the machine state folder (`~/.dev-factory` or `DF_STATE_DIR`), a shell start-up file (`~/.zshrc`, `~/.bash_profile`, `~/.profile` and the others), Claude Code's own settings or the installed plugin unless it only reads (`cat`, `ls`, `grep`, `git log` and the like, or running one of the plugin's own scripts). Paths are judged as the shell will build them: `~`, `$HOME`, `${DF_STATE_DIR}`, `..`, quoting, case, brace lists, an option's attached value (`--file=x`, `-ox`), a redirection (`2>>x`), the directory a `cd` moved to (also inside a subshell), and a symlink in the worktree that points there. The edit tool is refused the same places, a `dev-factory.config.json` at any depth, `dev-factory.qa.yaml` at the repository root and any `.claude/settings*.json`. The scheduler's own pass keeps writing its state folder; profiles and the plugin stay protected for it too.
+-   The shell guard judges a command by the words the shell will pass on: a group written without a space (`(git push origin main)`), a quoted command name (`"git" push`, `git pu""sh`) and a quoted sub-command are the commands they are. It also keeps a run away from what plants a program for later: `git config` (except a few display settings), `git remote` changes, a push to an address or with `--repo`, `GIT_SSH_COMMAND`, `GIT_CONFIG_*`, `BASH_ENV`, `LD_PRELOAD` and the like, writes under `.git/hooks` and `.git/config`, `~/.claude/{commands,agents,skills,hooks,CLAUDE.md}`, `~/.gitconfig` and `~/Library/LaunchAgents`, and links into any of them. Credentials (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.netrc`, `~/.config/gh`, `gh auth token`) are not read either. Removing, moving, mounting or linking the home folder, the root, or a folder that holds a protected place is refused, and so is removing `.dev-factory`, `.factory`, `dev-factory` or `.claude` whole. The text of a quoted heredoc (`<<'EOF'`) is data, not commands, unless an interpreter reads it; code on standard input (`python3 - <<EOF`, `node -`) is inline code and refused like `-e`.
+-   The guard gives up safely: a command over 64 KB, with more than 400 commands, with a brace list that expands to more than 64 words, with a glob over 256 characters or that takes more than two seconds to judge is refused with "cannot be judged" instead of being let through, as is a command the guard itself fails on. Globs match without backtracking. Env files are found by case (`.ENV`), by glob (`.env.loca?`, `.e*`), by quoting and by brace list; `.env.example` stays readable. `find -fls`, `-fprint` and `-fprintf` are refused because they write files.
+-   A command that reaches the task tracker is refused by whatever program makes the request (`curl`, `node -e`, `python`, `git clone`, `gh api`), not only `curl` and `wget`. Commands that only print or search text (`grep`, `cat`, `echo`, `git log`) and the quoted message of a commit or of `gh pr`/`gh issue` text may mention a tracker address; a `$(...)` inside that text is judged as a command of its own. The hosts are `atlassian.net`, `api.notion.com`, `notion.so`, the Jira site and `guard.trackerHosts`; a longer name (`jira.example.evil.test` for `jira.example`) is another host.
 -   Nothing is retried on its own after a block. A person decides.
 
 ## Telemetry (read-only)
 
-Sentry and Axiom are optional and reachable only by the debugger role. Rules are enforced by `scripts/mcp-guard.mjs` (PreToolUse), not by instruction: tools whose name is a write verb are denied, an Axiom query naming a dataset outside `environments.*.axiomDatasets` is denied, and `limit`, `take` and time windows above `telemetry.maxRows` and `telemetry.maxWindowDays` are denied. The guard matches the server whether the plugin or your `.mcp.json` started it. Nothing raw is written to files, PR bodies or task comments: `qa.mjs scrub --file F` fails on emails, phone numbers, JWTs, bearer tokens, long hex identifiers and `telemetry.scrubPatterns`.
+Sentry and Axiom are optional and reachable only by the debugger role. Rules are enforced by `scripts/mcp-guard.mjs` (PreToolUse), not by instruction: tools whose name is a write verb (`update`, `resolve`, `create`, `manage`, ...) are denied, an Axiom query naming a dataset outside `environments.*.axiomDatasets` is denied, and `limit`, `take` and time windows above `telemetry.maxRows` and `telemetry.maxWindowDays` are denied. The guard matches the server whether the plugin or your `.mcp.json` started it. It also matches the claude.ai Sentry and Axiom connectors, but only inside a factory run: in your own sessions a connector is yours and is not touched. The connector's `execute_sentry_tool` is judged by the tool it runs (a call that does not say which tool is refused), with the same row, window and dataset limits applied to that tool's arguments. `telemetry.allowedRoles` narrows who may read inside a run; a role not on the list is refused. Nothing raw is written to files, PR bodies or task comments: `qa.mjs scrub --file F` fails on emails, phone numbers, JWTs, bearer tokens, long hex identifiers and `telemetry.scrubPatterns`.
 
 ## Self-improvement
 
@@ -859,6 +874,7 @@ The improver cannot edit what enforces the factory's own limits (the guards, the
 | `scripts/mcp.mjs`, `mcp/`      | The optional MCP catalog and the commands that enable it                                              |
 | `scripts/factory-settings.mjs` | Builds the scheduled pass's sandbox and permissions from what is enabled                              |
 | `hooks/hooks.json`             | Shell guard, edit guard, telemetry guard and stop gate; active only inside a factory run              |
+| `scripts/guard-lib.mjs`        | The shell and edit guard rules; `guard-paths.mjs` resolves the paths, globs and env files they judge  |
 | `plugins.json`                 | Plugins the factory relies on and the one it disables                                                 |
 | `scripts/`                     | `e2e-env.sh`, `mobile-env.sh`, `cleanup.mjs`, `tick.sh`, `install.sh`, `doctor.sh`, hook scripts      |
 | `bin/qa.mjs`                   | QA, review, debug, scrub, ticket and learnings CLI                                                    |
@@ -886,7 +902,7 @@ Adding a tracker: a new file under `scripts/sources/` that answers `list({ state
 | `verify FAILED`                                     | A service or check did not pass. Read the message, then `docker compose -p df-<key> logs`.                                                                                                                                   |
 | Port held by another process                        | Something else is running the dev server. Stop it yourself; the factory never kills a process it did not start.                                                                                                              |
 | Builder says a tool is not allowed                  | MCP tools are named `mcp__<server>__*` when your `.mcp.json` started them and `mcp__plugin_dev-factory_<server>__*` when the plugin did. Check the `system/init` event of `claude -p --output-format stream-json --verbose`. |
-| Jira or Notion tools fail in unattended passes only | The OAuth login did not survive. Set the API token in `.env.local` and use an API-token MCP server in `.mcp.json`.                                                                                                           |
+| Jira or Notion tools fail in unattended passes only | The OAuth login did not survive. Set the API token in `~/.dev-factory/.env.local` and use an API-token MCP server in `.mcp.json`.                                                                                            |
 | A UI change is blocked for lack of a browser        | Enable the `playwright` server: `dev-factory mcp enable playwright`.                                                                                                                                                         |
 | Guard blocks a command                              | It is working as designed. Read its message; the allowed route is almost always a container exec or a PR comment.                                                                                                            |
 | Login expired                                       | Run `claude setup-token` again and update `CLAUDE_CODE_OAUTH_TOKEN`.                                                                                                                                                         |

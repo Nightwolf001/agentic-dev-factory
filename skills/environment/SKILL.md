@@ -17,7 +17,7 @@ description: Start, verify and tear down the isolated e2e environment for a work
 
 Facts you rely on:
 
--   A finished run leaves nothing running. `scripts/cleanup.mjs` stops only what the run started unless the owner set `cleanup.takeover` (or `DF_TAKEOVER=1` for one run): then it also stops the processes and containers holding the ports the run needs (`cleanup.ports` adds more) and the leftover browser and Maestro sessions. It never touches the shell, Claude, the terminal or system processes, and an agent cannot switch the toggle on for itself.
+-   A finished run leaves nothing running. `scripts/cleanup.mjs` stops only what the run started unless the owner set `DF_TAKEOVER=1` in the environment (it is not a repository setting, and an agent cannot set it): then it also stops the processes and containers holding the ports the run needs (`cleanup.ports` adds more) and the leftover browser and Maestro sessions. It never touches the shell, Claude, the terminal or system processes, and an agent cannot switch the toggle on for itself.
 
 -   `.dev-factory/env.json` holds `project`, `composeFile`, `mode`. Every container command is `docker compose -f <composeFile> -f .dev-factory/compose.override.yml -p <project> exec -T [-u <environment.user>] <environment.service> <cmd>`.
 -   Isolated mode (`--ports none`) publishes no host ports and has no web-QA path: the Playwright browser runs on the host. Use `--ports canonical` for any ticket that needs a browser walk; `webBaseUrl` in `env.json` is the address to open.

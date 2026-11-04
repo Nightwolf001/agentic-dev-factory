@@ -1,9 +1,11 @@
 // Tears down what a run leaves behind, so the next run starts from nothing: its compose project, its dev server, the
-// simulator it booted, its locks. With the takeover toggle (cleanup.takeover, DF_TAKEOVER=1 or --takeover) it also stops
-// whatever stands in the way: processes and containers holding the ports the run needs, and the Playwright and Maestro
-// sessions a run opens.
+// simulator it booted, its locks. With the takeover toggle (DF_TAKEOVER=1 in the owner's environment, see takeover.mjs) it
+// also stops whatever stands in the way: processes and containers holding the ports the run needs, and the Playwright and
+// Maestro sessions a run opens. The toggle is not a flag: `--takeover` is refused, so it cannot be set from a command line.
 //
-//   cleanup.mjs [--worktree DIR] [--takeover] [--ports 3000,1337] [--dry-run]
+//   cleanup.mjs [--worktree DIR] [--ports 3000,1337] [--dry-run]
+//   cleanup.mjs --restore [--dry-run]     give back what takeover stopped: restart the containers it recorded in
+//                                         <state>/takeover-stopped.json; processes cannot be restarted and are only listed
 //
 // Default scope (always): the compose project and Metro of the worktree (through e2e-env.sh and mobile-env.sh), a simulator
 //   the factory booted, stale locks and orphaned stacks. Nothing here belongs to anyone else.
@@ -22,6 +24,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { get, load } from './config.mjs';
 import { isMain } from './is-main.mjs';
+import { takeoverOn } from './takeover.mjs';
 
 const SELF = path.dirname(fileURLToPath(import.meta.url));
 
@@ -84,7 +87,10 @@ export function containersOn(port, run = defaultRun) {
 		});
 }
 
-// Ports the run needs: the compose file's published ports, Metro, the web address, and cleanup.ports.
+// A host that is this machine. A deployed address (staging, a vendor) names a port on somebody else's machine, never one to free here.
+export const isLocalHost = (host) => /^(localhost|127(\.\d+){3}|0\.0\.0\.0|\[?::1\]?|[^/]+\.(local|localhost|test))$/i.test(host);
+
+// Ports the run needs: the compose file's published ports, Metro, the web address when it is local, and cleanup.ports.
 export function portsFor({ cfg, worktree, extra = [], run = defaultRun }) {
 	const ports = new Set(extra.map(Number));
 	for (const p of get('cleanup.ports', { config: cfg }) ?? []) ports.add(Number(p));
@@ -94,7 +100,7 @@ export function portsFor({ cfg, worktree, extra = [], run = defaultRun }) {
 	if (web) {
 		try {
 			const u = new URL(web);
-			ports.add(Number(u.port || (u.protocol === 'https:' ? 443 : 80)));
+			if (isLocalHost(u.hostname)) ports.add(Number(u.port || (u.protocol === 'https:' ? 443 : 80)));
 		} catch {
 			/* not a URL */
 		}
@@ -130,6 +136,59 @@ export async function stopProcess(pid, { run = defaultRun, wait = 3000, alive = 
 	return 'killed';
 }
 
+// What takeover stopped, so it can be given back: containers can be started again, processes only listed.
+export const stoppedFile = (state) => path.join(state, 'takeover-stopped.json');
+function readStopped(state) {
+	try {
+		const j = JSON.parse(fs.readFileSync(stoppedFile(state), 'utf8'));
+		return { containers: Array.isArray(j.containers) ? j.containers : [], processes: Array.isArray(j.processes) ? j.processes : [] };
+	} catch {
+		return { containers: [], processes: [] };
+	}
+}
+function writeStopped(state, rec) {
+	if (!rec.containers.length && !rec.processes.length) return fs.rmSync(stoppedFile(state), { force: true });
+	fs.mkdirSync(state, { recursive: true });
+	fs.writeFileSync(stoppedFile(state), JSON.stringify(rec, null, 2) + '\n');
+}
+
+// Restarts the containers takeover stopped. A container that is gone or will not start stays on the list and is reported.
+export function restore({
+	dryRun = false,
+	run = defaultRun,
+	env = process.env,
+	state = env.DF_STATE_DIR || path.join(os.homedir(), '.dev-factory'),
+} = {}) {
+	const rec = readStopped(state);
+	const done = [];
+	const left = [];
+	const keep = { containers: [], processes: [] };
+	for (const c of rec.containers) {
+		if (dryRun) {
+			done.push({ what: 'container start', target: c.name, result: 'would run' });
+			continue;
+		}
+		const ok = run('docker', ['start', c.id], { timeout: 120000 }).status === 0;
+		if (ok) done.push({ what: 'container start', target: c.name, result: 'restarted' });
+		else {
+			keep.containers.push(c);
+			left.push({
+				what: 'container',
+				target: c.name,
+				why: 'it would not start again (a port may be taken, or it was removed); start it yourself',
+			});
+		}
+	}
+	for (const p of rec.processes)
+		left.push({
+			what: 'process',
+			target: `${p.name} (was pid ${p.pid}, port ${p.port})`,
+			why: 'a stopped process cannot be restarted from here; start it yourself',
+		});
+	if (!dryRun) writeStopped(state, { containers: keep.containers, processes: [] });
+	return { restore: true, done, left };
+}
+
 export async function cleanup({
 	worktree,
 	takeover = false,
@@ -143,6 +202,7 @@ export async function cleanup({
 } = {}) {
 	const done = [];
 	const left = [];
+	const record = { containers: [], processes: [] };
 	const act = (what, target, fn) => done.push({ what, target, result: dryRun ? 'would run' : fn() });
 	const envJson = worktree ? path.join(worktree, '.dev-factory', 'env.json') : null;
 	const recorded = envJson && fs.existsSync(envJson) ? JSON.parse(fs.readFileSync(envJson, 'utf8')) : {};
@@ -163,7 +223,7 @@ export async function cleanup({
 		left.push({
 			what: 'simulator',
 			target: udid,
-			why: 'it was already running before the factory started (set cleanup.takeover to shut it down)',
+			why: 'it was already running before the factory started (the owner sets DF_TAKEOVER to shut it down)',
 		});
 	act('orphaned stacks swept', 'df-* projects with no live owner', () =>
 		run('bash', [path.join(SELF, 'e2e-env.sh'), 'sweep']).status === 0 ? 'swept' : 'failed',
@@ -179,24 +239,30 @@ export async function cleanup({
 		if (!holders.length && !containers.length) continue;
 		if (!takeover) {
 			const who = [...containers.map((c) => `container ${c.name}`), ...holders.map((h) => `${h.name} (pid ${h.pid})`)].join(', ');
-			left.push({ what: 'port', target: String(port), why: `held by ${who}; not started by the factory (set cleanup.takeover to stop it)` });
+			left.push({
+				what: 'port',
+				target: String(port),
+				why: `held by ${who}; not started by the factory (the owner sets DF_TAKEOVER to stop it)`,
+			});
 			continue;
 		}
 		for (const c of containers)
-			act('container stop', `${c.name} (port ${port})`, () =>
-				run('docker', ['stop', c.id], { timeout: 120000 }).status === 0 ? 'stopped' : 'failed',
-			);
+			act('container stop', `${c.name} (port ${port})`, () => {
+				const stopped = run('docker', ['stop', c.id], { timeout: 120000 }).status === 0;
+				if (stopped) record.containers.push({ id: c.id, name: c.name, project: c.project, port, at: new Date().toISOString() });
+				return stopped ? 'stopped' : 'failed';
+			});
 		for (const h of holders) {
 			const proc = procs.find((p) => p.pid === h.pid) ?? { pid: h.pid, command: h.name };
 			if (containers.length && DOCKER_NAMES.test(`${h.name} ${proc.command}`)) continue; // the container's own proxy goes with the container
 			const why = protectedReason(proc, keep);
 			if (why) left.push({ what: 'port', target: String(port), why: `pid ${h.pid} ${h.name} is ${why}` });
-			else
-				done.push({
-					what: 'process stop',
-					target: `${h.name} (pid ${h.pid}, port ${port})`,
-					result: dryRun ? 'would run' : await stop(h.pid, { run }),
-				});
+			else {
+				const result = dryRun ? 'would run' : await stop(h.pid, { run });
+				if (!dryRun)
+					record.processes.push({ pid: h.pid, name: h.name, command: proc.command.slice(0, 200), port, at: new Date().toISOString() });
+				done.push({ what: 'process stop', target: `${h.name} (pid ${h.pid}, port ${port})`, result });
+			}
 		}
 	}
 
@@ -224,17 +290,30 @@ export async function cleanup({
 			left.push({
 				what: 'browser or Maestro sessions',
 				target: `${sessions.length} process(es)`,
-				why: 'the session may still be using them (set cleanup.takeover to stop them)',
+				why: 'the session may still be using them (the owner sets DF_TAKEOVER to stop them)',
 			});
 	}
 
 	// ---- locks ----
 	const lock = path.join(state, 'ports.lock');
 	if (fs.existsSync(lock)) {
-		const owner = Number(fs.readFileSync(path.join(lock, 'owner'), 'utf8').trim() || 0);
+		// a lock with no readable owner was abandoned part-way: nobody is holding it
+		let owner = 0;
+		try {
+			owner = Number(fs.readFileSync(path.join(lock, 'owner'), 'utf8').trim() || 0);
+		} catch {
+			/* no owner file */
+		}
 		const dead = !owner || run('kill', ['-0', String(owner)]).status !== 0;
 		if (dead || takeover) act('ports lock released', lock, () => (fs.rmSync(lock, { recursive: true, force: true }), 'released'));
 		else left.push({ what: 'ports lock', target: lock, why: `held by running pid ${owner}` });
+	}
+	if (!dryRun && (record.containers.length || record.processes.length)) {
+		const before = readStopped(state);
+		writeStopped(state, {
+			containers: [...before.containers, ...record.containers],
+			processes: [...before.processes, ...record.processes].slice(-50),
+		});
 	}
 	return { takeover, done, left };
 }
@@ -242,6 +321,14 @@ export async function cleanup({
 if (isMain(import.meta.url)) {
 	const argv = process.argv.slice(2);
 	const val = (n) => (argv.includes(`--${n}`) ? argv[argv.indexOf(`--${n}`) + 1] : undefined);
+	if (argv.some((a) => /^--takeover/.test(a))) {
+		console.error('cleanup: takeover is not a flag. The machine owner sets DF_TAKEOVER=1 in <state>/.env.local (or the shell that starts a run)');
+		process.exit(1);
+	}
+	if (argv.includes('--restore')) {
+		console.log(JSON.stringify(restore({ dryRun: argv.includes('--dry-run') }), null, 2));
+		process.exit(0);
+	}
 	let cfg;
 	try {
 		cfg = load();
@@ -249,10 +336,9 @@ if (isMain(import.meta.url)) {
 		console.error(`cleanup: ${e.message}`);
 		process.exit(1);
 	}
-	const toggle = get('cleanup.takeover', { config: cfg }) === true || argv.includes('--takeover');
 	const worktree = val('worktree') ? path.resolve(val('worktree')) : undefined;
 	const ports = (val('ports') ?? '').split(',').filter(Boolean);
-	cleanup({ worktree, takeover: toggle, ports, dryRun: argv.includes('--dry-run'), cfg })
+	cleanup({ worktree, takeover: takeoverOn(), ports, dryRun: argv.includes('--dry-run'), cfg })
 		.then((r) => console.log(JSON.stringify(r, null, 2)))
 		.catch((e) => {
 			console.error(`cleanup: ${e.message}`);

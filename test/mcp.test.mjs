@@ -200,8 +200,10 @@ test('takeover lets the sandbox run the commands that stop host processes, and o
 	const { load, merge } = await import('../scripts/config.mjs');
 	const { TAKEOVER_EXCLUDED } = await import('../scripts/factory-settings.mjs');
 	const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'df-takeover-')), '.mcp.json');
-	const off = build({ cfg: load(), mcpFile: file }).sandbox.excludedCommands;
-	const on = build({ cfg: merge(load(), { cleanup: { takeover: true } }), mcpFile: file }).sandbox.excludedCommands;
+	const off = build({ cfg: load(), mcpFile: file, env: {} }).sandbox.excludedCommands;
+	const fromFile = build({ cfg: merge(load(), { cleanup: { takeover: true } }), mcpFile: file, env: {} }).sandbox.excludedCommands;
+	const on = build({ cfg: load(), mcpFile: file, env: { DF_TAKEOVER: '1' } }).sandbox.excludedCommands;
+	for (const c of TAKEOVER_EXCLUDED) assert.ok(!fromFile.includes(c), `${c}: a config value does not grant takeover`);
 	for (const c of TAKEOVER_EXCLUDED) {
 		assert.ok(!off.includes(c), `${c} is not excluded by default`);
 		assert.ok(on.includes(c), `${c} is excluded with takeover`);
