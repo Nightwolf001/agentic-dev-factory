@@ -158,7 +158,7 @@
 		"preCommit": null
 	},
 	"scheduler": {
-		"intervalMinutes": 15
+		"intervalMinutes": 5
 	},
 	"evidence": {
 		"maxAttachmentMb": 9

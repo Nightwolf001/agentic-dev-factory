@@ -217,7 +217,7 @@ test('config.mjs agent prints the model and effort a role runs with, so the sett
 });
 
 test('scheduler.intervalMinutes and alerts.notify are validated', () => {
-	assert.equal(load().scheduler.intervalMinutes, 15);
+	assert.equal(load().scheduler.intervalMinutes, 5);
 	assert.equal(load().alerts.notify, false);
 	assert.deepEqual(validate(merge(load(), { scheduler: { intervalMinutes: 5 }, alerts: { notify: true } })), []);
 	for (const bad of [0, 1441, 2.5, '5'])
