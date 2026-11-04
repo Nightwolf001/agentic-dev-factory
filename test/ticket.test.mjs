@@ -53,3 +53,15 @@ test('qa.mjs ticket blocked-by reads dependencies from any tracker description a
 	assert.equal(r.status, 0, r.stderr);
 	assert.deepEqual(JSON.parse(r.stdout).blockedBy, ['GH-12', 'APP-4']);
 });
+
+test('a Remote-QA line asks for the deployed environment, with an optional account', async () => {
+	const { parseRemoteQa } = await import('../scripts/ticket-lib.mjs');
+	assert.deepEqual(parseRemoteQa('Summary\n\nRemote-QA: staging\n\nAcceptance criteria'), { env: 'staging', account: null });
+	assert.deepEqual(parseRemoteQa('Remote-QA: staging (account: reviewer)'), { env: 'staging', account: 'reviewer' });
+	assert.deepEqual(parseRemoteQa('- **Remote-QA:** `preprod`'), { env: 'preprod', account: null });
+	assert.deepEqual(parseRemoteQa('remote qa: prod, account admin'), { env: 'prod', account: 'admin' });
+	assert.equal(parseRemoteQa('We should run QA remotely sometime.'), null);
+	assert.equal(parseRemoteQa('Remote-QA: staging; rm -rf /'), null, 'a line that does not look like names is no request');
+	assert.equal(parseRemoteQa('Remote-QA: $(whoami)'), null);
+	assert.equal(parseRemoteQa(''), null);
+});

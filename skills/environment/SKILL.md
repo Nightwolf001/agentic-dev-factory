@@ -17,6 +17,7 @@ description: Start, verify and tear down the isolated e2e environment for a work
 
 Facts you rely on:
 
+-   A remote environment (`e2e-env.sh up --worktree <worktree> --key <KEY> --remote <env> [--account <name>] [--device]`) starts nothing: it checks that the deployed address answers and records the account's variable NAMES in `.dev-factory/env.json`. `verify` pings it again and `down` only forgets the record. Sign in with `qa-login.sh` (mobile) or from the case through `process.env` (web), never by naming the variables in a command.
 -   A finished run leaves nothing running. `scripts/cleanup.mjs` stops only what the run started unless the owner set `DF_TAKEOVER=1` in the environment (it is not a repository setting, and an agent cannot set it): then it also stops the processes and containers holding the ports the run needs (`cleanup.ports` adds more) and the leftover browser and Maestro sessions. It never touches the shell, Claude, the terminal or system processes, and an agent cannot switch the toggle on for itself.
 
 -   `.dev-factory/env.json` holds `project`, `composeFile`, `mode`. Every container command is `docker compose -f <composeFile> -f .dev-factory/compose.override.yml -p <project> exec -T [-u <environment.user>] <environment.service> <cmd>`.

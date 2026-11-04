@@ -392,3 +392,152 @@ test('a setting or a path with a quote in it is recorded as text and never runs'
 	});
 	assert.equal(v.status, 0, v.stderr);
 });
+
+// ---- remote QA ----
+
+function remoteFixture({ answer = '200', accounts = ['reviewer', 'admin'], extra = {} } = {}) {
+	const f = fixture({
+		environments: {
+			dev: { source: 'local', sentry: null, axiomDatasets: [] },
+			staging: { remote: { url: 'https://staging.example.test/app', accounts, defaultAccount: 'reviewer' } },
+		},
+		...extra,
+	});
+	fs.writeFileSync(path.join(f.base, 'bin/curl'), `#!/bin/bash\necho "curl $@" >> "${f.base}/curl.log"\nprintf '${answer}'\n`, { mode: 0o755 });
+	const env = (more = {}) => ({
+		...process.env,
+		PATH: `${path.join(f.base, 'bin')}:${process.env.PATH}`,
+		DF_STATE_DIR: f.state,
+		DF_OWNER_PID: String(process.pid),
+		DF_REMOTE_STAGING_REVIEWER_USER: 'qa-reviewer@example.test',
+		DF_REMOTE_STAGING_REVIEWER_PASSWORD: 'correct-horse-battery',
+		...more,
+	});
+	const run = (args, more) => spawnSync('bash', [SCRIPT, ...args], { env: env(more), encoding: 'utf8', cwd: f.worktree });
+	const record = () => JSON.parse(fs.readFileSync(path.join(f.worktree, '.dev-factory/env.json'), 'utf8'));
+	return { ...f, run, record };
+}
+
+test('up --remote checks that the deployed address answers and records the environment with the names of the account variables, never their values', () => {
+	const f = remoteFixture();
+	const r = f.run(['up', '--key', 'APP-1', '--remote', 'staging']);
+	assert.equal(r.status, 0, r.stderr);
+	const rec = f.record();
+	assert.equal(rec.mode, 'remote');
+	assert.equal(rec.project, '');
+	assert.equal(rec.webBaseUrl, 'https://staging.example.test/app');
+	assert.deepEqual(rec.hosts, ['staging.example.test']);
+	assert.deepEqual(rec.remote, {
+		env: 'staging',
+		url: 'https://staging.example.test/app',
+		account: 'reviewer',
+		userVar: 'DF_REMOTE_STAGING_REVIEWER_USER',
+		passwordVar: 'DF_REMOTE_STAGING_REVIEWER_PASSWORD',
+	});
+	assert.deepEqual(rec.secretEnv, ['DF_REMOTE_STAGING_REVIEWER_PASSWORD'], 'so kept evidence is redacted of the password');
+	const text = fs.readFileSync(path.join(f.worktree, '.dev-factory/env.json'), 'utf8');
+	assert.doesNotMatch(text, /correct-horse-battery|qa-reviewer@example/, 'no value is written');
+	assert.doesNotMatch(r.stdout + r.stderr, /correct-horse-battery|qa-reviewer@example/, 'and none is printed');
+	assert.match(fs.readFileSync(path.join(f.base, 'curl.log'), 'utf8'), /https:\/\/staging\.example\.test\/app/);
+	assert.equal(f.log(), '', 'a remote environment starts no stack');
+});
+
+test('another account is chosen with --account, and an account the settings do not list is refused', () => {
+	const f = remoteFixture();
+	const admin = f.run(['up', '--key', 'APP-1', '--remote', 'staging', '--account', 'admin'], {
+		DF_REMOTE_STAGING_ADMIN_USER: 'root-qa',
+		DF_REMOTE_STAGING_ADMIN_PASSWORD: 'another-secret-pw',
+	});
+	assert.equal(admin.status, 0, admin.stderr);
+	assert.equal(f.record().remote.passwordVar, 'DF_REMOTE_STAGING_ADMIN_PASSWORD');
+	const unknown = f.run(['up', '--key', 'APP-1', '--remote', 'staging', '--account', 'intern']);
+	assert.equal(unknown.status, 1);
+	assert.match(unknown.stderr, /intern is not one of environments\.staging\.remote\.accounts/);
+});
+
+test('up --remote refuses what it cannot rely on, naming variables and never values', () => {
+	const f = remoteFixture();
+	const missing = f.run(['up', '--key', 'APP-1', '--remote', 'staging', '--account', 'admin']);
+	assert.equal(missing.status, 1);
+	assert.match(missing.stderr, /DF_REMOTE_STAGING_ADMIN_USER and DF_REMOTE_STAGING_ADMIN_PASSWORD/);
+	const unset = f.run(['up', '--key', 'APP-1', '--remote', 'staging'], { DF_REMOTE_STAGING_REVIEWER_PASSWORD: '' });
+	assert.equal(unset.status, 1);
+	assert.match(unset.stderr, /DF_REMOTE_STAGING_REVIEWER_PASSWORD/);
+	assert.doesNotMatch(unset.stderr, /qa-reviewer@example/);
+	const nope = f.run(['up', '--key', 'APP-1', '--remote', 'nowhere']);
+	assert.equal(nope.status, 1);
+	assert.match(nope.stderr, /no remote environment called nowhere/);
+	for (const bad of ['a b', 'x;rm', '$(x)', '../x']) assert.equal(f.run(['up', '--key', 'APP-1', '--remote', bad]).status, 1, bad);
+	assert.equal(f.run(['up', '--key', 'APP-1', '--account', 'reviewer']).status, 1, 'an account needs a remote environment');
+	const down = remoteFixture({ answer: '503' });
+	const r = down.run(['up', '--key', 'APP-1', '--remote', 'staging']);
+	assert.equal(r.status, 1);
+	assert.match(r.stderr, /does not answer/);
+	assert.equal(fs.existsSync(path.join(down.worktree, '.dev-factory/env.json')), false, 'nothing is recorded for an environment that is down');
+	for (const code of ['000', '502'])
+		assert.equal(remoteFixture({ answer: code }).run(['up', '--key', 'APP-1', '--remote', 'staging']).status, 1, code);
+	for (const code of ['200', '301', '401', '403'])
+		assert.equal(remoteFixture({ answer: code }).run(['up', '--key', 'APP-1', '--remote', 'staging']).status, 0, code);
+});
+
+test('verify pings the recorded address again, and down only forgets the record', () => {
+	const f = remoteFixture();
+	f.run(['up', '--key', 'APP-1', '--remote', 'staging']);
+	const v = f.run(['verify']);
+	assert.equal(v.status, 0, v.stderr);
+	assert.match(v.stderr, /verify ok: remote staging/);
+	assert.ok(f.record().verifiedAt);
+	fs.writeFileSync(path.join(f.base, 'bin/curl'), `#!/bin/bash\nprintf '503'\n`, { mode: 0o755 });
+	const bad = f.run(['verify']);
+	assert.equal(bad.status, 1);
+	assert.match(bad.stderr, /verify FAILED for the remote environment staging/);
+	const down = f.run(['down']);
+	assert.equal(down.status, 0, down.stderr);
+	assert.equal(fs.existsSync(path.join(f.worktree, '.dev-factory/env.json')), false);
+	assert.equal(f.log(), '', 'docker was never touched');
+});
+
+test('the remote settings are validated', async () => {
+	const { load, merge, validate } = await import('../scripts/config.mjs');
+	const with_ = (remote, name = 'staging') => merge(load(), { environments: { [name]: { remote } } });
+	assert.deepEqual(validate(with_({ url: 'https://staging.example.test', accounts: ['reviewer'], defaultAccount: 'reviewer' })), []);
+	for (const [remote, re] of [
+		[{ url: 'ftp://x' }, /remote\.url/],
+		[{ url: 'https://user:pw@x.test' }, /remote\.url/],
+		[{ url: 'https://x.test', accounts: ['a b'] }, /accounts/],
+		[{ url: 'https://x.test', accounts: ['a'], defaultAccount: 'b' }, /defaultAccount/],
+		['https://x.test', /must be an object/],
+	])
+		assert.match(validate(with_(remote)).join('\n'), re, JSON.stringify(remote));
+	assert.match(validate(with_({ url: 'https://x.test' }, 'bad name')).join('\n'), /environment name/);
+});
+
+test('a remote address with a user or password in it is refused, and what is logged is the origin and path, not the query', () => {
+	for (const bad of [
+		'https://qa:SECRETPW@staging.example.test/app',
+		'https://:SECRETPW@staging.example.test',
+		'ftp://staging.example.test',
+		'staging.example.test/app',
+	]) {
+		const f = remoteFixture();
+		fs.writeFileSync(
+			path.join(f.worktree, 'dev-factory.config.json'),
+			JSON.stringify({ environments: { staging: { remote: { url: bad, accounts: ['reviewer'] } } } }),
+		);
+		const r = f.run(['up', '--key', 'APP-1', '--remote', 'staging']);
+		assert.equal(r.status, 1, bad);
+		assert.match(r.stderr, /http\(s\) address with no user or password/);
+		assert.doesNotMatch(r.stdout + r.stderr, /SECRETPW/, 'and the secret is not echoed back');
+		assert.equal(fs.existsSync(path.join(f.worktree, '.dev-factory/env.json')), false);
+	}
+	const ok = remoteFixture();
+	fs.writeFileSync(
+		path.join(ok.worktree, 'dev-factory.config.json'),
+		JSON.stringify({
+			environments: { staging: { remote: { url: 'https://staging.example.test/app?token=QUERYSECRET', accounts: ['reviewer'] } } },
+		}),
+	);
+	const r = ok.run(['up', '--key', 'APP-1', '--remote', 'staging']);
+	assert.equal(r.status, 0, r.stderr);
+	assert.doesNotMatch(r.stderr, /QUERYSECRET/, 'the log names the address without its query');
+});

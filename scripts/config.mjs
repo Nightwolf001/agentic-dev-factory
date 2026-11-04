@@ -274,8 +274,37 @@ export function validate(config = load()) {
 		for (const [name, e] of Object.entries(envs)) {
 			if (e && e.axiomDatasets !== undefined && !Array.isArray(e.axiomDatasets))
 				problems.push(`environments.${name}.axiomDatasets must be a list`);
+			const remote = e?.remote;
+			if (remote != null) {
+				if (typeof remote !== 'object' || Array.isArray(remote)) problems.push(`environments.${name}.remote must be an object with a url`);
+				else {
+					if (!/^https?:\/\/[^\s/@]+(:\d+)?(\/\S*)?$/.test(remote.url ?? ''))
+						problems.push(`environments.${name}.remote.url must be an http(s) address without credentials`);
+					const accounts = remote.accounts ?? [];
+					if (!(Array.isArray(accounts) && accounts.every((a) => typeof a === 'string' && /^[A-Za-z0-9_-]+$/.test(a))))
+						problems.push(`environments.${name}.remote.accounts must be a list of account names (letters, digits, - and _)`);
+					if (remote.defaultAccount != null && !accounts.includes(remote.defaultAccount))
+						problems.push(`environments.${name}.remote.defaultAccount must be one of its accounts`);
+					if (!/^[A-Za-z0-9_-]+$/.test(name)) problems.push(`environments.${name}: a remote environment name is letters, digits, - and _`);
+				}
+			}
 		}
 	}
+	const platform = dig(config, 'mobile.platform');
+	if (platform !== undefined && !['ios', 'android'].includes(platform))
+		problems.push('mobile.platform must be ios or android (leave it unset to infer it from the ticket)');
+	for (const k of ['mobile.androidAvd', 'mobile.iosAutofillOff', 'mobile.androidBuild', 'mobile.appId']) {
+		const v = dig(config, k);
+		if (v != null && (typeof v !== 'string' || !v)) problems.push(`${k} must be a non-empty string or null`);
+	}
+	if (dig(config, 'mobile.clientLogs') !== undefined && typeof dig(config, 'mobile.clientLogs') !== 'boolean')
+		problems.push('mobile.clientLogs must be true or false');
+	const rev = dig(config, 'mobile.androidReversePorts');
+	if (rev !== undefined && !(Array.isArray(rev) && rev.every((p) => Number.isInteger(p) && p > 0 && p < 65536)))
+		problems.push('mobile.androidReversePorts must be a list of port numbers');
+	const login = dig(config, 'mobile.login');
+	if (login !== undefined && !(login && typeof login === 'object' && Object.values(login).every((v) => typeof v === 'string' && v)))
+		problems.push('mobile.login must map userField, passwordField, submit and success to element ids');
 	const cmd = dig(config, 'coverage.command');
 	if (cmd != null && (typeof cmd !== 'string' || !cmd)) problems.push('coverage.command must be a command or null');
 	const lcov = dig(config, 'coverage.lcovPath');

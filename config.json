@@ -181,7 +181,20 @@
 		"pods": "yarn pods",
 		"start": "yarn start --port {port}",
 		"build": "yarn ios --udid {udid} --port {port}",
-		"nativeInputs": ["ios/Podfile.lock", "ios/*.xcodeproj/project.pbxproj"]
+		"nativeInputs": ["ios/Podfile.lock", "ios/*.xcodeproj/project.pbxproj"],
+		"appId": null,
+		"clientLogs": true,
+		"iosAutofillOff": null,
+		"androidAvd": null,
+		"androidBuild": "yarn android --deviceId {serial} --port {port}",
+		"androidNativeInputs": ["android/build.gradle", "android/settings.gradle", "android/gradle.properties", "android/app/build.gradle"],
+		"androidReversePorts": [],
+		"login": {
+			"userField": "qa-login-username",
+			"passwordField": "qa-login-password",
+			"submit": "qa-login-submit",
+			"success": "qa-login-success"
+		}
 	},
 	"environments": {
 		"dev": {

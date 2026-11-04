@@ -15,6 +15,11 @@
 # reach environment.webBaseUrl like a developer does; it takes a machine-wide lock, one such
 # environment per Mac. --device implies canonical because the mobile app has the ports baked in.
 #
+# Remote QA: `up --remote ENV [--account NAME] [--device]` starts nothing. It checks that the deployed address in
+# environments.ENV.remote.url answers, and records mode remote in env.json with the NAMES of the variables that hold the QA
+# account (DF_REMOTE_<ENV>_<ACCOUNT>_USER and _PASSWORD, set by the owner in the state folder's .env.local), never their values.
+# `down` only forgets the record; `verify` checks the address again. With --device the mobile lane runs against it.
+#
 # With DF_TAKEOVER=1 (the owner's, see scripts/takeover.mjs) busy canonical ports are freed by scripts/cleanup.mjs instead of refusing.
 #
 # Exit codes: 0 ok, 1 failure, 75 refused (cap or device lock held; retry on a later pass).
@@ -46,16 +51,22 @@ refuse() { echo "e2e-env: $*" >&2; exit 75; }
 log()  { echo "e2e-env: $*" >&2; }
 
 cmd="${1:-}"; [ -n "$cmd" ] && shift
-WORKTREE="$(pwd)"; KEY=""; DEVICE=0; PORTS=none
+WORKTREE="$(pwd)"; KEY=""; DEVICE=0; PORTS=none; REMOTE=""; ACCOUNT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --worktree) WORKTREE="$(cd "$2" && pwd)"; shift 2 ;;
     --key) KEY="$2"; shift 2 ;;
     --device) DEVICE=1; PORTS=canonical; shift ;;
+    --remote) REMOTE="${2:-}"; shift 2 ;;
+    --account) ACCOUNT="${2:-}"; shift 2 ;;
     --ports) case "$2" in canonical|none) PORTS="$2" ;; *) die "--ports must be canonical or none" ;; esac; shift 2 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
+
+# the remote environment and account name reach variable names and config paths: letters, digits, - and _ only
+if [ -n "$REMOTE" ] && ! printf '%s' "$REMOTE" | grep -Eq '^[A-Za-z0-9_-]+$'; then die "--remote must be an environment name (letters, digits, - and _)"; fi
+if [ -n "$ACCOUNT" ] && { [ -z "$REMOTE" ] || ! printf '%s' "$ACCOUNT" | grep -Eq '^[A-Za-z0-9_-]+$'; }; then die "--account names a QA account of a --remote environment (letters, digits, - and _)"; fi
 
 # the key reaches node -e snippets and docker project names: accept only a task key
 if [ -n "$KEY" ] && ! printf '%s' "$KEY" | grep -Eq '^[A-Za-z][A-Za-z0-9]*-[0-9]+$'; then die "--key must look like TASK-123 (got '$KEY')"; fi
@@ -75,6 +86,7 @@ write_env() {
 }
 # a project name this script can have made: refuse to take down anything else, whatever env.json says
 valid_project() { printf '%s' "$1" | grep -Eq '^df-[a-z0-9_-]+$'; }
+env_get_path() { ENV_JSON="$ENV_JSON" node -e "try{const j=JSON.parse(require('fs').readFileSync(process.env.ENV_JSON,'utf8'));process.stdout.write(String(process.argv[1].split('.').reduce((o,k)=>o==null?undefined:o[k],j)??''))}catch(e){}" "$1"; }
 
 compose() { # compose <args...> using the recorded project
   local project="$1"; shift
@@ -139,7 +151,26 @@ wait_ping() { # inside the service, as the stack's own hostnames resolve there
   done
 }
 
+# DF_REMOTE_<ENV>_<ACCOUNT>_<KIND>: upper case, anything else becomes _
+remote_var() { printf 'DF_REMOTE_%s_%s_%s' "$(printf '%s' "$1" | tr '[:lower:]-' '[:upper:]_')" "$(printf '%s' "$2" | tr '[:lower:]-' '[:upper:]_')" "$3"; }
+
+# the deployed address answers with anything below 500 (a login page and a 401 both mean the service is there)
+remote_answers() {
+  local code; code="$(curl -ks -o /dev/null -m 20 -w '%{http_code}' "$1" 2>/dev/null)"
+  case "$code" in 000|'') return 1 ;; 5*) return 1 ;; esac
+  return 0
+}
+
+do_verify_remote() {
+  local url; url="$(env_get_path remote.url)"
+  [ -n "$url" ] || die "no remote address recorded in $ENV_JSON"
+  remote_answers "$url" || { printf 'e2e-env: verify FAILED for the remote environment %s: the address does not answer\n' "$(env_get_path remote.env)" >&2; return 1; }
+  node -e "const f='$ENV_JSON';const j=require(f);j.verifiedAt=new Date().toISOString();require('fs').writeFileSync(f,JSON.stringify(j,null,2))"
+  log "verify ok: remote $(env_get_path remote.env)"
+}
+
 do_verify() {
+  if [ "$(env_get mode)" = remote ]; then do_verify_remote; return $?; fi
   if [ "$ENV_TYPE" = none ]; then
     [ -f "$ENV_JSON" ] || die "no environment recorded in $ENV_JSON"
     return 0
@@ -221,8 +252,40 @@ run_setup() {
   done
 }
 
+do_up_remote() {
+  local url accounts account="" userVar="" passVar="" host
+  url="$(node "$SELF_DIR/config.mjs" get "environments.$REMOTE.remote.url" 2>/dev/null)"
+  [ -n "$url" ] || die "environments.$REMOTE.remote.url is not set: there is no remote environment called $REMOTE"
+  # an address with a user or password in it would be logged, recorded in env.json and sent to every probe: credentials are variables
+  node -e 'try{const u=new URL(process.argv[1]);process.exit(/^https?:$/.test(u.protocol)&&!u.username&&!u.password?0:1)}catch(e){process.exit(1)}' "$url" || die "environments.$REMOTE.remote.url must be an http(s) address with no user or password in it (the QA account is DF_REMOTE_<ENV>_<ACCOUNT>_USER and _PASSWORD)"
+  accounts="$(node "$SELF_DIR/config.mjs" get "environments.$REMOTE.remote.accounts" 2>/dev/null || true)"
+  account="$ACCOUNT"
+  [ -n "$account" ] || account="$(node "$SELF_DIR/config.mjs" get "environments.$REMOTE.remote.defaultAccount" 2>/dev/null || true)"
+  [ -n "$account" ] || account="$(node -e 'try{console.log(JSON.parse(process.argv[1])[0]||"")}catch(e){}' "${accounts:-[]}")"
+  if [ -n "$account" ]; then
+    node -e 'process.exit(JSON.parse(process.argv[1]||"[]").includes(process.argv[2])?0:1)' "${accounts:-[]}" "$account" || die "$account is not one of environments.$REMOTE.remote.accounts"
+    userVar="$(remote_var "$REMOTE" "$account" USER)"; passVar="$(remote_var "$REMOTE" "$account" PASSWORD)"
+    # names only in the message: the values never appear in output
+    [ -n "${!userVar:-}" ] && [ -n "${!passVar:-}" ] || die "the QA account $account for $REMOTE has no credentials here: set $userVar and $passVar in the state folder's .env.local"
+  fi
+  remote_answers "$url" || die "the remote environment $REMOTE does not answer at its address (environments.$REMOTE.remote.url)"
+  host="$(node -e 'console.log(new URL(process.argv[1]).host)' "$url")"
+  mkdir -p "$RUN_DIR"
+  DF_R_ENV="$REMOTE" DF_R_URL="$url" DF_R_ACCOUNT="$account" DF_R_USERVAR="$userVar" DF_R_PASSVAR="$passVar" DF_R_HOST="$host" DF_R_KEY="$KEY" DF_R_WT="$WORKTREE" DF_R_DEVICE="$DEVICE" ENV_JSON="$ENV_JSON" node -e '
+    const e=process.env;
+    const j={project:"",key:e.DF_R_KEY,worktree:e.DF_R_WT,mode:"remote",ports:"none",device:e.DF_R_DEVICE==="1",webBaseUrl:e.DF_R_URL,hosts:[e.DF_R_HOST],
+      remote:{env:e.DF_R_ENV,url:e.DF_R_URL,account:e.DF_R_ACCOUNT||null,userVar:e.DF_R_USERVAR||null,passwordVar:e.DF_R_PASSVAR||null},
+      secretEnv:e.DF_R_PASSVAR?[e.DF_R_PASSVAR]:[],createdAt:new Date().toISOString()};
+    require("fs").writeFileSync(e.ENV_JSON,JSON.stringify(j,null,2))'
+  log "remote environment $REMOTE: $(node -e 'const u=new URL(process.argv[1]);console.log(u.origin+u.pathname)' "$url") answers${account:+; QA account $account ($userVar, $passVar)}"
+  if [ "$DEVICE" = 1 ]; then
+    ( cd "$WORKTREE" && bash "$SELF_DIR/mobile-env.sh" up --worktree "$WORKTREE" ) || { rc=$?; [ "$rc" = 75 ] && refuse "Metro port busy"; die "mobile lane failed"; }
+  fi
+}
+
 do_up() {
   [ -n "$KEY" ] || die "up needs --key KEY"
+  [ -n "$REMOTE" ] && { do_up_remote; return 0; }
   [ "$ENV_TYPE" = none ] && { do_up_none; return 0; }
   [ -f "$COMPOSE_FILE" ] || die "missing $COMPOSE_FILE (run from a worktree of the repository)"
   local project; project="$(project_for "$KEY")"
@@ -310,6 +373,8 @@ do_down_quiet() {
 do_down() {
   local project; project="$(env_get project)"
   if [ -z "$project" ]; then
+    # a remote environment started nothing: only the record and, with --device, the dev server are ours
+    [ "$(env_get device)" = true ] && bash "$SELF_DIR/mobile-env.sh" down --worktree "$WORKTREE"
     [ -f "$ENV_JSON" ] && rm -f "$ENV_JSON"
     log "nothing to take down for this worktree"; return 0
   fi
@@ -356,5 +421,5 @@ case "$cmd" in
   verify) do_verify ;;
   down) do_down ;;
   sweep) do_sweep ;;
-  *) echo "usage: e2e-env.sh up|verify|down|sweep [--worktree DIR] [--key KEY] [--ports canonical|none] [--device]" >&2; exit 3 ;;
+  *) echo "usage: e2e-env.sh up|verify|down|sweep [--worktree DIR] [--key KEY] [--ports canonical|none] [--device] [--remote ENV [--account NAME]]" >&2; exit 3 ;;
 esac

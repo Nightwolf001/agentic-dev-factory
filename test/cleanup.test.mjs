@@ -332,3 +332,44 @@ test('a dry run records nothing, and without takeover nothing is recorded', asyn
 	await cleanup({ takeover: false, ports: [4000], run: m.run, stop: m.stop, state, cfg: load() });
 	assert.equal(fs.existsSync(path.join(state, 'takeover-stopped.json')), false);
 });
+
+test('an Android emulator the run booted is killed through adb; one that was already running stays unless the owner allows takeover', async () => {
+	const wt = tmp();
+	fs.mkdirSync(path.join(wt, '.dev-factory'));
+	const record = (bootedByFactory) =>
+		fs.writeFileSync(
+			path.join(wt, '.dev-factory', 'env.json'),
+			JSON.stringify({ project: 'df-app-1', device: { platform: 'android', serial: 'emulator-5554', bootedByFactory } }),
+		);
+	const { state } = noWorktreeState();
+	record(true);
+	fs.writeFileSync(path.join(wt, '.dev-factory', 'emulator.pid'), '4242');
+	const m = machine();
+	const r = await cleanup({ worktree: wt, run: m.run, stop: m.stop, state, cfg: load() });
+	assert.ok(m.calls.some((c) => c[0].endsWith('adb') && c.slice(1).join(' ') === '-s emulator-5554 emu kill'));
+	assert.ok(!m.calls.some((c) => c[0] === 'xcrun'), 'nothing of the iOS lane');
+	assert.ok(r.done.some((d) => d.what === 'emulator kill' && d.result === 'killed'));
+	assert.equal(fs.existsSync(path.join(wt, '.dev-factory', 'emulator.pid')), false);
+
+	record(false);
+	const m2 = machine();
+	const r2 = await cleanup({ worktree: wt, run: m2.run, stop: m2.stop, state, cfg: load() });
+	assert.ok(!m2.calls.some((c) => c.includes('kill') && c.includes('emulator-5554')), 'an emulator that was already running stays up');
+	assert.match(r2.left.find((l) => l.what === 'emulator').why, /already running/);
+	const m3 = machine();
+	await cleanup({ worktree: wt, takeover: true, run: m3.run, stop: m3.stop, state, cfg: load() });
+	assert.ok(m3.calls.some((c) => c.slice(1).join(' ') === '-s emulator-5554 emu kill'));
+
+	// adb that cannot reach the emulator: the process the run started is stopped instead
+	record(true);
+	fs.writeFileSync(path.join(wt, '.dev-factory', 'emulator.pid'), '4242');
+	const calls = [];
+	await cleanup({
+		worktree: wt,
+		run: (c, a) => (calls.push([c, ...a]), { status: c.endsWith('adb') ? 1 : 0, stdout: '', stderr: '' }),
+		stop: m.stop,
+		state,
+		cfg: load(),
+	});
+	assert.ok(calls.some((c) => c[0] === 'kill' && c[1] === '-TERM' && c[2] === '4242'));
+});

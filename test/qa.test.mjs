@@ -1122,3 +1122,13 @@ test('globs: ** is any depth of folders, not a prefix of a name', () => {
 	assert.equal(re('*.json').test('a/b.json'), false, 'a single star stays in one folder');
 	assert.equal(re('a?c').test('abc'), true);
 });
+
+test('ticket remote prints the Remote-QA request of a ticket, or null', () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'df-remote-'));
+	const f = path.join(dir, 't.md');
+	const run = () => JSON.parse(spawnSync(process.execPath, [QA, 'ticket', 'remote', '--file', f], { encoding: 'utf8' }).stdout);
+	fs.writeFileSync(f, 'Summary\nRemote-QA: staging (account: reviewer)\n');
+	assert.deepEqual(run(), { remote: { env: 'staging', account: 'reviewer' } });
+	fs.writeFileSync(f, 'Summary only\n');
+	assert.deepEqual(run(), { remote: null });
+});

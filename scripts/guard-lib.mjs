@@ -393,10 +393,30 @@ const INLINE_CODE = [
 ];
 const PROGRAM_RUNNERS = /^(awk|gawk|mawk|nawk)$/;
 
-function denyCommon(seg, tokens, cmd, vars) {
+// `env` with options and assignments only prints the environment; env is a wrapper, so invocation() looks past it.
+function listsByEnv(tokens) {
+	let t = tokens;
+	while (t.length && /^\w+=/.test(t[0])) t = t.slice(1);
+	if (base(t[0] ?? '') !== 'env') return false;
+	return !t.slice(1).some((x) => !x.startsWith('-') && !/^\w+=/.test(x));
+}
+
+function denyCommon(seg, tokens, cmd, vars, ctxRole) {
 	// by name as written, and by name as the shell would build it: quotes, case, globs such as .env.loca? and brace lists
 	if (ENV_FILE.test(seg) || tokens.some((t) => namesEnvFile(t, vars))) return 'env files hold credentials and are not readable from the shell';
 	if (cmd === 'eval') return 'eval is not allowed';
+	// the QA account of a remote environment is in the pass's environment so that qa-login.sh and the cases can use it; a run does not print it
+	if (FACTORY_ROLES.has(ctxRole)) {
+		if (/DF_REMOTE_\w*_(USER|PASSWORD)/i.test(seg) || /\/proc\/[\w$]+\/environ/.test(seg))
+			return 'the QA account variables (DF_REMOTE_*) are used by qa-login.sh and by cases through the environment; a command does not name or print them';
+		if (
+			cmd === 'printenv' ||
+			listsByEnv(tokens) ||
+			(/^(export|declare|typeset|compgen)$/.test(cmd) && !tokens.slice(1).some((t) => /^\w+=/.test(t))) ||
+			(cmd === 'set' && tokens.length === 1)
+		)
+			return 'listing the environment would show secrets that the pass holds; read the one variable a script needs through that script';
+	}
 	// code read from standard input is inline code too: python3 - <<'EOF', node -, ruby < file
 	if (
 		/^(node|nodejs|bun|deno|python[\d.]*|pypy[\d.]*|ruby|perl|php|lua|osascript)$/.test(cmd) &&
@@ -753,7 +773,13 @@ function judge(command, ctx) {
 		const deny = (why) => ({ deny: true, reason: `dev-factory guard: ${why} [${seg.slice(0, 80)}]` });
 		// the message of a commit or of PR text is prose: ".env" or "rm" in it is not a command touching a file
 		const prose = writesText(cmd, args);
-		const common = denyCommon(prose ? stripMessages(cmd, tokens).join(' ') : seg, prose ? stripMessages(cmd, tokens) : tokens, cmd, st.vars);
+		const common = denyCommon(
+			prose ? stripMessages(cmd, tokens).join(' ') : seg,
+			prose ? stripMessages(cmd, tokens) : tokens,
+			cmd,
+			st.vars,
+			ctx.role,
+		);
 		if (common) return deny(common);
 		const machine = denyMachinePaths(seg, inv, ctx, st);
 		if (machine) return deny(machine);
@@ -805,7 +831,7 @@ function judge(command, ctx) {
 
 // Shell writes to the factory directory (its own QA cases aside), run state, evidence and review records, hook wiring and husky are refused.
 const PROTECTED_BASH =
-	/\.factory\/tasks\/|\.dev-factory\/(review|qa|evidence|debug)(\/|\s|$)|\.dev-factory\/(run|env|env-sealed)\.json|(^|[\s/'"])dev-factory\/(?!qa\/cases\/)|\.dev-factory\/compose\.override\.yml|(^|[\s/'"])dev-factory\.config\.json|\.claude\/|\.github\/workflows|\.husky\//;
+	/\.factory\/tasks\/|\.dev-factory\/(review|qa|evidence|debug)(\/|\s|$)|\.dev-factory\/((run|env|env-sealed)\.json|(metro|emulator)\.pid)|(^|[\s/'"])dev-factory\/(?!qa\/cases\/)|\.dev-factory\/compose\.override\.yml|(^|[\s/'"])dev-factory\.config\.json|\.claude\/|\.github\/workflows|\.husky\//;
 const WRITE_LIKE = /(^|[^2&0-9])>{1,2}\s*[^&\s]|\btee\b|\b(cp|mv|rm|ln|truncate|dd|install)\b|\bsed\s+-i|\bperl\s+-i/;
 
 const FORBIDDEN = new RegExp(['co[-_ ]?' + 'work', 'co[-_ ]?' + 'lab', 'night[-_ ]?' + 'shift', 'day[-_ ]?' + 'shift'].join('|'), 'i');
@@ -889,7 +915,7 @@ export function evaluateEdit({ filePath, text = '', root, active = false, run = 
 	// the installed plugin is outside the worktree, in the plugin cache: no ticket edits it by absolute path
 	if (/(^|\/)\.claude\/plugins\//i.test(abs)) return { deny: true, reason: 'dev-factory guard: the installed plugin is not edited by a ticket' };
 	const protectedPath =
-		/^(dev-factory\.config\.json$|\.factory\/(tasks|qa\/cases)\/|dev-factory\/|\.claude\/|\.github\/|\.husky\/|\.dev-factory\/(review|qa|evidence|debug)\/|\.dev-factory\/(run|env|env-sealed)\.json|\.dev-factory\/compose\.override\.yml)/i.test(
+		/^(dev-factory\.config\.json$|\.factory\/(tasks|qa\/cases)\/|dev-factory\/|\.claude\/|\.github\/|\.husky\/|\.dev-factory\/(review|qa|evidence|debug)\/|\.dev-factory\/((run|env|env-sealed)\.json|(metro|emulator)\.pid)|\.dev-factory\/compose\.override\.yml)/i.test(
 			rel,
 		);
 	if (protectedPath && !ownCase) {

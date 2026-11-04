@@ -36,3 +36,14 @@ export function lintTicket(text, { strict = false } = {}) {
 	}
 	return problems;
 }
+
+// "Remote-QA: staging" or "Remote-QA: staging (account: reviewer)", also as a list item or in bold: the ticket asks for its QA to
+// run against that deployed environment (e2e-env.sh up --remote ENV [--account NAME]) instead of a stack started here. The names
+// are the ones the settings use, so a line that does not look like a name is no request.
+export function parseRemoteQa(text) {
+	const m =
+		/^\s*(?:[-*+]\s*)?(?:\*\*|__)?\s*remote[- ]qa\s*(?:\*\*|__)?\s*:\s*(?:\*\*|__)?\s*`?([A-Za-z0-9][A-Za-z0-9_-]*)`?(?:\s*[,(]?\s*(?:account\s*[:=]?\s*)`?([A-Za-z0-9][A-Za-z0-9_-]*)`?\)?)?\s*(?:\*\*|__)?\s*$/im.exec(
+			text || '',
+		);
+	return m ? { env: m[1], account: m[2] ?? null } : null;
+}

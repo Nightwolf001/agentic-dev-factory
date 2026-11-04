@@ -19,6 +19,7 @@
 //   qa.mjs ticket lint --file F [--strict true]   exit 1 and list what the issue description lacks
 //   qa.mjs ticket base --file F                   {"base": "<branch>"} from a "Base branch:" line, or null
 //   qa.mjs ticket blocked-by --file F             {"blockedBy": ["KEY", ...]} from a "Blocked by" line or section
+//   qa.mjs ticket remote --file F                 {"remote": {"env", "account"}} from a "Remote-QA:" line, or null
 //   qa.mjs learnings check --key KEY [--body-file F]   require and validate .dev-factory/learnings.md (short, scoped; it goes into the PR body)
 //   qa.mjs promote check               only the Learned rules section of AGENTS.md files may differ from the base
 //   qa.mjs scrub --file F     fail when F holds emails, phone numbers, tokens or long identifiers
@@ -39,7 +40,7 @@ import { ProbeError, probe as sendProbe } from '../scripts/probe-lib.mjs';
 import { redactText } from '../scripts/scrub-lib.mjs';
 import { learningRequired, lintLearnings, parseLearnings } from '../scripts/learnings-lib.mjs';
 import { checkPromotion } from '../scripts/promote-lib.mjs';
-import { lintTicket } from '../scripts/ticket-lib.mjs';
+import { lintTicket, parseRemoteQa } from '../scripts/ticket-lib.mjs';
 import { normaliseRef, parseBlockedBy } from '../scripts/sources/common.mjs';
 import { parseBase, validName } from '../scripts/worktree.mjs';
 import { scrubFindings } from '../scripts/scrub-lib.mjs';
@@ -1021,6 +1022,10 @@ async function main() {
 					result = { base: parseBase(fs.readFileSync(a.file, 'utf8')) };
 					break;
 				}
+				if (a._[0] === 'remote' && a.file) {
+					result = { remote: parseRemoteQa(fs.readFileSync(a.file, 'utf8')) };
+					break;
+				}
 				if (a._[0] === 'blocked-by' && a.file) {
 					result = {
 						blockedBy: parseBlockedBy(fs.readFileSync(a.file, 'utf8'))
@@ -1030,7 +1035,9 @@ async function main() {
 					break;
 				}
 				if (a._[0] !== 'lint' || !a.file)
-					throw new QaError('usage: qa.mjs ticket lint --file F [--strict true] | ticket base --file F | ticket blocked-by --file F');
+					throw new QaError(
+						'usage: qa.mjs ticket lint --file F [--strict true] | ticket base --file F | ticket remote --file F | ticket blocked-by --file F',
+					);
 				const problems = lintTicket(fs.readFileSync(a.file, 'utf8'), { strict: a.strict === 'true' });
 				if (problems.length) throw new QaError(`ticket lint failed: ${problems.join('; ')}`);
 				result = { ok: true };
