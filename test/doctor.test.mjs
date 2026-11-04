@@ -82,3 +82,15 @@ test(
 		assert.match(m.run().stdout, /ok {4}scheduled job tick has TERM, LANG, LC_ALL and the state folder as working directory/);
 	},
 );
+
+test(
+	'--ci is recognised in any position: it skips the checks of the installed jobs, which a CI machine does not have',
+	{ skip: process.platform !== 'darwin' },
+	() => {
+		const m = machine();
+		fs.writeFileSync(path.join(m.home, 'Library/LaunchAgents', `com.dev-factory.${m.slug}.tick.plist`), '<plist><dict></dict></plist>\n');
+		assert.match(m.run('--lenient').stdout, /the installed tick job lacks/, 'without --ci the job is checked');
+		assert.doesNotMatch(m.run('--ci').stdout, /installed tick job lacks/);
+		assert.doesNotMatch(m.run('--lenient', '--ci').stdout, /installed tick job lacks/, '--ci as the second argument counts too');
+	},
+);

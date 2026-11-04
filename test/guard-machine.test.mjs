@@ -405,6 +405,12 @@ test('reviewers, debuggers and researchers may run config.mjs get for one settin
 		no(`${cfg} get $(echo x)`);
 		no(`${cfg} get review.readFirst; touch x`);
 		no('node /tmp/config.mjs get review.readFirst');
+		// a vendored copy is the one at dev-factory/ in the working directory, not any path that happens to end that way
+		ok('node dev-factory/scripts/config.mjs get review.readFirst');
+		ok('node ./dev-factory/scripts/config.mjs get review.readFirst');
+		no('node ./evil/dev-factory/scripts/config.mjs get review.readFirst');
+		no('node /tmp/x/dev-factory/scripts/config.mjs get review.readFirst');
+		no('node ../dev-factory/scripts/config.mjs get review.readFirst');
 	}
 	assert.equal(run(`${cfg} get review.readFirst`, { role: 'builder' }).deny, false, 'and nothing changes for the builder');
 });

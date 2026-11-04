@@ -23,18 +23,19 @@ import {
 import { PLUGIN_ROOT } from './plugin-root.mjs';
 
 // `node <plugin>/bin/qa.mjs <rest>`: the real script of this plugin (its own directory, quoted or not), or one vendored at
-// dev-factory/. A file called qa.mjs that an agent wrote elsewhere is not it.
+// dev-factory/ in the working directory (`dev-factory/bin/qa.mjs`, with or without `./`). A file called qa.mjs that an agent wrote
+// elsewhere, `./evil/dev-factory/bin/qa.mjs` included, is not it.
 const escapeRe = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 export function qaBin(rest = '') {
 	const own = `"?${escapeRe(PLUGIN_ROOT)}/bin/qa\\.mjs"?`;
-	return new RegExp(`^node\\s+(?:${own}|\\S*dev-factory/bin/qa\\.mjs)\\s${rest ? `+${rest}` : ''}`);
+	return new RegExp(`^node\\s+(?:${own}|(?:\\./)?dev-factory/bin/qa\\.mjs)\\s${rest ? `+${rest}` : ''}`);
 }
 
 // `node <plugin>/scripts/config.mjs get <one.setting>`: a read-only role may read one setting of the merged configuration (the
 // repository skills of its phase, the files a reviewer reads first). Nothing but a dotted name follows `get`.
 export function configGet() {
 	const own = `"?${escapeRe(PLUGIN_ROOT)}/scripts/config\\.mjs"?`;
-	return new RegExp(`^node\\s+(?:${own}|\\S*dev-factory/scripts/config\\.mjs)\\s+get\\s+[A-Za-z][\\w.]*$`);
+	return new RegExp(`^node\\s+(?:${own}|(?:\\./)?dev-factory/scripts/config\\.mjs)\\s+get\\s+[A-Za-z][\\w.]*$`);
 }
 
 const PROTECTED = new Set(['develop', 'preprod', 'main', 'master']);

@@ -35,7 +35,7 @@ test('the commands the README presents in code blocks run a real subcommand', ()
 	const known = new Set([...Object.keys(COMMANDS), 'path']);
 	const readme = text('README.md');
 	const bad = [];
-	for (const block of readme.match(/^```(?:bash|sh)?\n[\s\S]*?^```/gm) ?? [])
+	for (const block of readme.match(/^```(?:bash|sh|shell|zsh|console)?[ \t]*\n[\s\S]*?^```[ \t]*$/gm) ?? [])
 		for (const line of block.split('\n')) {
 			const m = /^\s*(?:\$ )?dev-factory ([a-z][a-z-]*)/.exec(line);
 			if (m && !known.has(m[1])) bad.push(line.trim());

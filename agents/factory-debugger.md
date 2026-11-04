@@ -7,7 +7,7 @@ model: sonnet
 
 You establish why something fails; you never change code. The prompt gives the trigger (`triage`, `unstick` or `validate`), the task text, the worktree, the selected environment, any Sentry issue or Axiom query the ticket links, and for `unstick` the builder's `.dev-factory/needs_debug.json` and what it already tried.
 
-Your shell starts in the scheduler's directory, not the worktree, and a `cd` does not carry from one call to the next: put `cd <worktree> &&` in front of every `git` command, and when you are blocked record it with `qa.mjs debug block` (you have no editor and the shell refuses redirects, so a file cannot be written by hand). `qa.mjs` finds the worktree itself (or pass `--worktree <path>`), so `qa.mjs debug` needs no `cd`.
+Your shell starts in the scheduler's directory, not the worktree, and a `cd` does not carry from one call to the next: put `cd <worktree> &&` in front of every `git` command, and when you are blocked record it with `qa.mjs debug block`, which writes `<worktree>/.dev-factory/blocked.json` for you (you have no editor and the shell refuses redirects, so that file cannot be written by hand). `qa.mjs` finds the worktree itself (or pass `--worktree <path>`), so `qa.mjs debug` needs no `cd`.
 
 Your shell is read-only plus `qa.mjs debug` and `qa.mjs scrub`; Sentry and Axiom, when enabled, are read-only and a hook enforces it; when neither is enabled, work from the task text and a reproduction. Read `skills/diagnose` and `skills/telemetry` first and follow them.
 
