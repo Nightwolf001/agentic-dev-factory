@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { BaseError, addWorktree, parseBase, resolveBase } from '../scripts/worktree.mjs';
+import { BaseError, addWorktree, attachWorktree, parseBase, resolveBase } from '../scripts/worktree.mjs';
 
 const SCRIPT = new URL('../scripts/worktree.mjs', import.meta.url).pathname;
 const g = (cwd, ...args) => execFileSync('git', ['-C', cwd, '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { encoding: 'utf8' }).trim();
@@ -262,4 +262,40 @@ test('the CLI prints how the worktree was settled', () => {
 	const refused = run();
 	assert.equal(refused.status, 3);
 	assert.match(refused.stderr, /not pushed/);
+});
+
+test('an empty worktree holding a file too big for the backup is not deleted', () => {
+	const t = ticket();
+	t.add();
+	fs.writeFileSync(path.join(t.dest, 'big.bin'), Buffer.alloc((1 << 20) + 1, 1));
+	assert.throws(
+		() => t.add(),
+		(e) => e instanceof BaseError && /cannot keep \(big\.bin\)/.test(e.message) && /nothing was changed/.test(e.message),
+	);
+	assert.ok(fs.existsSync(path.join(t.dest, 'big.bin')), 'the file is still there');
+	fs.rmSync(path.join(t.dest, 'big.bin'));
+	assert.equal(t.add().settled, 'recreated');
+});
+
+test('attach on a fix pass reuses the ticket’s existing worktree and clears the markers, instead of failing inside git', () => {
+	const t = ticket();
+	t.add();
+	t.commit();
+	g(t.dest, 'push', '-q', '-u', 'origin', t.branch);
+	fs.mkdirSync(path.join(t.dest, '.dev-factory'), { recursive: true });
+	for (const m of ['blocked.json', 'ship.done', 'run.json']) fs.writeFileSync(path.join(t.dest, '.dev-factory', m), '{}');
+	const r = attachWorktree({ repo: t.clone, branch: t.branch, dest: t.dest });
+	assert.equal(r.existing, true);
+	assert.deepEqual(r.cleared.sort(), ['blocked.json', 'ship.done']);
+	assert.ok(fs.existsSync(path.join(t.dest, 'work.txt')));
+	// another branch's worktree, or a plain folder, is refused with nothing changed
+	assert.throws(() => attachWorktree({ repo: t.clone, branch: 'task/APP-9-other', dest: t.dest }), /not task\/APP-9-other/);
+	const plain = path.join(t.dir, 'plain');
+	fs.mkdirSync(plain);
+	fs.writeFileSync(path.join(plain, 'x'), 'x');
+	assert.throws(() => attachWorktree({ repo: t.clone, branch: t.branch, dest: plain }), /not a worktree of this repository/);
+	// and with no worktree yet it still checks the pushed branch out
+	fs.rmSync(t.dest, { recursive: true, force: true });
+	const again = attachWorktree({ repo: t.clone, branch: t.branch, dest: t.dest });
+	assert.ok(!again.existing && fs.existsSync(path.join(t.dest, 'work.txt')));
 });

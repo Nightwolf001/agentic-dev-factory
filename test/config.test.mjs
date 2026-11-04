@@ -267,3 +267,55 @@ test('every phase skill and the reviewer tell the agent to read what the reposit
 		/--no-verify.*git\.skipCommitHooks|git\.skipCommitHooks.*--no-verify/,
 	);
 });
+
+// A shipped config with one dotted setting replaced.
+function withSetting(dotted, value, also = {}) {
+	const c = structuredClone(load());
+	Object.assign((c.environment ??= {}), also);
+	const keys = dotted.split('.');
+	let at = c;
+	for (const k of keys.slice(0, -1)) at = at[k] ??= {};
+	at[keys.at(-1)] = value;
+	return validate(c);
+}
+
+const COMPOSE = { type: 'compose', composeFile: 'c.yml', service: 'app' };
+
+test('environment.setup is a list of commands, each a string or {run, user}', () => {
+	assert.deepEqual(withSetting('environment.setup', ['npm ci', { run: 'make', user: 'node' }, { run: 'echo\necho' }], COMPOSE), []);
+	for (const bad of ['npm ci', [{ user: 'root' }], [{ run: 3 }], [{ run: 'x', user: 7 }], [null], [['a']]])
+		assert.ok(
+			withSetting('environment.setup', bad, COMPOSE).some((p) => /environment\.setup must be a list of commands/.test(p)),
+			JSON.stringify(bad),
+		);
+});
+
+test('environment.buildFiles is a list of globs', () => {
+	assert.deepEqual(withSetting('environment.buildFiles', ['package-lock.json', '**/Pods/*']), []);
+	for (const bad of ['x', [''], [1], {}])
+		assert.ok(
+			withSetting('environment.buildFiles', bad).some((p) => /environment\.buildFiles must be a list of globs/.test(p)),
+			JSON.stringify(bad),
+		);
+});
+
+test('tasks.questionLabel is a label name that differs from the blocked label', () => {
+	assert.deepEqual(withSetting('tasks.questionLabel', 'needs-answer'), []);
+	for (const bad of ['has space', 'semi;colon', '', 7])
+		assert.ok(
+			withSetting('tasks.questionLabel', bad).some((p) => /tasks\.questionLabel must be a label name/.test(p)),
+			JSON.stringify(bad),
+		);
+	const same = load().tasks.blockedLabel;
+	assert.ok(withSetting('tasks.questionLabel', same).some((p) => /must differ from tasks\.blockedLabel/.test(p)));
+});
+
+test('guard.trackerHosts is a list of host names, empty by default', () => {
+	assert.deepEqual(load().guard.trackerHosts, []);
+	assert.deepEqual(withSetting('guard.trackerHosts', ['jira.internal.example', 'tracker.example.org']), []);
+	for (const bad of ['jira.example', ['https://jira.example'], ['host with space'], ['a/b'], [3]])
+		assert.ok(
+			withSetting('guard.trackerHosts', bad).some((p) => /guard\.trackerHosts must be a list of host names/.test(p)),
+			JSON.stringify(bad),
+		);
+});

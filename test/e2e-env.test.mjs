@@ -541,3 +541,43 @@ test('a remote address with a user or password in it is refused, and what is log
 	assert.equal(r.status, 0, r.stderr);
 	assert.doesNotMatch(r.stderr, /QUERYSECRET/, 'the log names the address without its query');
 });
+
+test('up seals the build files a setup step rewrote, and leaves alone a file the ticket had already edited', () => {
+	const f = fixture({
+		environment: {
+			type: 'compose',
+			composeFile: '.devcontainer/docker-compose.yml',
+			service: 'app',
+			setup: ['npm ci'],
+			buildFiles: ['package-lock.json', 'yarn.lock'],
+		},
+	});
+	const git = (...a) => spawnSync('git', ['-C', f.worktree, '-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { encoding: 'utf8' });
+	fs.writeFileSync(path.join(f.worktree, 'package-lock.json'), 'one\n');
+	fs.writeFileSync(path.join(f.worktree, 'yarn.lock'), 'one\n');
+	fs.writeFileSync(path.join(f.worktree, '.gitignore'), '.dev-factory/\n');
+	git('init', '-q');
+	git('add', '-A');
+	git('commit', '-qm', 'init');
+	// the ticket's own edit, made before the environment came up (an adopted worktree)
+	fs.writeFileSync(path.join(f.worktree, 'yarn.lock'), 'the ticket changed this\n');
+	// the setup step rewrites the lockfile
+	fs.writeFileSync(
+		path.join(f.base, 'bin/docker'),
+		`#!/bin/bash
+echo "$@" >> "${f.base}/docker.log"
+case "$*" in
+  *"compose ls"*) echo '[{"Name":"df-app-1"}]' ;;
+  *"config --services"*) echo app ;;
+  *"ps -aq"*) echo c1 ;;
+  *" exec "*) echo "refreshed" >> "${f.worktree}/package-lock.json"; exit 0 ;;
+  *" build"*|*" up -d"*) exit 0 ;;
+  *) exit 1 ;;
+esac
+`,
+		{ mode: 0o755 },
+	);
+	f.run('up', '--key', 'APP-1');
+	const sealed = JSON.parse(fs.readFileSync(path.join(f.worktree, '.dev-factory/env-sealed.json'), 'utf8'));
+	assert.deepEqual(Object.keys(sealed), ['package-lock.json'], 'the environment’s rewrite is sealed, the ticket’s edit is not');
+});
