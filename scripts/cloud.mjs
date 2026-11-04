@@ -19,7 +19,8 @@ const read = (p) => JSON.parse(fs.readFileSync(p, 'utf8'));
 // OWNER/REPO of the marketplace that serves this plugin: the --marketplace argument, else plugin.json's repository URL.
 export function marketplaceRepo(arg, pluginJson = read(path.join(PLUGIN_ROOT, '.claude-plugin', 'plugin.json'))) {
 	if (arg) return arg;
-	const m = /github\.com[/:]([^/]+\/[^/.]+)/.exec(pluginJson.repository ?? '');
+	// owner/name, where the name may contain dots (my.repo); a trailing .git or slash is not part of it
+	const m = /github\.com[/:]([^/\s]+\/[^/\s#?]+?)(?:\.git)?(?:[/#?].*)?$/.exec(pluginJson.repository ?? '');
 	if (!m) throw new Error('no marketplace repository: pass --marketplace OWNER/REPO (plugin.json has no GitHub repository URL)');
 	return m[1];
 }
@@ -51,11 +52,12 @@ export function cronFor(minutes) {
 			note: step === asked ? null : `a cron step has to divide the hour, so ${asked} minutes became ${step}`,
 		};
 	}
-	const hours = Math.min(24, Math.max(1, Math.round(asked / 60)));
+	// "every N hours" in cron restarts at midnight, so only a divisor of 24 keeps the gaps equal
+	const hours = [1, 2, 3, 4, 6, 8, 12, 24].reduce((best, d) => (Math.abs(d * 60 - asked) < Math.abs(best * 60 - asked) ? d : best), 1);
 	return {
 		cron: hours === 24 ? '0 0 * * *' : `0 */${hours} * * *`,
 		minutes: hours * 60,
-		note: hours * 60 === asked ? null : `a cron schedule is whole hours here, so ${asked} minutes became ${hours * 60}`,
+		note: hours * 60 === asked ? null : `a cron schedule needs whole hours that divide the day, so ${asked} minutes became ${hours * 60}`,
 	};
 }
 
@@ -84,8 +86,10 @@ if (isMain(import.meta.url)) {
 		let current = {};
 		try {
 			current = read(settingsFile);
-		} catch {
-			/* a new file */
+		} catch (e) {
+			// only a missing file is a new file: one that exists and does not parse (a comment, a stray comma) is the person's to fix
+			if (e.code !== 'ENOENT')
+				throw new Error(`${settingsFile} exists but cannot be read as JSON (${e.message}); fix it or move it, nothing was changed`);
 		}
 		fs.mkdirSync(path.dirname(settingsFile), { recursive: true });
 		fs.writeFileSync(settingsFile, JSON.stringify(mergeSettings(current, repo), null, '\t') + '\n');
