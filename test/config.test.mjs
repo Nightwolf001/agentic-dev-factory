@@ -319,3 +319,13 @@ test('guard.trackerHosts is a list of host names, empty by default', () => {
 			JSON.stringify(bad),
 		);
 });
+
+test('tasks.ignoreCommentAuthors is a list of author ids or names, empty by default', () => {
+	assert.deepEqual(load().tasks.ignoreCommentAuthors, []);
+	assert.deepEqual(withSetting('tasks.ignoreCommentAuthors', ['acc-1', 'Automation Bot']), []);
+	for (const bad of ['acc-1', [''], [3], {}])
+		assert.ok(
+			withSetting('tasks.ignoreCommentAuthors', bad).some((p) => /tasks\.ignoreCommentAuthors must be a list/.test(p)),
+			JSON.stringify(bad),
+		);
+});

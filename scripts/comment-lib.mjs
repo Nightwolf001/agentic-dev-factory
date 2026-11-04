@@ -110,8 +110,11 @@ export function markerOf(body) {
 // after it that carry no marker line (a quoted marker line starts with ">" and does not count as one). A later `blocked: factory`
 // marker withdraws the question; a marker comment after a reply means the reply was already taken up, so only what follows the
 // last marker counts.
-export function findReplies(comments) {
+// `ignoreAuthors` are the ids or names of accounts whose comments never count as an answer (the factory's own account, automation).
+export function findReplies(comments, { ignoreAuthors = [] } = {}) {
 	const list = comments ?? [];
+	const ignored = new Set((ignoreAuthors ?? []).map((a) => String(a).toLowerCase()));
+	const byIgnored = (c) => c.author != null && ignored.has(String(c.author).toLowerCase());
 	let q = -1;
 	for (let i = list.length - 1; i >= 0; i--) {
 		if (markerOf(list[i].body)?.key === 'blocked:question') {
@@ -128,7 +131,7 @@ export function findReplies(comments) {
 		last = i;
 		if (m.key === 'blocked:factory') cancelled = true;
 	}
-	const replies = cancelled ? [] : list.slice(last + 1).filter((c) => String(c.body ?? '').trim());
+	const replies = cancelled ? [] : list.slice(last + 1).filter((c) => String(c.body ?? '').trim() && !byIgnored(c));
 	return { question: list[q], replies, cancelled };
 }
 

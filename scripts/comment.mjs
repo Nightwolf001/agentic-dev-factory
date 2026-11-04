@@ -24,7 +24,13 @@ if (isMain(import.meta.url)) {
 			const people = ['assignee', 'reporter'].map((w) => ({ id: val(`${w}-id`), name: val(`${w}-name`) }));
 			console.log(JSON.stringify(composeAdf({ kind: val('kind'), text: val('text'), detail: val('detail') ?? '', people })));
 		} else if (cmd === 'replies') {
-			console.log(JSON.stringify(findReplies(JSON.parse(fs.readFileSync(val('file'), 'utf8'))), null, 2));
+			let ignoreAuthors = [];
+			try {
+				ignoreAuthors = get('tasks.ignoreCommentAuthors', { config: load() }) ?? [];
+			} catch {
+				/* no readable settings: nobody is ignored */
+			}
+			console.log(JSON.stringify(findReplies(JSON.parse(fs.readFileSync(val('file'), 'utf8')), { ignoreAuthors }), null, 2));
 		} else if (cmd === 'fix') {
 			let fixComment = 'dev-factory fix';
 			try {

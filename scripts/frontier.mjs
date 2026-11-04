@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { findFixRequest, findReplies } from './comment-lib.mjs';
+import { findFixRequest, findReplies, isFixLine } from './comment-lib.mjs';
 import { get, load } from './config.mjs';
 import { isMain } from './is-main.mjs';
 import { isStacked, planStack, parseStackNote, stackAction, stackSettings } from './stack-lib.mjs';
@@ -33,20 +33,16 @@ export function actionOptions(cfg) {
 		doneOn: g('pr.doneOnMergeInto') ?? null,
 		fixComment: g('tasks.fixComment'),
 		questionLabel: g('tasks.questionLabel') ?? null,
+		ignoreAuthors: g('tasks.ignoreCommentAuthors') ?? [],
 		bugbot: g('review.bugbot') === true,
 		bugbotAuthor: g('review.bugbotAuthor'),
 		...stackSettings(cfg),
 	};
 }
 
-const escapeRe = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
 // A comment asks for a fix pass when a line starts with the fix phrase, with or without the leading slash
-// ("dev-factory fix", "/dev-factory fix rename the helper").
-export function isFixComment(body, fixComment) {
-	const phrase = String(fixComment ?? '').replace(/^\//, '');
-	return !!phrase && new RegExp(`^\\s*/?${escapeRe(phrase)}(?![\\w-])`, 'im').test(String(body ?? ''));
-}
+// ("dev-factory fix", "/dev-factory fix rename the helper"). One matcher, shared with the session's reading of the ticket.
+export const isFixComment = isFixLine;
 
 // What a task in review needs from the factory. pr: { state, reviewDecision, author, baseRefName, headCommittedAt,
 // reviews: [{state, submittedAt, author}], comments: [{createdAt, author, body}], bugbotOpen, reachedDone }.
@@ -69,7 +65,14 @@ export function prNeedsAction(pr, { reviewedOn = null, doneOn = null, fixComment
 	}
 	if (!reviewedOn && pr.reviewDecision === 'APPROVED') return 'advance';
 	const after = (at) => Date.parse(at) > Date.parse(pr.headCommittedAt);
-	const requested = (pr.reviews ?? []).some((r) => r.state === 'CHANGES_REQUESTED' && r.author !== pr.author && after(r.submittedAt));
+	// each reviewer's latest decision stands: a change request the same person later approved, or that was dismissed, is over
+	const latest = new Map();
+	for (const r of pr.reviews ?? []) {
+		if (r.author === pr.author || !['CHANGES_REQUESTED', 'APPROVED', 'DISMISSED'].includes(r.state)) continue;
+		const prev = latest.get(r.author);
+		if (!prev || Date.parse(r.submittedAt) >= Date.parse(prev.submittedAt)) latest.set(r.author, r);
+	}
+	const requested = [...latest.values()].some((r) => r.state === 'CHANGES_REQUESTED' && after(r.submittedAt));
 	const asked = (pr.comments ?? []).some((c) => !/\[bot\]$/.test(c.author ?? '') && after(c.createdAt) && isFixComment(c.body, fixComment));
 	return requested || asked || (bugbot && pr.bugbotOpen > 0) ? 'fix' : null;
 }
@@ -142,7 +145,7 @@ export async function decide({ cfg, deps, state, now = Date.now() }) {
 	const answers = [];
 	if (opts.questionLabel && deps.comments) {
 		for (const t of await deps.list({ label: opts.questionLabel, notStates: ['done'] })) {
-			const { replies } = findReplies(await readComments(t.key));
+			const { replies } = findReplies(await readComments(t.key), { ignoreAuthors: opts.ignoreAuthors });
 			if (replies.length) answers.push({ key: t.key, ids: replies.map((r) => String(r.id ?? r.created ?? r.body)) });
 		}
 	}

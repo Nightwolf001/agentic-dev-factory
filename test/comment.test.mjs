@@ -191,3 +191,25 @@ test('the CLI composes, reads replies and finds a fix request', () => {
 	assert.equal(run('compose', '--kind', 'bogus', '--text', 'x').status, 1);
 	assert.equal(run('bogus').status, 1);
 });
+
+test('comments from an ignored author never count as an answer', () => {
+	const q = { id: '1', author: 'factory', body: 'Which format?\n\n[dev-factory] blocked: question' };
+	const bot = { id: '2', author: 'Automation-Bot', body: 'build triggered' };
+	const person = { id: '3', author: 'acc-9', body: 'use CSV' };
+	assert.deepEqual(
+		findReplies([q, bot, person]).replies.map((r) => r.id),
+		['2', '3'],
+		'by default every comment after the question is a reply',
+	);
+	assert.deepEqual(
+		findReplies([q, bot, person], { ignoreAuthors: ['automation-bot', 'factory'] }).replies.map((r) => r.id),
+		['3'],
+		'ids and names are compared without regard to case',
+	);
+	assert.deepEqual(findReplies([q, bot], { ignoreAuthors: ['Automation-Bot'] }).replies, []);
+	assert.deepEqual(
+		findReplies([q, { id: '4', author: null, body: 'anonymous' }], { ignoreAuthors: ['x'] }).replies.length,
+		1,
+		'an unknown author is kept',
+	);
+});
