@@ -3,7 +3,7 @@
 //   update.mjs [--check]     --check changes nothing: it says what would be updated and removed
 //
 //   1. refresh the marketplaces (`claude plugin marketplace update`)
-//   2. update each installed copy of dev-factory (`claude plugin update <id>`): there is one per scope it was installed in
+//   2. update each installed copy of dev-factory (`claude plugin update <id> --scope <scope>`): there is one per scope it was installed in
 //   3. read ~/.claude/plugins/installed_plugins.json again and check each copy on disk: the folder is there, its
 //      .claude-plugin/plugin.json says the version the record says, and the files the launcher and the hooks run are present
 //   4. remove cached versions nothing refers to any more, across marketplaces and plugins. A version stays when an install
@@ -140,10 +140,17 @@ export function update({
 		const r = run('claude', ['plugin', 'marketplace', 'update']);
 		report.refreshed = r.status === 0;
 		if (!report.refreshed) report.problems.push(`marketplace refresh failed: ${(r.stderr || r.stdout).trim().split('\n')[0]}`);
-		for (const id of [...new Set(before.map((c) => c.id))]) {
-			const u = run('claude', ['plugin', 'update', id]);
-			report.updated.push({ id, ok: u.status === 0, output: (u.stdout || u.stderr).trim().split('\n').pop() });
-			if (u.status !== 0) report.problems.push(`update of ${id} failed: ${(u.stderr || u.stdout).trim().split('\n')[0]}`);
+		// one update per copy: a plugin installed for the user and again for a project is two copies, and the command's default
+		// scope would leave the second behind. A managed copy is the administrator's to update.
+		const seen = new Set();
+		for (const c of before) {
+			const scope = c.scope ?? 'user';
+			const k = `${c.id}\0${scope}`;
+			if (seen.has(k) || scope === 'managed') continue;
+			seen.add(k);
+			const u = run('claude', ['plugin', 'update', c.id, '--scope', scope]);
+			report.updated.push({ id: c.id, scope, ok: u.status === 0, output: (u.stdout || u.stderr).trim().split('\n').pop() });
+			if (u.status !== 0) report.problems.push(`update of ${c.id} (${scope}) failed: ${(u.stderr || u.stdout).trim().split('\n')[0]}`);
 		}
 	}
 	const after = check ? before : installedCopies(dir);

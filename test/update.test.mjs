@@ -120,7 +120,7 @@ test('a symlinked version that leads outside the cache is never removed', () => 
 	assert.ok(fs.existsSync(path.join(outside, 'precious')));
 });
 
-test('update refreshes the marketplaces, updates each installed id once, checks the result and prunes', () => {
+test('update refreshes the marketplaces, updates each installed copy in its own scope, checks the result and prunes', () => {
 	const dir = plugins({
 		installed: {
 			'dev-factory@dev-factory': [
@@ -136,7 +136,11 @@ test('update refreshes the marketplaces, updates each installed id once, checks 
 	});
 	const calls = [];
 	const r = update({ dir, run: (c, a) => (calls.push([c, ...a].join(' ')), ok()) });
-	assert.deepEqual(calls, ['claude plugin marketplace update', 'claude plugin update dev-factory@dev-factory']);
+	assert.deepEqual(calls, [
+		'claude plugin marketplace update',
+		'claude plugin update dev-factory@dev-factory --scope user',
+		'claude plugin update dev-factory@dev-factory --scope local',
+	]);
 	assert.deepEqual(r.removed, ['dev-factory/dev-factory/0.8.0']);
 	assert.equal(fs.existsSync(path.join(dir, 'cache/dev-factory/dev-factory/0.8.0')), false);
 	assert.equal(fs.existsSync(path.join(dir, 'cache/dev-factory/dev-factory/0.9.0')), true);
@@ -177,9 +181,9 @@ test('a failed update or a broken copy prunes nothing and is reported', () => {
 	});
 	const r = update({
 		dir,
-		run: (c, a) => ({ status: a.includes('update') && a[1] === 'update' && a.length === 3 ? 1 : 0, stdout: '', stderr: 'network down' }),
+		run: (c, a) => ({ status: a[1] === 'update' ? 1 : 0, stdout: '', stderr: 'network down' }),
 	});
-	assert.match(r.problems.join('\n'), /update of dev-factory@dev-factory failed: network down/);
+	assert.match(r.problems.join('\n'), /update of dev-factory@dev-factory \(user\) failed: network down/);
 	assert.deepEqual(r.removed, []);
 	assert.equal(fs.existsSync(path.join(dir, 'cache/dev-factory/dev-factory/0.7.0')), true);
 	assert.throws(() => update({ dir: fs.mkdtempSync(path.join(os.tmpdir(), 'df-empty-')), run: ok }), /cannot read/);
