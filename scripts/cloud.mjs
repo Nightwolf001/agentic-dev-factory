@@ -61,11 +61,11 @@ export function cronFor(minutes) {
 	};
 }
 
-export function renderWorkflow(template, repo, minutes = 15) {
+export function renderWorkflow(template, repo, minutes = 5) {
 	return template.replaceAll('__MARKETPLACE__', repo).replaceAll('__CRON__', cronFor(minutes).cron);
 }
 
-export const routineHelp = (minutes = 15) => `Claude Code routine: in a Claude Code session in this repository run /schedule and ask for
+export const routineHelp = (minutes = 5) => `Claude Code routine: in a Claude Code session in this repository run /schedule and ask for
   "a routine that runs /dev-factory:tick every ${minutes} minutes in this repository".
 The routine runs in Claude's cloud, installs the plugin from .claude/settings.json, and uses your connected GitHub account.
 Set runtime.mode to cloud in dev-factory.config.json if it is not detected, and use tasks.source github, notion or jira
@@ -101,14 +101,14 @@ if (isMain(import.meta.url)) {
 			);
 			const file = path.resolve('.github', 'workflows', 'dev-factory-tick.yml');
 			fs.mkdirSync(path.dirname(file), { recursive: true });
-			const wanted = get('scheduler.intervalMinutes', { config: load() }) ?? 15;
+			const wanted = get('scheduler.intervalMinutes', { config: load() }) ?? 5;
 			const { minutes, note } = cronFor(wanted);
 			fs.writeFileSync(file, renderWorkflow(template, repo, wanted));
 			console.log(
 				`wrote ${file} (a pass every ${minutes} minutes${note ? `: ${note}` : ''}); add the secrets listed at its top, then run it once with workflow_dispatch`,
 			);
 		}
-		if (flag('routine')) console.log(routineHelp(get('scheduler.intervalMinutes', { config: load() }) ?? 15));
+		if (flag('routine')) console.log(routineHelp(get('scheduler.intervalMinutes', { config: load() }) ?? 5));
 	} catch (e) {
 		console.error(`cloud: ${e.message}`);
 		process.exit(1);

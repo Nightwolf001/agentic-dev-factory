@@ -22,7 +22,7 @@ The flow at a glance: [docs/dev-factory-flow.svg](docs/dev-factory-flow.svg).
 | **Out**   | A draft pull request on its own branch, with the tests that drove it, QA screenshots tied to the exact commit, two independent reviews, and a root-cause note for bugs.       |
 | **Never** | Merges, approves, marks a PR ready, force-pushes, pushes any branch but the task's own, or writes to your task tracker from the builder. A person always decides what merges. |
 | **Needs** | Claude Code, git, the GitHub CLI and Node 20. Docker only if your tests need a container; a tracker and MCP servers only if you want them.                                    |
-| **Runs**  | In your own session (`/dev-factory:build`, `quick`, `plan`) or unattended on a schedule, every 15 minutes by default (`tick`), the same agents either way.                    |
+| **Runs**  | In your own session (`/dev-factory:build`, `quick`, `plan`) or unattended on a schedule, every 5 minutes by default (`tick`), the same agents either way.                     |
 
 ## Concepts
 
@@ -95,7 +95,7 @@ You see the worktree and branch being created, the test written first, the QA wa
 
 **5. Review the PR like any other.** Request changes and the next pass fixes them on the same branch; approve and merge when you are happy.
 
-**6. When you trust it, let it run.** On a Mac, `dev-factory install --apply --load` schedules `tick` every `scheduler.intervalMinutes` (15 by default); in the cloud use GitHub Actions or a Claude Code routine (see [Unattended passes](#set-up-for-unattended-passes) and [Cloud and Claude environments](#cloud-and-claude-environments)).
+**6. When you trust it, let it run.** On a Mac, `dev-factory install --apply --load` schedules `tick` every `scheduler.intervalMinutes` (5 by default); in the cloud use GitHub Actions or a Claude Code routine (see [Unattended passes](#set-up-for-unattended-passes) and [Cloud and Claude environments](#cloud-and-claude-environments)).
 
 No tracker at all and just a small change? Skip steps 3 and 4:
 
@@ -428,7 +428,7 @@ Every setting, with its default. `see config.json` means the default is a longer
 
 | Key                         | Default | What it does                                                                                                                                                                                                                                                                                                                    |
 | --------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `scheduler.intervalMinutes` | `15`    | Minutes between scheduled ticks, from 1 to 1440. It sets the launchd `StartInterval`, the GitHub Actions cron and the routine text. GitHub Actions runs a schedule at most every 5 minutes and a cron step must divide the hour (an interval in whole hours must divide the day), so `cloud init` rounds and says what it used. |
+| `scheduler.intervalMinutes` | `5`     | Minutes between scheduled ticks, from 1 to 1440. It sets the launchd `StartInterval`, the GitHub Actions cron and the routine text. GitHub Actions runs a schedule at most every 5 minutes and a cron step must divide the hour (an interval in whole hours must divide the day), so `cloud init` rounds and says what it used. |
 | `alerts.notify`             | `false` | `true` on a Mac: one notification per distinct reason when a scheduled pass cannot start (the doctor fails, the task source cannot be read). The last failure is also shown by `dev-factory doctor` and `dev-factory scheduler status`.                                                                                         |
 
 #### Git
