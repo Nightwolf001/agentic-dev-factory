@@ -35,8 +35,11 @@ WEB_BASE_URL="$(cfg webBaseUrl)"
 PROCESS_CHECK="$(cfg processCheck)"
 # seconds to wait for a fresh stack to answer: DF_READY_TIMEOUT, else environment.readyTimeout, else 900 (a first start installs dependencies)
 READY_TIMEOUT="${DF_READY_TIMEOUT:-$(cfg readyTimeout)}"; READY_TIMEOUT="${READY_TIMEOUT:-900}"
-# `exec -T [-u user] service`
-exec_args() { if [ -n "$SERVICE_USER" ]; then echo "exec -T -u $SERVICE_USER $SERVICE"; else echo "exec -T $SERVICE"; fi; }
+# `exec -T [-u user] service` as an array, so a user or service name with an odd character stays one word. Every call also
+# gets </dev/null where it is not meant to read: `exec -T` reads standard input, and a loop over steps feeds it the steps.
+EXEC_ARGS=(exec -T)
+[ -n "$SERVICE_USER" ] && EXEC_ARGS+=(-u "$SERVICE_USER")
+EXEC_ARGS+=("$SERVICE")
 
 die()  { echo "e2e-env: $*" >&2; exit 1; }
 refuse() { echo "e2e-env: $*" >&2; exit 75; }
@@ -63,7 +66,15 @@ COMPOSE_FILE="$WORKTREE/$COMPOSE_REL"
 OVERRIDE="$RUN_DIR/compose.override.yml"
 
 project_for() { echo "df-$(echo "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/-/g')"; }
-env_get() { node -e "try{const j=require('$ENV_JSON');process.stdout.write(String(j['$1']??''))}catch(e){}"; }
+# Values reach node as arguments and environment, never as text inside the program: a path or a setting with a quote in it must not
+# become code. (A recorded value is data the run wrote; the script that reads it is the scheduler's.)
+env_get() { ENV_JSON="$ENV_JSON" node -e "try{const j=JSON.parse(require('fs').readFileSync(process.env.ENV_JSON,'utf8'));process.stdout.write(String(j[process.argv[1]]??''))}catch(e){}" "$1"; }
+# write_env key=value ...: the environment record, in the order given, with the time it was made
+write_env() {
+  ENV_JSON="$ENV_JSON" node -e 'const o={};for(const a of process.argv.slice(1)){const i=a.indexOf("=");o[a.slice(0,i)]=a.slice(i+1)}o.createdAt=new Date().toISOString();require("fs").writeFileSync(process.env.ENV_JSON,JSON.stringify(o,null,2))' "$@"
+}
+# a project name this script can have made: refuse to take down anything else, whatever env.json says
+valid_project() { printf '%s' "$1" | grep -Eq '^df-[a-z0-9_-]+$'; }
 
 compose() { # compose <args...> using the recorded project
   local project="$1"; shift
@@ -122,7 +133,7 @@ init_submodules() {
 wait_ping() { # inside the service, as the stack's own hostnames resolve there
   local project="$1" end=$((SECONDS + READY_TIMEOUT))
   [ -n "$PING_URL" ] || return 0
-  until compose "$project" $(exec_args) curl -ksf -o /dev/null "$PING_URL"; do
+  until compose "$project" "${EXEC_ARGS[@]}" curl -ksf -o /dev/null "$PING_URL" </dev/null; do
     [ "$SECONDS" -ge "$end" ] && return 1
     sleep 5
   done
@@ -151,23 +162,23 @@ do_verify() {
   [ -n "$svc_report" ] && add "$svc_report"
 
   if [ -n "$PROCESS_CHECK" ]; then
-    compose "$project" $(exec_args) bash -c "$PROCESS_CHECK" >/dev/null 2>&1 || add "process check failed: $PROCESS_CHECK"
+    compose "$project" "${EXEC_ARGS[@]}" bash -c "$PROCESS_CHECK" </dev/null >/dev/null 2>&1 || add "process check failed: $PROCESS_CHECK"
   fi
   if [ -n "$PING_URL" ]; then
-    compose "$project" $(exec_args) curl -ksf -o /dev/null "$PING_URL" || add "ping failed: $PING_URL"
+    compose "$project" "${EXEC_ARGS[@]}" curl -ksf -o /dev/null "$PING_URL" </dev/null || add "ping failed: $PING_URL"
   fi
 
   if [ -n "$problems" ]; then
     printf 'e2e-env: verify FAILED for %s\n%s' "$project" "$problems" >&2
     return 1
   fi
-  node -e "const f='$ENV_JSON';const j=require(f);j.verifiedAt=new Date().toISOString();require('fs').writeFileSync(f,JSON.stringify(j,null,2))"
+  ENV_JSON="$ENV_JSON" node -e "const f=process.env.ENV_JSON;const j=JSON.parse(require('fs').readFileSync(f,'utf8'));j.verifiedAt=new Date().toISOString();require('fs').writeFileSync(f,JSON.stringify(j,null,2))"
   log "verify ok: $project"
 }
 
 do_up_none() {
   mkdir -p "$RUN_DIR"
-  node -e "require('fs').writeFileSync('$ENV_JSON',JSON.stringify({project:'',key:'$KEY',worktree:'$WORKTREE',mode:'none',ports:'none',webBaseUrl:'$WEB_BASE_URL',createdAt:new Date().toISOString()},null,2))"
+  write_env project= key="$KEY" worktree="$WORKTREE" mode=none ports=none webBaseUrl="$WEB_BASE_URL"
   log "no environment configured (environment.type is none): tests run on the host"
 }
 
@@ -184,14 +195,52 @@ busy_ports() {
         s.once("error",e=>{if(e.code==="EADDRINUSE")console.log(n);r()});s.once("listening",()=>s.close(()=>r()));s.listen(n)})})'
 }
 
+mode_rank() { case "$1" in device) echo 2 ;; canonical) echo 1 ;; *) echo 0 ;; esac; }
+
+# environment.setup: each entry is a command (a string, which may span lines) or {"run": "...", "user": "root"} to run as
+# another user than environment.user. Every step runs in full: the steps are read by index, not from a stream the first
+# `exec` would consume.
+setup_field() { # setup_field INDEX run|user
+  node -e '
+    const e = JSON.parse(process.argv[1] || "[]")[Number(process.argv[2])];
+    const v = typeof e === "string" ? (process.argv[3] === "run" ? e : "") : (e && e[process.argv[3]]) || "";
+    process.stdout.write(String(v));' "$(cfg setup)" "$1" "$2"
+}
+run_setup() {
+  local project="$1" count i step user args
+  count="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]||"[]").length))' "$(cfg setup)")"
+  i=0
+  while [ "$i" -lt "$count" ]; do
+    step="$(setup_field "$i" run)"; user="$(setup_field "$i" user)"
+    i=$((i + 1))
+    [ -n "$step" ] || continue
+    args=("${EXEC_ARGS[@]}")
+    if [ -n "$user" ]; then args=(exec -T -u "$user" "$SERVICE"); fi
+    log "setup: $(printf '%s' "$step" | head -n 1)$([ "$(printf '%s' "$step" | wc -l)" -gt 0 ] && echo ' ...')"
+    compose "$project" "${args[@]}" bash -c "$step" </dev/null >&2 || { log "step $i failed: $(printf '%s' "$step" | head -n 1)"; return 1; }
+  done
+}
+
 do_up() {
   [ -n "$KEY" ] || die "up needs --key KEY"
   [ "$ENV_TYPE" = none ] && { do_up_none; return 0; }
   [ -f "$COMPOSE_FILE" ] || die "missing $COMPOSE_FILE (run from a worktree of the repository)"
   local project; project="$(project_for "$KEY")"
 
-  # Idempotent: a resumed ticket finds its stack still healthy and just takes ownership of it again.
+  # Idempotent: a resumed ticket finds its stack still healthy and just takes ownership of it again. A stack started with
+  # fewer ports than this run needs (isolated < canonical < device) is not reused: a browser or device ticket would find
+  # no ports or no simulator. It is taken down and replaced.
   local recorded; recorded="$(env_get project)"
+  local want have
+  want="$(mode_rank "$([ "$DEVICE" = 1 ] && echo device || { [ "$PORTS" = canonical ] && echo canonical || echo isolated; })")"
+  have="$(mode_rank "$(env_get mode)")"
+  if [ "$recorded" = "$project" ] && [ "$have" -lt "$want" ]; then
+    log "recorded stack is $(env_get mode), this run needs more: replacing $project"
+    [ "$(env_get mode)" = device ] && bash "$SELF_DIR/mobile-env.sh" down --worktree "$WORKTREE"
+    do_down_quiet "$project"
+    rm -f "$ENV_JSON"
+    recorded=""
+  fi
   if [ "$recorded" = "$project" ] && ( do_verify ) >/dev/null 2>&1; then
     mark_live "$project"
     case "$(env_get mode)" in
@@ -225,7 +274,9 @@ do_up() {
   fi
 
   write_override
-  node -e "require('fs').writeFileSync('$ENV_JSON',JSON.stringify({project:'$project',key:'$KEY',worktree:'$WORKTREE',composeFile:'$COMPOSE_FILE',override:'$OVERRIDE',mode:'$([ "$DEVICE" = 1 ] && echo device || { [ "$PORTS" = canonical ] && echo canonical || echo isolated; })',ports:'$PORTS',webBaseUrl:'$([ "$PORTS" = canonical ] && echo "$WEB_BASE_URL")',createdAt:new Date().toISOString()},null,2))"
+  write_env project="$project" key="$KEY" worktree="$WORKTREE" composeFile="$COMPOSE_FILE" override="$OVERRIDE" \
+    mode="$([ "$DEVICE" = 1 ] && echo device || { [ "$PORTS" = canonical ] && echo canonical || echo isolated; })" \
+    ports="$PORTS" webBaseUrl="$([ "$PORTS" = canonical ] && echo "$WEB_BASE_URL")"
   mark_live "$project"
 
   local ok=0
@@ -234,12 +285,9 @@ do_up() {
   log "starting $project (ports $PORTS$([ "$DEVICE" = 1 ] && echo ", device"))"
   compose "$project" build >&2 || die "compose build failed"
   compose "$project" up -d >&2 || die "compose up failed"
-  local step
-  while IFS= read -r step; do
-    [ -n "$step" ] || continue
-    log "setup: $step"
-    compose "$project" $(exec_args) bash -c "$step" >&2 || die "setup step failed: $step"
-  done < <(node -e 'for (const c of JSON.parse(process.argv[1]||"[]")) console.log(c)' "$(cfg setup)")
+  run_setup "$project" || die "setup step failed"
+  # setup steps may refresh lockfiles: seal them so QA does not read them as the ticket's edits
+  node "$SELF_DIR/env-build-files.mjs" seal --worktree "$WORKTREE" >&2 || true
   wait_ping "$project" || die "timed out waiting for the ping URL"
   if [ "$DEVICE" = 1 ]; then
     ( cd "$WORKTREE" && bash "$SELF_DIR/mobile-env.sh" up --worktree "$WORKTREE" ) || { rc=$?; [ "$rc" = 75 ] && refuse "Metro port busy"; die "mobile lane failed"; }
@@ -265,6 +313,8 @@ do_down() {
     [ -f "$ENV_JSON" ] && rm -f "$ENV_JSON"
     log "nothing to take down for this worktree"; return 0
   fi
+  # env.json is written by the run, so it is not trusted to name what to remove: only a project this script makes (df-<key>)
+  valid_project "$project" || die "refusing to take down '$(printf '%s' "$project" | cut -c1-40)': not a project this script started (df-<key>); env.json was not used"
   [ "$(env_get mode)" = "device" ] && bash "$SELF_DIR/mobile-env.sh" down --worktree "$WORKTREE"
   do_down_quiet "$project"
   rm -f "$ENV_JSON"

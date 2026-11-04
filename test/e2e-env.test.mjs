@@ -216,3 +216,179 @@ esac
 		child.kill('SIGKILL');
 	}
 });
+
+// A docker whose `exec` reads standard input to its end, as the real `exec -T` does, and logs each call with its arguments.
+function stdinReadingDocker(f) {
+	fs.writeFileSync(
+		path.join(f.base, 'bin/docker'),
+		`#!/bin/bash
+echo "$@" >> "${f.base}/docker.log"
+case "$*" in
+  *"config --services"*) echo api ;;
+  *" exec "*) cat > /dev/null; exit 0 ;;
+  *" build"*|*" up -d"*) exit 0 ;;
+  *) exit 1 ;;
+esac
+`,
+		{ mode: 0o755 },
+	);
+}
+
+test('every setup step runs: exec -T reads standard input, which must not be the list of steps', () => {
+	const f = fixture({
+		environment: {
+			type: 'compose',
+			composeFile: '.devcontainer/docker-compose.yml',
+			service: 'app',
+			setup: ['echo one', 'echo two', 'echo three'],
+		},
+	});
+	stdinReadingDocker(f);
+	f.run('up', '--key', 'APP-1');
+	const log = f.log();
+	for (const s of ['echo one', 'echo two', 'echo three']) assert.ok(log.includes(`bash -c ${s}`), `${s} ran:\n${log}`);
+});
+
+test('a setup entry may run as another user, or span several lines', () => {
+	const f = fixture({
+		environment: {
+			type: 'compose',
+			composeFile: '.devcontainer/docker-compose.yml',
+			service: 'app',
+			user: 'dev',
+			setup: ['echo plain', { run: 'chown -R dev /srv', user: 'root' }, 'echo first\necho second', { run: 'echo as-default-user' }],
+		},
+	});
+	stdinReadingDocker(f);
+	f.run('up', '--key', 'APP-1');
+	const log = f.log();
+	assert.match(log, /exec -T -u dev app bash -c echo plain/);
+	assert.match(log, /exec -T -u root app bash -c chown -R dev \/srv/);
+	assert.match(log, /exec -T -u dev app bash -c echo first\necho second/, 'a multi-line step is one command');
+	assert.match(log, /exec -T -u dev app bash -c echo as-default-user/);
+});
+
+test('a failing setup step stops the start and names the step', () => {
+	const f = fixture({
+		environment: {
+			type: 'compose',
+			composeFile: '.devcontainer/docker-compose.yml',
+			service: 'app',
+			setup: ['echo ok', 'false-step', 'echo never'],
+		},
+	});
+	fs.writeFileSync(
+		path.join(f.base, 'bin/docker'),
+		`#!/bin/bash
+echo "$@" >> "${f.base}/docker.log"
+case "$*" in
+  *"config --services"*) echo api ;;
+  *"bash -c false-step"*) exit 7 ;;
+  *" exec "*|*" build"*|*" up -d"*) exit 0 ;;
+  *) exit 0 ;;
+esac
+`,
+		{ mode: 0o755 },
+	);
+	const r = f.run('up', '--key', 'APP-1');
+	assert.equal(r.status, 1);
+	assert.match(r.stderr, /false-step/);
+	assert.doesNotMatch(f.log(), /echo never/);
+});
+
+test('a stack started with fewer ports than this run needs is replaced; an equal or stronger one is reused', () => {
+	const record = (f, mode) =>
+		fs.writeFileSync(
+			path.join(f.worktree, '.dev-factory/env.json'),
+			JSON.stringify({ project: 'df-app-1', key: 'APP-1', worktree: f.worktree, mode }),
+		);
+	const cfg = { environment: { type: 'compose', composeFile: '.devcontainer/docker-compose.yml', service: 'app' } };
+	const healthy = (f) =>
+		fs.writeFileSync(
+			path.join(f.base, 'bin/docker'),
+			`#!/bin/bash
+echo "$@" >> "${f.base}/docker.log"
+case "$*" in
+  *"config --services"*) echo api ;;
+  *"ps -a --format json"*) echo '{"Service":"api","State":"running"}' ;;
+  *) exit 0 ;;
+esac
+`,
+			{ mode: 0o755 },
+		);
+	// isolated -> canonical: replaced
+	let f = fixture(cfg);
+	healthy(f);
+	record(f, 'isolated');
+	let r = f.run('up', '--key', 'APP-1', '--ports', 'canonical');
+	assert.match(r.stderr, /replacing df-app-1/, r.stderr);
+	assert.match(f.log(), /down -v/);
+	assert.ok(f.log().indexOf('down -v') < f.log().indexOf(' up -d'), 'taken down before the new start');
+	assert.equal(JSON.parse(fs.readFileSync(path.join(f.worktree, '.dev-factory/env.json'), 'utf8')).mode, 'canonical');
+	// isolated -> device: replaced
+	f = fixture(cfg);
+	healthy(f);
+	record(f, 'isolated');
+	assert.match(f.run('up', '--key', 'APP-1', '--device').stderr, /replacing df-app-1/);
+	// canonical -> canonical, canonical -> isolated, device -> canonical: reused, nothing rebuilt
+	for (const [have, ports] of [
+		['canonical', 'canonical'],
+		['canonical', 'none'],
+		['isolated', 'none'],
+	]) {
+		f = fixture(cfg);
+		healthy(f);
+		record(f, have);
+		r = f.run('up', '--key', 'APP-1', '--ports', ports);
+		assert.match(r.stderr, /ready \(reused\)/, `${have} -> ${ports}: ${r.stderr}`);
+		assert.doesNotMatch(f.log(), / up -d| build/);
+	}
+});
+
+// ---- values are data, not code ----
+
+test('down removes only a project this script started: env.json is written by the run and is not trusted to name one', () => {
+	const f = fixture({ environment: { type: 'compose', composeFile: '.devcontainer/docker-compose.yml', service: 'app' } });
+	for (const project of ['myapp-prod', 'df-', 'df-A b', 'DF-app-1', 'df-app;rm', '$(touch x)']) {
+		fs.writeFileSync(path.join(f.worktree, '.dev-factory/env.json'), JSON.stringify({ project, mode: 'isolated' }));
+		const r = f.run('down');
+		assert.equal(r.status, 1, `${project}: ${r.stderr}`);
+		assert.match(r.stderr, /refusing to take down/);
+	}
+	assert.doesNotMatch(f.log(), /down -v/, 'docker was never asked to remove anything');
+	assert.ok(fs.existsSync(path.join(f.worktree, '.dev-factory/env.json')), 'and the record is left for a person to look at');
+	fs.writeFileSync(path.join(f.worktree, '.dev-factory/env.json'), JSON.stringify({ project: 'df-app-1', mode: 'isolated' }));
+	assert.equal(f.run('down').status, 0, 'its own project goes');
+	assert.match(f.log(), /-p df-app-1 down -v/);
+});
+
+test('a setting or a path with a quote in it is recorded as text and never runs', () => {
+	const evil = "http://x/'+require('fs').writeFileSync('PWNED-SETTING','x')+'";
+	const f = fixture({ environment: { type: 'none', webBaseUrl: evil } });
+	const r = f.run('up', '--key', 'APP-1');
+	assert.equal(r.status, 0, r.stderr);
+	assert.equal(JSON.parse(fs.readFileSync(path.join(f.worktree, '.dev-factory/env.json'), 'utf8')).webBaseUrl, evil);
+	assert.equal(fs.existsSync(path.join(f.worktree, 'PWNED-SETTING')), false);
+	assert.equal(fs.existsSync(path.join(process.cwd(), 'PWNED-SETTING')), false);
+	// a worktree whose folder name holds a quote
+	const g = fixture({ environment: { type: 'none' } });
+	const odd = path.join(g.base, "it's a wt");
+	fs.mkdirSync(path.join(odd, '.dev-factory'), { recursive: true });
+	fs.writeFileSync(path.join(odd, 'dev-factory.config.json'), JSON.stringify({ environment: { type: 'none' } }));
+	const r2 = spawnSync('bash', [SCRIPT, 'up', '--key', 'APP-1', '--worktree', odd], {
+		env: { ...process.env, DF_STATE_DIR: g.state },
+		encoding: 'utf8',
+		cwd: odd,
+	});
+	assert.equal(r2.status, 0, r2.stderr);
+	assert.equal(
+		JSON.parse(fs.readFileSync(path.join(odd, '.dev-factory/env.json'), 'utf8')).worktree.replace(/^\/private/, ''),
+		fs.realpathSync(odd).replace(/^\/private/, ''),
+	);
+	const v = spawnSync('bash', [SCRIPT, 'verify', '--worktree', odd], {
+		env: { ...process.env, DF_STATE_DIR: g.state },
+		encoding: 'utf8',
+		cwd: odd,
+	});
+	assert.equal(v.status, 0, v.stderr);
+});

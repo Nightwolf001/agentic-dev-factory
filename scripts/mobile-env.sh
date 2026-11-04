@@ -87,6 +87,9 @@ do_up() {
     mkdir -p "$STATE_DIR"; touch "$stamp"
   else log "native build skipped (inputs unchanged)"; fi
 
+  # pod install and the native build rewrite tracked project files: seal them so QA does not read them as the ticket's edits
+  node "$SELF_DIR/env-build-files.mjs" seal --worktree "$WORKTREE" >&2 || true
+
   log "warming the JS bundle"
   curl -sf -m 900 -o /dev/null "http://localhost:$METRO_PORT/index.bundle?platform=ios&dev=true&minify=false" || die "bundle did not build"
   json_merge "{\"device\":{\"udid\":\"$udid\",\"profile\":\"$(device_name)\",\"bootedByFactory\":$booted,\"metroPort\":$METRO_PORT,\"readyAt\":\"$(date -u +%FT%TZ)\"}}"

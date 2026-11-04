@@ -241,9 +241,15 @@ export function validate(config = load()) {
 		for (const k of ['composeFile', 'service'])
 			if (!dig(config, `environment.${k}`)) problems.push(`environment.${k} is required when environment.type is compose`);
 		const setup = dig(config, 'environment.setup');
-		if (setup !== undefined && !(Array.isArray(setup) && setup.every((c) => typeof c === 'string' && c)))
-			problems.push('environment.setup must be a list of commands');
+		const step = (c) =>
+			(typeof c === 'string' && c) ||
+			(c && typeof c === 'object' && typeof c.run === 'string' && c.run && (c.user === undefined || (typeof c.user === 'string' && c.user)));
+		if (setup !== undefined && !(Array.isArray(setup) && setup.every(step)))
+			problems.push('environment.setup must be a list of commands, each a string or {"run": "...", "user": "..."}');
 	}
+	const buildFiles = dig(config, 'environment.buildFiles');
+	if (buildFiles !== undefined && !(Array.isArray(buildFiles) && buildFiles.every((g) => typeof g === 'string' && g)))
+		problems.push('environment.buildFiles must be a list of globs');
 	const axes = dig(config, 'review.specialistAxes');
 	if (axes && typeof axes === 'object') {
 		for (const [name, globs] of Object.entries(axes)) {

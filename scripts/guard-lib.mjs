@@ -805,7 +805,7 @@ function judge(command, ctx) {
 
 // Shell writes to the factory directory (its own QA cases aside), run state, evidence and review records, hook wiring and husky are refused.
 const PROTECTED_BASH =
-	/\.factory\/tasks\/|\.dev-factory\/(review|qa|evidence|debug)(\/|\s|$)|\.dev-factory\/(run|env)\.json|(^|[\s/'"])dev-factory\/(?!qa\/cases\/)|\.dev-factory\/compose\.override\.yml|(^|[\s/'"])dev-factory\.config\.json|\.claude\/|\.github\/workflows|\.husky\//;
+	/\.factory\/tasks\/|\.dev-factory\/(review|qa|evidence|debug)(\/|\s|$)|\.dev-factory\/(run|env|env-sealed)\.json|(^|[\s/'"])dev-factory\/(?!qa\/cases\/)|\.dev-factory\/compose\.override\.yml|(^|[\s/'"])dev-factory\.config\.json|\.claude\/|\.github\/workflows|\.husky\//;
 const WRITE_LIKE = /(^|[^2&0-9])>{1,2}\s*[^&\s]|\btee\b|\b(cp|mv|rm|ln|truncate|dd|install)\b|\bsed\s+-i|\bperl\s+-i/;
 
 const FORBIDDEN = new RegExp(['co[-_ ]?' + 'work', 'co[-_ ]?' + 'lab', 'night[-_ ]?' + 'shift', 'day[-_ ]?' + 'shift'].join('|'), 'i');
@@ -889,7 +889,7 @@ export function evaluateEdit({ filePath, text = '', root, active = false, run = 
 	// the installed plugin is outside the worktree, in the plugin cache: no ticket edits it by absolute path
 	if (/(^|\/)\.claude\/plugins\//i.test(abs)) return { deny: true, reason: 'dev-factory guard: the installed plugin is not edited by a ticket' };
 	const protectedPath =
-		/^(dev-factory\.config\.json$|\.factory\/(tasks|qa\/cases)\/|dev-factory\/|\.claude\/|\.github\/|\.husky\/|\.dev-factory\/(review|qa|evidence|debug)\/|\.dev-factory\/(run|env)\.json|\.dev-factory\/compose\.override\.yml)/i.test(
+		/^(dev-factory\.config\.json$|\.factory\/(tasks|qa\/cases)\/|dev-factory\/|\.claude\/|\.github\/|\.husky\/|\.dev-factory\/(review|qa|evidence|debug)\/|\.dev-factory\/(run|env|env-sealed)\.json|\.dev-factory\/compose\.override\.yml)/i.test(
 			rel,
 		);
 	if (protectedPath && !ownCase) {
