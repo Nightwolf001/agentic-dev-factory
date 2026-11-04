@@ -23,18 +23,19 @@ export function read(dir) {
 	}
 }
 
-// AppleScript string: backslash and quote escaped, control characters dropped
-const asString = (t) =>
+// AppleScript string: cut to 200 characters first (an escape sequence is never cut in half), then control characters dropped and
+// backslash and quote escaped
+export const asString = (t) =>
 	`"${String(t)
+		.slice(0, 200)
 		.replace(/[\u0000-\u001f]/g, ' ')
-		.replace(/[\\"]/g, '\\$&')
-		.slice(0, 200)}"`;
+		.replace(/[\\"]/g, '\\$&')}"`;
 
 export function macNotify(reason) {
 	execFileSync(
 		'osascript',
 		['-e', `display notification ${asString(reason)} with title "dev-factory" subtitle "a scheduled pass could not start"`],
-		{ stdio: 'ignore' },
+		{ stdio: 'ignore', timeout: 10000 },
 	);
 }
 

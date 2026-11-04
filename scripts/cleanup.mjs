@@ -139,7 +139,8 @@ export async function stopProcess(pid, { run = defaultRun, wait = 3000, alive = 
 	}
 	if (!alive(pid)) return 'stopped';
 	run('kill', ['-KILL', String(pid)]);
-	return 'killed';
+	await sleep(100);
+	return alive(pid) ? 'failed' : 'killed';
 }
 
 // What takeover stopped, so it can be given back: containers can be started again, processes only listed.
@@ -209,9 +210,24 @@ export async function cleanup({
 	const done = [];
 	const left = [];
 	const record = { containers: [], processes: [] };
+	// written as each stop happens: a failure later in the run must not lose what was already stopped
+	const remember = (kind, item) => {
+		record[kind].push(item);
+		if (dryRun) return;
+		const before = readStopped(state);
+		writeStopped(state, {
+			containers: kind === 'containers' ? [...before.containers, item] : before.containers,
+			processes: kind === 'processes' ? [...before.processes, item].slice(-50) : before.processes,
+		});
+	};
 	const act = (what, target, fn) => done.push({ what, target, result: dryRun ? 'would run' : fn() });
 	const envJson = worktree ? path.join(worktree, '.dev-factory', 'env.json') : null;
-	const recorded = envJson && fs.existsSync(envJson) ? JSON.parse(fs.readFileSync(envJson, 'utf8')) : {};
+	let recorded = {};
+	try {
+		if (envJson && fs.existsSync(envJson)) recorded = JSON.parse(fs.readFileSync(envJson, 'utf8')) ?? {};
+	} catch {
+		/* an unreadable record must not stop the rest of the clean-up: act on what the machine shows */
+	}
 
 	// ---- what the factory started ----
 	if (worktree && recorded.project)
@@ -230,7 +246,9 @@ export async function cleanup({
 			const pidFile = worktree ? path.join(worktree, '.dev-factory', 'emulator.pid') : null;
 			if (pidFile && fs.existsSync(pidFile)) {
 				const pid = Number(fs.readFileSync(pidFile, 'utf8').trim());
-				if (pid > 1 && pid !== process.pid && !killed) run('kill', ['-TERM', String(pid)]);
+				// a pid file outlives its process: only a process that is still an emulator is stopped
+				const command = pid > 1 ? run('ps', ['-p', String(pid), '-o', 'command=']).stdout?.toString() ?? '' : '';
+				if (pid > 1 && pid !== process.pid && !killed && /emulator|qemu/i.test(command)) run('kill', ['-TERM', String(pid)]);
 				fs.rmSync(pidFile, { force: true });
 			}
 			return killed ? 'killed' : 'already off';
@@ -274,7 +292,7 @@ export async function cleanup({
 		for (const c of containers)
 			act('container stop', `${c.name} (port ${port})`, () => {
 				const stopped = run('docker', ['stop', c.id], { timeout: 120000 }).status === 0;
-				if (stopped) record.containers.push({ id: c.id, name: c.name, project: c.project, port, at: new Date().toISOString() });
+				if (stopped) remember('containers', { id: c.id, name: c.name, project: c.project, port, at: new Date().toISOString() });
 				return stopped ? 'stopped' : 'failed';
 			});
 		for (const h of holders) {
@@ -284,8 +302,8 @@ export async function cleanup({
 			if (why) left.push({ what: 'port', target: String(port), why: `pid ${h.pid} ${h.name} is ${why}` });
 			else {
 				const result = dryRun ? 'would run' : await stop(h.pid, { run });
-				if (!dryRun)
-					record.processes.push({ pid: h.pid, name: h.name, command: proc.command.slice(0, 200), port, at: new Date().toISOString() });
+				if (!dryRun && result !== 'failed')
+					remember('processes', { pid: h.pid, name: h.name, command: proc.command.slice(0, 200), port, at: new Date().toISOString() });
 				done.push({ what: 'process stop', target: `${h.name} (pid ${h.pid}, port ${port})`, result });
 			}
 		}
@@ -332,13 +350,6 @@ export async function cleanup({
 		const dead = !owner || run('kill', ['-0', String(owner)]).status !== 0;
 		if (dead || takeover) act('ports lock released', lock, () => (fs.rmSync(lock, { recursive: true, force: true }), 'released'));
 		else left.push({ what: 'ports lock', target: lock, why: `held by running pid ${owner}` });
-	}
-	if (!dryRun && (record.containers.length || record.processes.length)) {
-		const before = readStopped(state);
-		writeStopped(state, {
-			containers: [...before.containers, ...record.containers],
-			processes: [...before.processes, ...record.processes].slice(-50),
-		});
 	}
 	return { takeover, done, left };
 }

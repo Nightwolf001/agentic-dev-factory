@@ -100,8 +100,10 @@ test('stopProcess terms, waits, then kills what is still alive', async () => {
 	assert.equal(await stopProcess(5, { run, wait: 250, alive: () => false }), 'stopped');
 	assert.deepEqual(sent, ['-TERM 5']);
 	sent.length = 0;
-	assert.equal(await stopProcess(6, { run, wait: 250, alive: () => true }), 'killed');
+	let calls = 0;
+	assert.equal(await stopProcess(6, { run, wait: 250, alive: () => calls++ < 2 }), 'killed', 'gone after the KILL');
 	assert.deepEqual(sent, ['-TERM 6', '-KILL 6']);
+	assert.equal(await stopProcess(7, { run, wait: 250, alive: () => true }), 'failed', 'still there after the KILL: not claimed as stopped');
 });
 
 test('without takeover the run tears down only its own and reports what else holds a port', async () => {
@@ -366,10 +368,45 @@ test('an Android emulator the run booted is killed through adb; one that was alr
 	const calls = [];
 	await cleanup({
 		worktree: wt,
-		run: (c, a) => (calls.push([c, ...a]), { status: c.endsWith('adb') ? 1 : 0, stdout: '', stderr: '' }),
+		run: (c, a) => (
+			calls.push([c, ...a]),
+			{ status: c.endsWith('adb') ? 1 : 0, stdout: c === 'ps' ? '/sdk/emulator/qemu-system-aarch64 -avd Pixel\n' : '', stderr: '' }
+		),
 		stop: m.stop,
 		state,
 		cfg: load(),
 	});
 	assert.ok(calls.some((c) => c[0] === 'kill' && c[1] === '-TERM' && c[2] === '4242'));
+
+	// a pid file left behind: the number now belongs to something else, which is not stopped
+	record(true);
+	fs.writeFileSync(path.join(wt, '.dev-factory', 'emulator.pid'), '4242');
+	const reused = [];
+	await cleanup({
+		worktree: wt,
+		run: (c, a) => (
+			reused.push([c, ...a]), { status: c.endsWith('adb') ? 1 : 0, stdout: c === 'ps' ? '/usr/bin/vim notes.txt\n' : '', stderr: '' }
+		),
+		stop: m.stop,
+		state,
+		cfg: load(),
+	});
+	assert.ok(!reused.some((c) => c[0] === 'kill'), 'a process that is no longer an emulator is left alone');
+});
+
+test('an unreadable env.json does not stop the clean-up, and what was stopped is on record even when a later step throws', async () => {
+	const wt = tmp();
+	fs.mkdirSync(path.join(wt, '.dev-factory'));
+	fs.writeFileSync(path.join(wt, '.dev-factory', 'env.json'), '{ not json');
+	const { state } = noWorktreeState();
+	const m = machine({ ports: { 3000: [{ pid: 901, name: 'node' }] }, ps: [{ pid: 901, ppid: 1, command: 'node server.js' }] });
+	const r = await cleanup({ worktree: wt, takeover: true, run: m.run, stop: m.stop, state, cfg: load(), ports: [3000] });
+	assert.ok(r.done.some((d) => d.what === 'process stop'));
+	const rec = JSON.parse(fs.readFileSync(path.join(state, 'takeover-stopped.json'), 'utf8'));
+	assert.equal(rec.processes[0].pid, 901);
+	// a stop that failed is not on record as stopped
+	fs.rmSync(path.join(state, 'takeover-stopped.json'));
+	const m2 = machine({ ports: { 3000: [{ pid: 902, name: 'node' }] }, ps: [{ pid: 902, ppid: 1, command: 'node other.js' }] });
+	await cleanup({ worktree: wt, takeover: true, run: m2.run, stop: async () => 'failed', state, cfg: load(), ports: [3000] });
+	assert.equal(fs.existsSync(path.join(state, 'takeover-stopped.json')), false);
 });

@@ -22,20 +22,56 @@ export function parseLcov(text) {
 	return files;
 }
 
-// `git diff -U0` -> Map(file -> Set(line)) of the lines the change added
+// A path as git prints it in a diff header: a name with unusual characters is quoted, with C escapes and octal bytes ("b/\303\274.js").
+function unquotePath(p) {
+	if (!(p.startsWith('"') && p.endsWith('"') && p.length >= 2)) return p;
+	const bytes = [];
+	const text = p.slice(1, -1);
+	for (let i = 0; i < text.length; i++) {
+		const c = text[i];
+		if (c !== '\\') bytes.push(...Buffer.from(c));
+		else {
+			const oct = /^[0-7]{1,3}/.exec(text.slice(i + 1));
+			if (oct) {
+				bytes.push(parseInt(oct[0], 8));
+				i += oct[0].length;
+			} else {
+				const e = text[++i];
+				bytes.push(...Buffer.from({ n: '\n', t: '\t', r: '\r', '"': '"', '\\': '\\' }[e] ?? e ?? ''));
+			}
+		}
+	}
+	return Buffer.from(bytes).toString('utf8');
+}
+
+// `git diff -U0` -> Map(file -> Set(line)) of the lines the change added. A line inside a hunk is counted by the hunk's own
+// lengths, so an added line that reads "++ x" (shown as "+++ x") is not taken for the next file's header.
 export function addedLines(diffText) {
 	const out = new Map();
 	let file = null;
+	let oldLeft = 0;
+	let newLeft = 0;
 	for (const line of String(diffText).split('\n')) {
+		if (oldLeft > 0 || newLeft > 0) {
+			if (line.startsWith('+')) newLeft--;
+			else if (line.startsWith('-')) oldLeft--;
+			else if (line.startsWith(' ')) {
+				oldLeft--;
+				newLeft--;
+			}
+			continue;
+		}
 		if (line.startsWith('+++ ')) {
-			const p = line.slice(4).trim();
+			const p = unquotePath(line.slice(4).replace(/\t.*$/, '').trim());
 			file = p === '/dev/null' ? null : p.replace(/^b\//, '');
 			if (file && !out.has(file)) out.set(file, new Set());
 		} else if (line.startsWith('@@') && file) {
-			const m = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
+			const m = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
 			if (!m) continue;
-			const start = Number(m[1]);
-			const count = m[2] === undefined ? 1 : Number(m[2]);
+			const start = Number(m[2]);
+			const count = m[3] === undefined ? 1 : Number(m[3]);
+			oldLeft = m[1] === undefined ? 1 : Number(m[1]);
+			newLeft = count;
 			for (let i = 0; i < count; i++) out.get(file).add(start + i);
 		}
 	}
