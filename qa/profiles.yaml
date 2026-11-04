@@ -1,5 +1,8 @@
 # Default QA profiles. A repository replaces them by committing its own dev-factory.qa.yaml with the same shape.
 # uiGlobs decide whether a diff touches a surface that needs a walk; nonUiGlobs carve documentation and tests out of them.
+# noBehaviourGlobs name the files whose change cannot alter what the software does (documentation, tests, formatting rules):
+# `qa.mjs mark-na` is accepted only when EVERY changed file matches one of them, so a backend or worker change cannot skip QA.
+# A profile without noBehaviourGlobs falls back to its nonUiGlobs.
 web:
   runner: playwright
   baseUrl: http://localhost:3000
@@ -16,6 +19,19 @@ web:
     - "**/*.test.*"
     - "**/*.spec.*"
     - "**/__tests__/**"
+  noBehaviourGlobs:
+    - "**/*.md"
+    - "docs/**"
+    - "**/*.test.*"
+    - "**/*.spec.*"
+    - "**/__tests__/**"
+    - "**/__mocks__/**"
+    - "**/*.snap"
+    - ".factory/qa/cases/**"
+    - "LICENSE"
+    - ".gitignore"
+    - ".editorconfig"
+    - ".prettierrc*"
   expectedProcesses: []
 mobile:
   runner: maestro
@@ -26,3 +42,33 @@ mobile:
     - "**/android/**"
   nonUiGlobs:
     - "**/*.md"
+  noBehaviourGlobs:
+    - "**/*.md"
+    - "docs/**"
+    - "**/*.test.*"
+    - "**/*.spec.*"
+    - "**/__tests__/**"
+    - "**/__mocks__/**"
+    - "**/*.snap"
+    - ".factory/qa/cases/**"
+    - "LICENSE"
+    - ".gitignore"
+    - ".editorconfig"
+    - ".prettierrc*"
+# A service has no screen: its cases are an API request and what it answers (`<slug>.api.md`) or a job and what it did
+# (`<slug>.worker.md`), and the evidence is a probe (`qa.mjs probe`) or the worker's own output, not a screenshot alone.
+service:
+  runner: probe
+  noBehaviourGlobs:
+    - "**/*.md"
+    - "docs/**"
+    - "**/*.test.*"
+    - "**/*.spec.*"
+    - "**/__tests__/**"
+    - "**/__mocks__/**"
+    - "**/*.snap"
+    - ".factory/qa/cases/**"
+    - "LICENSE"
+    - ".gitignore"
+    - ".editorconfig"
+    - ".prettierrc*"

@@ -24,7 +24,7 @@ Read the live rules, never rely on memory: any branch, title or label checks in 
     - Never commit evidence images. This comment is authorised for every run type; posting anything else (the Bugbot trigger above aside), resolving threads, marking ready or merging still is not.
     - Bugbot: when `node "${CLAUDE_PLUGIN_ROOT}/scripts/config.mjs" get review.bugbot` prints `true`, after every push to an open or newly opened PR post one comment with the text of `review.bugbotComment` (default `bugbot run`): `gh pr comment <N> --body "bugbot run"`. The scheduled pass watches the result and fixes what it finds; do not wait for it here.
 
-8. Learnings: write what a later ticket would trip over to `.dev-factory/learnings.md`, never as a file in the repository. At most 3 entries, each one or two sentences (300 characters at most) followed by an indented `scope:` line naming the path prefix it concerns (`.` for the whole repository):
+7b. Tests: put the output of `node "${CLAUDE_PLUGIN_ROOT}/scripts/coverage.mjs" report` in the PR body under `## Tests` (the reported counts per kind, and the share of the added lines a test run reached with the ones it did not). When the report says it has no data, copy that sentence as it is: it is more honest than a number. 8. Learnings: write what a later ticket would trip over to `.dev-factory/learnings.md`, never as a file in the repository. At most 3 entries, each one or two sentences (300 characters at most) followed by an indented `scope:` line naming the path prefix it concerns (`.` for the whole repository):
 
     ```
     ## Learnings

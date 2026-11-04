@@ -516,6 +516,17 @@ Takeover itself is not a setting: a repository file is something a run can edit,
 | -------------- | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
 | `environments` | `see config.json` | Per telemetry environment (`dev`, `staging`...): `sentry` (`org`, `environment`, `projects`) and `axiomDatasets` the debugger may read. |
 
+#### Coverage
+
+| Key                        | Default                | What it does                                                                                                                                       |
+| -------------------------- | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `coverage.command`         | `null`                 | The command that writes the lcov file, run where the tests run (in the container when there is one). `null`: the builder reports test counts only. |
+| `coverage.lcovPath`        | `"coverage/lcov.info"` | Where `scripts/coverage.mjs report` reads the lcov data, relative to the worktree.                                                                 |
+| `coverage.unitGlobs`       | `see config.json`      | Changed files that count as unit tests in the report.                                                                                              |
+| `coverage.functionalGlobs` | `see config.json`      | Changed files that count as functional tests (checked first).                                                                                      |
+
+`dev-factory`'s coverage report is about the change, not the repository: `node scripts/coverage.mjs record-tests --kind unit|functional --tests N` keeps the counts the builder reports (shown as reported), and `report` takes the lines the change added from `git diff -U0` and says how many of the executable ones a test run reached and which it did not. When no changed file is in the lcov data it says so plainly instead of a number. The PR body carries it under `## Tests`.
+
 #### Telemetry limits
 
 | Key                       | Default | What it does                                                                                                                                                     |
@@ -788,18 +799,23 @@ What takeover stopped can be given back. `cleanup.mjs` records the containers an
 
 `dev-factory qa` is the only thing that can mark a case as passed.
 
-| Command                                                                             | Purpose                                                    |
-| ----------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| `start --key KEY --profile web\|mobile`                                             | Bind a run to the current commit; refuses a dirty tree     |
-| `record --run N --case SLUG --status pass\|fail --assertion TEXT --screenshot FILE` | Record one walked case                                     |
-| `done --run N`                                                                      | Close the run and compute the verdict                      |
-| `mark-na --key KEY --profile P --reason TEXT`                                       | Declare no UI surface changed, verified against the diff   |
-| `review record --axis spec\|standards --head SHA --summary TEXT --findings JSON`    | Record one review step; step 2 needs a clean step 1        |
-| `review status [--head SHA]`                                                        | Show the steps and whether the commit is clean             |
-| `verify --head SHA --run N [--require-review true]` (or `--key KEY`)                | Confirm a passing result for exactly this commit           |
-| `ticket lint\|base\|blocked-by --file F`                                            | Check a task description, read its base branch or blockers |
+| Command                                                                                  | Purpose                                                                           |
+| ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `start --key KEY --profile web\|mobile\|service`                                         | Bind a run to the current commit; refuses a dirty tree                            |
+| `record --run N --case SLUG --status pass\|fail --assertion TEXT --screenshot FILE`      | Record one walked case (also `--video`, `--log`, `--kind worker --evidence-file`) |
+| `probe --run N --case SLUG --url URL [--method M] [--header 'N: v'] [--expect-status S]` | Send an API request and keep the answer as evidence                               |
+| `done --run N`                                                                           | Close the run and compute the verdict                                             |
+| `mark-na --key KEY --profile P --reason TEXT`                                            | Declare that nothing here changes behaviour, verified against the diff            |
+| `review record --axis spec\|standards --head SHA --summary TEXT --findings JSON`         | Record one review step; step 2 needs a clean step 1                               |
+| `review status [--head SHA]`                                                             | Show the steps and whether the commit is clean                                    |
+| `verify --head SHA --run N [--require-review true]` (or `--key KEY`)                     | Confirm a passing result for exactly this commit                                  |
+| `ticket lint\|base\|blocked-by --file F`                                                 | Check a task description, read its base branch or blockers                        |
 
-Cases are committed with the change, in your repository under `.factory/qa/cases/<KEY>/` (`.spec.ts` for Playwright, `.yaml` for Maestro). Which paths count as UI is `uiGlobs` in the QA profiles; `nonUiGlobs` carves documentation and tests out, so a diff that only touches Markdown is "no UI surface" and `mark-na` accepts it, while a code file beside it needs a walk. A pass needs a fresh screenshot of this run at this commit with an assertion that describes this walk.
+Cases are committed with the change, in your repository under `.factory/qa/cases/<KEY>/`, and the file name says what kind they are: `<slug>.spec.ts` (Playwright) and `<slug>.yaml` (Maestro) are **ui** cases, `<slug>.api.md` an **api** case (a request and the answer it must get) and `<slug>.worker.md` a **worker** case (a job and what it must have done). One run covers every case of the ticket and `caseSummary` counts them per kind. A pass needs an assertion that describes this walk and evidence of the case's own kind: a fresh screenshot at this commit for a ui case; a probe that got the expected answer (or a screenshot) for an api case; the worker's own output (`--kind worker --evidence-file`, at least 32 characters) or a screenshot for a worker case. `--video` (MP4, MOV or WebM by its first bytes, at least 1 KB) and `--log` (the newest 8 KB) are support: a video or a log alone never passes a case.
+
+`mark-na` is for changes that cannot alter behaviour. It is accepted only when **every** changed file matches the profile's `noBehaviourGlobs` (documentation, tests, snapshots, QA cases, formatting rules; a profile without the list uses its `nonUiGlobs`) and the reason has at least 8 characters. A backend or worker file used to pass because it is not a UI file; it now needs a `service` run. `uiGlobs` still say which paths are a screen. A repository's own `dev-factory.qa.yaml` replaces the profiles, `service` included.
+
+`qa.mjs probe` sends the request itself, to this machine or to a host `.dev-factory/env.json` names (`hosts`, `webBaseUrl`, `apiBaseUrl`, `remote.url`), never following a redirect. It refuses credentials in the URL, a line break or NUL in a header and a body over 64 KB; it reads at most 64 KB of the answer, keeps 4 KB of it, times out at 15 seconds, stores the **names** of the request headers and the query parameters and not their values, and keeps request values out of its error messages. Anything kept as evidence (a probe body, a log tail, worker output) is **redacted, not refused**: each finding becomes `[redacted:<rule>]`, overlapping findings are merged, and the values of the environment variables `.dev-factory/env.json` lists in `secretEnv` are removed literally. Redaction works line by line, so it cannot catch a secret split across lines (the body of a PEM private key, a value a log formatter wrapped) or a value that looks like nothing (`"password": "hunter2"` in JSON): keep such output out of evidence, or name the variable in `secretEnv`.
 
 A verdict is about the ticket's own change against its base, so it survives the base being merged into the branch: `verify` and `review status` accept a QA run, a not-applicable record or a review made earlier on the same branch while the diff against the base is unchanged (compared as zero-context hunks, so line numbers the merge shifted do not matter) and report `carriedFrom`. Any change to the ticket's own diff, or a merge that alters it, ends the carry. A failed run is never carried. Files the environment step rewrites (`mobile.nativeInputs`, `environment.buildFiles`) are sealed by content hash once the environment is up, so they do not make the tree dirty; a ticket's own edit to one still does.
 

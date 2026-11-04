@@ -276,6 +276,14 @@ export function validate(config = load()) {
 				problems.push(`environments.${name}.axiomDatasets must be a list`);
 		}
 	}
+	const cmd = dig(config, 'coverage.command');
+	if (cmd != null && (typeof cmd !== 'string' || !cmd)) problems.push('coverage.command must be a command or null');
+	const lcov = dig(config, 'coverage.lcovPath');
+	if (lcov !== undefined && (typeof lcov !== 'string' || !lcov)) problems.push('coverage.lcovPath must be a file path');
+	for (const k of ['coverage.unitGlobs', 'coverage.functionalGlobs']) {
+		const v = dig(config, k);
+		if (v !== undefined && !(Array.isArray(v) && v.every((g) => typeof g === 'string' && g))) problems.push(`${k} must be a list of globs`);
+	}
 	const interval = dig(config, 'scheduler.intervalMinutes');
 	if (interval !== undefined && !(Number.isInteger(interval) && interval >= 1 && interval <= 1440))
 		problems.push('scheduler.intervalMinutes must be a whole number of minutes from 1 to 1440');

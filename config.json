@@ -157,6 +157,12 @@
 	"scheduler": {
 		"intervalMinutes": 15
 	},
+	"coverage": {
+		"command": null,
+		"lcovPath": "coverage/lcov.info",
+		"unitGlobs": ["**/*.test.*", "**/__tests__/**", "**/*.unit.*"],
+		"functionalGlobs": ["**/*.e2e.*", "**/e2e/**", "**/*.functional.*", "**/functional/**", "**/*.integration.*"]
+	},
 	"alerts": {
 		"notify": false
 	},

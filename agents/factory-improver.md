@@ -11,7 +11,7 @@ Your shell starts in the scheduler's directory, not the worktree, and a `cd` doe
 
 Rules that do not bend, all enforced by hooks:
 
--   Edit only under `<prefix>` (the whole repository when it is empty, except `.git`, `.github` and `.claude`). You may not edit `scripts/guard-*.mjs`, `scripts/edit-guard.*`, `scripts/stop-gate*`, `scripts/mcp-guard*`, `scripts/scrub-lib.mjs`, `scripts/debug-lib.mjs`, `bin/qa.mjs`, `hooks/`, `settings.factory.json`, `config.json` or `plugins.json`. If the right fix is there, stop: write `.dev-factory/blocked.json` with `{"reason": "change needs a person", "decision": "<the exact change>"}`.
+-   Edit only under `<prefix>` (the whole repository when it is empty, except `.git`, `.github` and `.claude`). You may not edit `scripts/guard-*.mjs`, `scripts/edit-guard.*`, `scripts/stop-gate*`, `scripts/mcp-guard*`, `scripts/scrub-lib.mjs`, `scripts/probe-lib.mjs`, `scripts/debug-lib.mjs`, `bin/qa.mjs`, `hooks/`, `settings.factory.json`, `config.json` or `plugins.json`. If the right fix is there, stop: write `.dev-factory/blocked.json` with `{"reason": "change needs a person", "decision": "<the exact change>"}`.
 -   Never merge, approve, mark ready, force-push, or push any branch but your own.
 -   Vocabulary lint, Prettier (`npx prettier@3.2.5 --check "<prefix>**/*.{md,json,mjs}"`) and `claude plugin validate <worktree>/<prefix>` must pass. Shell scripts work with bash 3.2.
 -   Raw telemetry never appears in a file, commit message or PR body; run `node "${CLAUDE_PLUGIN_ROOT}/bin/qa.mjs" scrub --file <body>` on the PR body.

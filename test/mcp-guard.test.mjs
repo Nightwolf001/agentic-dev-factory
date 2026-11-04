@@ -147,3 +147,66 @@ test('the hook entry sees connector tools, and the setting is validated', async 
 	assert.deepEqual(validate(merge(load(), { telemetry: { allowedRoles: ['debugger'] } })), []);
 	assert.match(validate(merge(load(), { telemetry: { allowedRoles: ['wizard'] } })).join('\n'), /telemetry\.allowedRoles/);
 });
+
+// ---- redaction ----
+import { mergeSpans, redactText } from '../scripts/scrub-lib.mjs';
+
+test('redactText replaces each finding and keeps the rest of the line', () => {
+	const r = redactText('user jane.doe@example.com sent Bearer abcdefghijklmnop1234 at 12:00\nplain line\ndevice 3569870000123456 ok');
+	assert.equal(r.text, 'user [redacted:email address] sent [redacted:bearer token] at 12:00\nplain line\ndevice [redacted:long hex identifier] ok');
+	assert.equal(r.redactions, 3);
+	assert.deepEqual(scrubFindings(r.text), [], 'what is left passes the scrub');
+	assert.equal(redactText('nothing here, 42 events').text, 'nothing here, 42 events');
+	assert.equal(redactText('').text, '');
+});
+
+test('overlapping findings become one redaction, and extra patterns apply', () => {
+	assert.deepEqual(
+		mergeSpans([
+			{ start: 0, end: 10, rule: 'a' },
+			{ start: 5, end: 15, rule: 'b' },
+			{ start: 20, end: 22, rule: 'c' },
+		]),
+		[
+			{ start: 0, end: 15, rules: ['a', 'b'] },
+			{ start: 20, end: 22, rules: ['c'] },
+		],
+	);
+	// a JWT also looks like a bearer token's tail and a long identifier: one marker, not three
+	const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJ';
+	assert.equal(redactText(`token=${jwt} end`).text.match(/\[redacted:/g).length, 1);
+	assert.equal(redactText('tenant ACME-123 here', { extraPatterns: ['ACME-\\d+'] }).text, 'tenant [redacted:configured pattern] here');
+});
+
+test('literal secrets are removed wherever they appear, every time', () => {
+	const r = redactText('login with hunter2hunter2 then hunter2hunter2 again\n{"password":"s3cr3t!"}', {
+		secrets: ['hunter2hunter2', 's3cr3t!', 'x'],
+	});
+	assert.equal(r.text, 'login with [redacted:secret] then [redacted:secret] again\n{"password":"[redacted:secret]"}');
+	assert.equal(r.redactions, 3);
+	assert.match(
+		redactText('a b x y', { secrets: ['x'] }).text,
+		/a b x y/,
+		'a secret shorter than 3 characters is ignored (it would shred the text)',
+	);
+	assert.match(
+		redactText('key=sk_live_abcdefghijklmnop1234 and pw hunter2hunter2', { secrets: ['hunter2hunter2'] }).text,
+		/\[redacted:API key\].*\[redacted:secret\]/,
+	);
+});
+
+test('what line-wise redaction cannot catch is stated, and the email rule no longer takes seconds on minified input', () => {
+	// a split key and a JSON password value are not found: that is why the README says to pass such values in `secrets`
+	assert.equal(redactText('-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END PRIVATE KEY-----').redactions, 0);
+	assert.equal(redactText('{"password": "hunter2"}').redactions, 0);
+	const minified = 'a'.repeat(64 * 1024);
+	for (const input of [minified, 'a.b'.repeat(22000), ('x%+-'.repeat(16000) + ' ').repeat(1)]) {
+		const t = Date.now();
+		redactText(input);
+		scrubFindings(input);
+		assert.ok(Date.now() - t < 1500, `a 64 KB line takes ${Date.now() - t} ms`);
+	}
+	assert.equal(redactText('mail me: a@b.co.').text, 'mail me: [redacted:email address].');
+	assert.equal(redactText('x'.repeat(200) + '@example.com').redactions, 0, 'a local part longer than any address is not an address');
+	assert.equal(scrubFindings('first.last+tag@sub.example.co.uk').length, 1);
+});
