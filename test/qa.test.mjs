@@ -282,10 +282,15 @@ function withDiff(files) {
 	return root;
 }
 
-test('triggeredAxes maps changed paths to specialist axes and tolerates a missing base', () => {
+test('triggeredAxes maps changed paths to specialist axes, and an unreadable base requires every configured axis', () => {
 	const root = withDiff(['services/api/migrations/001.sql', 'src/a.js']);
 	assert.deepEqual(triggeredAxes({ root, specialistAxes: AXES_CFG, base: 'origin-develop' }), ['data']);
-	assert.deepEqual(triggeredAxes({ root, specialistAxes: AXES_CFG, base: 'no-such-ref' }), []);
+	assert.deepEqual(
+		triggeredAxes({ root, specialistAxes: AXES_CFG, base: 'no-such-ref' }),
+		Object.keys(AXES_CFG).filter((a) => AXES_CFG[a].length),
+		'not reading the diff is never a reason to skip a review',
+	);
+	assert.deepEqual(triggeredAxes({ root, specialistAxes: {}, base: 'no-such-ref' }), [], 'with nothing configured there is nothing to require');
 });
 
 test('a triggered axis must be recorded and clean before verify passes', () => {
@@ -437,7 +442,7 @@ test('verify refuses commits authored by an agent or carrying an agent trailer w
 	const problems = attributionProblems(root, 'HEAD', 'origin/develop');
 	assert.equal(problems.length, 2);
 	assert.match(problems.join(' '), /authored or committed by an agent identity/);
-	assert.deepEqual(attributionProblems(root, 'HEAD', 'origin/no-such-base'), [], 'an unknown base is not a verdict');
+	assert.match(attributionProblems(root, 'HEAD', 'origin/no-such-base')[0], /could not be read/, 'an unknown base is not a clean verdict');
 });
 
 // ---- verdicts survive a merge of the base ----
@@ -1131,4 +1136,60 @@ test('ticket remote prints the Remote-QA request of a ticket, or null', () => {
 	assert.deepEqual(run(), { remote: { env: 'staging', account: 'reviewer' } });
 	fs.writeFileSync(f, 'Summary only\n');
 	assert.deepEqual(run(), { remote: null });
+});
+
+test('a record is carried only to a descendant of the commit it was made at (carried checks ancestry, not just the change hash)', async () => {
+	const { carried } = await import('../bin/qa.mjs');
+	const root = branchWithWork();
+	const h0 = head(root);
+	const rec = { head: h0, diffHash: diffHash(root, h0, 'origin/develop') };
+	// a sibling commit with the very same change: same diff hash, but not built on h0
+	g(root, 'checkout', '-q', 'develop');
+	g(root, 'checkout', '-qb', 'sibling');
+	fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+	fs.writeFileSync(path.join(root, 'src/feature.js'), 'a\nb\nc\nd\ne\n');
+	g(root, 'add', '-A');
+	g(root, 'commit', '-qm', 'the same change, made apart');
+	const sibling = head(root);
+	assert.notEqual(sibling, h0);
+	assert.equal(diffHash(root, sibling, 'origin/develop'), rec.diffHash, 'the change is identical');
+	assert.equal(carried(root, rec, sibling, 'origin/develop'), false, 'but the sibling is not a descendant');
+	assert.equal(carried(root, rec, h0, 'origin/develop'), true);
+});
+
+test('a standards review can be recorded after the base was merged in, when the spec review is carried', () => {
+	const root = branchWithWork();
+	const h0 = head(root);
+	reviewRecord({ root, axis: 'spec', head: h0, summary: SUMMARY, findings: '[]' });
+	mergeBaseIn(root);
+	const h1 = head(root);
+	const r = reviewRecord({ root, axis: 'standards', head: h1, summary: SUMMARY, findings: '[]', base: 'origin/develop' });
+	assert.equal(r.head, h1);
+});
+
+test('an assertion may mention a colour or a page, and may not lean on another run', () => {
+	const root = makeRepo();
+	const m = start({ root, key: 'APP-1', profile: 'web' });
+	const base = { root, run: m.run, caseSlug: 'login', status: 'pass' };
+	record({ ...base, assertion: 'the button is colour #3b82f6 and says previous page', screenshot: png(root, 'c1', 31) });
+	for (const bad of ['same as run 2', 'as in run #3', 'previously passed', 'passed in the previous run', 'see walk 1 for this']) {
+		refused(() => record({ ...base, caseSlug: 'arm', assertion: bad, screenshot: png(root, 'c2', 32) }), /another run/);
+	}
+});
+
+test('probe reads its body from a file and says when the file is missing', async () => {
+	const root = serviceRepo();
+	const m = start({ root, key: 'APP-2', profile: 'service' });
+	const base = { root, run: m.run, caseSlug: 'create-order.api', url: 'http://localhost:3000/orders', method: 'POST', expectStatus: 201 };
+	let sent = null;
+	const ok = await probe({
+		...base,
+		bodyFile: textFile(root, 'body.json', '{"sku":7}'),
+		fetchImpl: async (url, init) => (
+			(sent = init.body), new Response('{"id":1}', { status: 201, headers: { 'content-type': 'application/json' } })
+		),
+	});
+	assert.equal(ok.ok, true);
+	assert.equal(sent, '{"sku":7}');
+	await assert.rejects(probe({ ...base, step: 2, bodyFile: path.join(root, 'nope.json'), fetchImpl: answer(201) }), /body file not found/);
 });
