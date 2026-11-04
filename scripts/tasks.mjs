@@ -179,6 +179,6 @@ if (isMain(import.meta.url)) {
 		.then((r) => console.log(JSON.stringify(r)))
 		.catch((e) => {
 			console.error(`tasks: ${e.message}`);
-			process.exit(e.code ?? 1);
+			process.exit(Number.isInteger(e.code) ? e.code : 1); // a system error's code is a string such as ENOENT
 		});
 }

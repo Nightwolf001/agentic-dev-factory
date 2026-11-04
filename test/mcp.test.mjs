@@ -116,6 +116,9 @@ test('the listing is read by name, and a name may contain colons', () => {
 	assert.equal(stateOf('x - ✔ Connected'), 'connected');
 	assert.equal(stateOf('x - ! Needs authentication'), 'needs login');
 	assert.equal(stateOf('x - ⏸ Pending approval (run `claude`)'), 'pending approval');
+	assert.equal(stateOf('npx -y failed-tests-mcp --connected - ✔ Connected'), 'connected', 'a word in the command is not the status');
+	assert.equal(stateOf('node needs-auth-proxy.js - ✗ Failed to connect'), 'failed');
+	assert.equal(stateOf('not started'), 'not started');
 });
 
 test("a server is found as itself, as the plugin's own, or as a claude.ai connector, never as another plugin's server of that name", () => {

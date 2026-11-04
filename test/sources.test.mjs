@@ -29,6 +29,10 @@ test('Blocked by is read from a line, a list under a heading, #n and issue URLs'
 test('references normalise to task keys', () => {
 	assert.equal(normaliseRef('#12'), 'GH-12');
 	assert.equal(normaliseRef('https://github.com/o/r/issues/13'), 'GH-13');
+	assert.equal(normaliseRef('https://github.com/o/r/issues/13', 'GH', 'o/r'), 'GH-13');
+	assert.equal(normaliseRef('https://github.com/O/R/issues/13', 'GH', 'o/r'), 'GH-13', 'owner and name are compared without regard to case');
+	assert.equal(normaliseRef('https://github.com/other/repo/issues/13', 'GH', 'o/r'), null, 'another repository’s issue is not this one’s blocker');
+	assert.equal(normaliseRef('#13', 'GH', 'o/r'), 'GH-13');
 	assert.equal(normaliseRef('app-4'), 'APP-4');
 	assert.equal(normaliseRef('nonsense'), null);
 });

@@ -91,10 +91,13 @@ export function findServer(id, entries) {
 }
 
 export function stateOf(rest) {
-	if (/pending approval/i.test(rest)) return 'pending approval';
-	if (/needs auth/i.test(rest)) return 'needs login';
-	if (/failed/i.test(rest)) return 'failed';
-	if (/connected/i.test(rest)) return 'connected';
+	// the line is "<command and arguments> - <status>": the status is what follows the last " - ", never a word in the command
+	const text = String(rest ?? '');
+	const status = text.includes(' - ') ? text.slice(text.lastIndexOf(' - ') + 3) : text;
+	if (/pending approval/i.test(status)) return 'pending approval';
+	if (/needs auth/i.test(status)) return 'needs login';
+	if (/failed/i.test(status)) return 'failed';
+	if (/connected/i.test(status)) return 'connected';
 	return 'not started';
 }
 

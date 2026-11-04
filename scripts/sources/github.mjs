@@ -53,7 +53,7 @@ export function githubSource(cfg, { env = process.env, gh = defaultGh } = {}) {
 		labels: (i.labels ?? []).map((l) => l.name),
 		type: (i.labels ?? []).map((l) => l.name).find((n) => /^(bug|feature|story|epic|task|chore|improvement)$/i.test(n)) ?? 'task',
 		blockedBy: parseBlockedBy(i.body)
-			.map((r) => normaliseRef(r, prefix))
+			.map((r) => normaliseRef(r, prefix, repo))
 			.filter(Boolean)
 			.map((k) => ({ key: k, done: isDone(k) })),
 	});

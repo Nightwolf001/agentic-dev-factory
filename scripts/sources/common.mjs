@@ -50,7 +50,10 @@ function splitRefs(text) {
 }
 
 // A reference as it appears in a description to a task key: #12 and issue URLs belong to the GitHub prefix.
-export function normaliseRef(ref, githubPrefix = 'GH') {
+// An issue URL of another repository is no blocker of this one's tasks: when `repo` ("owner/name") is known, only its own URLs count.
+export function normaliseRef(ref, githubPrefix = 'GH', repo = null) {
+	const url = /^https?:\/\/[^/]+\/([^/]+)\/([^/]+)\/issues\/(\d+)$/.exec(ref);
+	if (url) return repo && `${url[1]}/${url[2]}`.toLowerCase() !== String(repo).toLowerCase() ? null : `${githubPrefix}-${url[3]}`;
 	let m = /\/issues\/(\d+)$/.exec(ref) || /^#(\d+)$/.exec(ref);
 	if (m) return `${githubPrefix}-${m[1]}`;
 	return KEY_RE.test(ref) ? ref.toUpperCase() : null;

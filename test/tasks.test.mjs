@@ -224,3 +224,11 @@ test('comments reads the activity of a task through the CLI, and a source withou
 	const cfg = merge(load(), { tasks: { source: 'notion' } });
 	await assert.rejects(run(['comments', 'N-1'], { cfg, source: {} }), /through its MCP server/);
 });
+
+test('an error carrying a system code such as ENOENT exits 1 instead of crashing the exit', () => {
+	const { cli } = repo();
+	const r = cli('get', 'TASK-404');
+	assert.equal(r.status, 1);
+	assert.match(r.stderr, /no task TASK-404/);
+	assert.doesNotMatch(r.stderr, /ERR_INVALID_ARG_TYPE/);
+});
