@@ -100,6 +100,8 @@ export async function probe({
 	const req = checkRequest({ url, method, headers, bodyBytes, env });
 	const started = Date.now();
 	let res;
+	let buf;
+	let truncated;
 	try {
 		res = await fetchImpl(req.url, {
 			method: req.method,
@@ -108,6 +110,8 @@ export async function probe({
 			redirect: 'manual',
 			signal: AbortSignal.timeout(LIMITS.timeoutMs),
 		});
+		// the same deadline covers the body: a server that sends the headers and then stalls ends here too
+		({ buf, truncated } = await readCapped(res, LIMITS.read));
 	} catch (e) {
 		// never e.message or e.cause: they can quote the URL, the query and header values
 		const timeout = e?.name === 'TimeoutError' || e?.name === 'AbortError';
@@ -117,7 +121,6 @@ export async function probe({
 				: `the request failed (${e?.cause?.code ?? e?.code ?? e?.name ?? 'error'})`,
 		);
 	}
-	const { buf, truncated } = await readCapped(res, LIMITS.read);
 	const redacted = redactText(buf.subarray(0, LIMITS.excerpt).toString('utf8'), { secrets, extraPatterns });
 	// redaction can make the text longer (a marker is longer than a short address): cut after, so the cap holds
 	if (Buffer.byteLength(redacted.text) > LIMITS.excerpt) redacted.text = Buffer.from(redacted.text).subarray(0, LIMITS.excerpt).toString('utf8');

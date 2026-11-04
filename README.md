@@ -426,10 +426,10 @@ Every setting, with its default. `see config.json` means the default is a longer
 
 #### Scheduler
 
-| Key                         | Default | What it does                                                                                                                                                                                                                                                                   |
-| --------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `scheduler.intervalMinutes` | `15`    | Minutes between scheduled ticks, from 1 to 1440. It sets the launchd `StartInterval`, the GitHub Actions cron and the routine text. GitHub Actions runs a schedule at most every 5 minutes and a cron step must divide the hour, so `cloud init` rounds and says what it used. |
-| `alerts.notify`             | `false` | `true` on a Mac: one notification per distinct reason when a scheduled pass cannot start (the doctor fails, the task source cannot be read). The last failure is also shown by `dev-factory doctor` and `dev-factory scheduler status`.                                        |
+| Key                         | Default | What it does                                                                                                                                                                                                                                                                                                                    |
+| --------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `scheduler.intervalMinutes` | `15`    | Minutes between scheduled ticks, from 1 to 1440. It sets the launchd `StartInterval`, the GitHub Actions cron and the routine text. GitHub Actions runs a schedule at most every 5 minutes and a cron step must divide the hour (an interval in whole hours must divide the day), so `cloud init` rounds and says what it used. |
+| `alerts.notify`             | `false` | `true` on a Mac: one notification per distinct reason when a scheduled pass cannot start (the doctor fails, the task source cannot be read). The last failure is also shown by `dev-factory doctor` and `dev-factory scheduler status`.                                                                                         |
 
 #### Git
 

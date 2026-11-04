@@ -690,6 +690,20 @@ test('a worker case passes on the worker’s own output, never on a video or a l
 	refused(() => record({ ...base, kind: 'worker' }), /--kind worker together with --evidence-file/);
 	refused(() => record({ ...base, evidenceFile: textFile(root, 'e.txt', 'x') }), /--kind worker together with --evidence-file/);
 	refused(() => record({ ...base, kind: 'worker', evidenceFile: textFile(root, 'e.txt', 'sent') }), /at least 32 characters/);
+	// a file that redacts down to nothing shows nothing, however long it was
+	refused(
+		() =>
+			record({
+				...base,
+				kind: 'worker',
+				evidenceFile: textFile(
+					root,
+					'secrets.txt',
+					'user=jane.doe@example.com other=john.roe@example.com third=a.b@example.org fourth=c.d@example.net',
+				),
+			}),
+		/at least 32 characters/,
+	);
 	refused(
 		() =>
 			record({
@@ -784,11 +798,11 @@ test('literal secrets named by env.json are removed from kept logs and worker ou
 			status: 'pass',
 			assertion: 'the worker sent the receipt mail',
 			kind: 'worker',
-			evidenceFile: textFile(root, 'w.txt', 'signed in with correct-horse-battery and sent the receipt'),
+			evidenceFile: textFile(root, 'w.txt', 'signed in with correct-horse-battery and sent the receipt to the customer queue'),
 			secrets: ['correct-horse-battery'],
 		});
 		const stored = fs.readFileSync(path.join(root, r.evidenceAdded[0].file), 'utf8');
-		assert.equal(stored, 'signed in with [redacted:secret] and sent the receipt');
+		assert.equal(stored, 'signed in with [redacted:secret] and sent the receipt to the customer queue');
 	} finally {
 		delete process.env.QA_ACCOUNT_PASSWORD;
 	}
@@ -898,6 +912,20 @@ test('a probe reads at most 64 KB, ends at 15 seconds, and a failure names no re
 		AbortSignal.timeout = realTimeout;
 	}
 	assert.equal(LIMITS.timeoutMs, 15_000);
+	// headers arrive, then the body stalls until the deadline: the same message, not a raw AbortError
+	const stalls = async (url, init) =>
+		new Response(
+			new ReadableStream({
+				pull() {
+					throw Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
+				},
+			}),
+			{ status: 200 },
+		);
+	await assert.rejects(
+		sendProbe({ url: 'http://localhost/x?token=SECRETQUERY', fetchImpl: stalls }),
+		(e) => /no answer within 15 seconds/.test(e.message) && !/SECRETQUERY/.test(e.message),
+	);
 });
 
 test('qa.mjs probe sends a real request and registers it; the CLI refuses a host that is not allowed', async () => {

@@ -384,7 +384,8 @@ export function record({
 		if (!fs.existsSync(evidenceFile)) throw new QaError(`evidence file not found: ${evidenceFile}`);
 		const raw = fs.readFileSync(evidenceFile, 'utf8').slice(0, 64 * 1024);
 		const t = redactText(raw, { extraPatterns: patterns, secrets });
-		if (t.text.replace(/\s+/g, '').length < MIN_WORKER_EVIDENCE_CHARS)
+		// what is left once the redaction markers are taken out: a file that is nothing but `[redacted:...]` shows nothing
+		if (t.text.replace(/\[redacted:[^\]]*\]/g, '').replace(/\s+/g, '').length < MIN_WORKER_EVIDENCE_CHARS)
 			throw new QaError(
 				`worker evidence needs at least ${MIN_WORKER_EVIDENCE_CHARS} characters of what the worker did (its output, the rows it wrote, the message it sent)`,
 			);
