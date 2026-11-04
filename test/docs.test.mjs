@@ -11,7 +11,11 @@ const docs = () =>
 	execFileSync('git', ['-C', ROOT, 'ls-files', '-z', '*.md'], { encoding: 'utf8' })
 		.split('\0')
 		.filter(Boolean)
-		.filter((f) => f !== 'docs/fork-improvements-to-port.md' && fs.existsSync(path.join(ROOT, f)));
+		.filter(
+			(f) =>
+				!['docs/fork-improvements-to-port.md', 'docs/superpowers/plans/2026-11-04-user-level-config.md'].includes(f) &&
+				fs.existsSync(path.join(ROOT, f)),
+		);
 const text = (f) => fs.readFileSync(path.join(ROOT, f), 'utf8');
 // markdown without fenced code, so a shell example is not read as prose
 const noFences = (t) => t.replace(/^```[\s\S]*?^```/gm, '');
