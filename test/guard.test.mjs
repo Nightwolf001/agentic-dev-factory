@@ -895,8 +895,40 @@ test('config write-from-env is the owner’s: no factory role runs it, reading t
 			'node scripts/config.mjs write-from-env --if-set',
 			'dev-factory config write-from-env --force',
 			'~/.dev-factory/bin/dev-factory config write-from-env',
+			// written so that the text does not show the word
+			'node scripts/config.mjs "write-from-env" --force',
+			"node scripts/config.mjs 'write-from-env' --force",
+			'node scripts/config.mjs write-from-""env --force',
+			'dev-factory "config" write-from-env',
+			'cmd=write-from-env; node scripts/config.mjs $cmd',
+			'node scripts/config.mjs $(echo write-from-env)',
+			'node scripts/config.mjs `echo write-from-env`',
+			'node scripts/config.mjs {write-from-env,get} --force',
+			'node scripts/CONFIG.MJS write-from-env',
+			'node --no-warnings scripts/config.mjs write-from-env',
+			'env DF_PROJECT_CONFIG=x node scripts/config.mjs write-from-env',
+			'node scripts/cli.mjs config write-from-env --force',
+			// no subcommand, an option first, or one that is not a read
+			'node scripts/config.mjs',
+			'node scripts/config.mjs --force write-from-env',
+			'node scripts/config.mjs set x y',
+			'dev-factory config',
 		])
 			assert.equal(r(c), true, `${role}: ${c}`);
+		assert.equal(r(`node "${PLUGIN_ROOT}/scripts/config.mjs" get tasks.source`), false, `${role}: the read it always had`);
+	}
+	for (const role of ['builder', 'improver', 'promoter']) {
+		const r = (command) => evaluate(command, { role, branch: 'task/A-1-x', key: 'A-1', cwd: '/w' }).deny;
+		for (const c of [
+			'node scripts/config.mjs get caps.maxConcurrent',
+			'dev-factory config get x',
+			'node scripts/config.mjs validate',
+			'node scripts/config.mjs agent builder',
+			'cat scripts/config.mjs',
+			'git diff -- scripts/config.mjs',
+			'node --test test/config.test.mjs',
+		])
+			assert.equal(r(c), false, `${role}: ${c}`);
 	}
 	assert.equal(evaluate('node scripts/config.mjs write-from-env', { cwd: '/w' }).deny, false, 'the scheduler may');
 	assert.equal(evaluate(`node "${PLUGIN_ROOT}/scripts/config.mjs" get tasks.source`, { role: 'builder', cwd: '/w' }).deny, false);

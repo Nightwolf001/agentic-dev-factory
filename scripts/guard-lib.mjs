@@ -746,8 +746,24 @@ export function hitsTrackerHost(inv, ctx = {}, vars = {}) {
 	return false;
 }
 
-// `config.mjs write-from-env` or `dev-factory config write-from-env`: it writes the owner's settings folder from DF_PROJECT_*.
-const WRITE_FROM_ENV = /(?:\bconfig\.mjs["']?|\bdev-factory["']?\s+config)\s+write-from-env\b/i;
+// A run reads the configuration; it does not write it (`write-from-env` fills the owner's settings folder from DF_PROJECT_*).
+// So `node <any path>/config.mjs`, and `dev-factory config` (or `node <any path>/cli.mjs config`), is run only with a subcommand
+// that is written out as one of the read-only ones. The words are the ones the shell hands over, after quotes are removed, and a
+// word that is built at run time ($cmd, $(...), a brace list) is not one of them.
+const CONFIG_READS = new Set(['get', 'agent', 'validate']);
+function denyConfigWrite(inv) {
+	const { cmd, args } = inv;
+	const named = (a, n) => base(a).toLowerCase() === n;
+	let sub;
+	if (cmd === 'node') {
+		const i = args.findIndex((a) => named(a, 'config.mjs'));
+		const j = args.findIndex((a) => named(a, 'cli.mjs'));
+		if (i >= 0) sub = args[i + 1] ?? '';
+		else if (j >= 0 && args[j + 1] === 'config') sub = args[j + 2] ?? '';
+	} else if (cmd.toLowerCase() === 'dev-factory' && args[0] === 'config') sub = args[1] ?? '';
+	if (sub === undefined || CONFIG_READS.has(sub)) return null;
+	return `config writes (write-from-env) fill ${PROJECT_DIR}/ from the owner's environment; a factory run reads the configuration only (${[...CONFIG_READS].join(', ')})`;
+}
 
 const TAKEOVER_REFUSAL =
 	'dev-factory guard: takeover is switched on by the machine owner (DF_TAKEOVER in the environment the scheduler starts with), not by an agent';
@@ -801,8 +817,10 @@ function judge(command, ctx) {
 			ctx.role,
 		);
 		if (common) return deny(common);
-		if (FACTORY_ROLES.has(ctx.role) && WRITE_FROM_ENV.test(seg))
-			return deny(`config write-from-env fills ${PROJECT_DIR}/ from the owner's environment; a factory run does not run it`);
+		if (FACTORY_ROLES.has(ctx.role)) {
+			const config = denyConfigWrite(inv);
+			if (config) return deny(config);
+		}
 		const machine = denyMachinePaths(seg, inv, ctx, st);
 		if (machine) return deny(machine);
 		if (cmd === 'cd' || cmd === 'pushd') {
