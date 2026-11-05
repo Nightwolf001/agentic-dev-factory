@@ -308,7 +308,9 @@ const HOME_PLACES = [
 export function protectedPaths(ctx = {}) {
 	const { home, stateDir } = envOf(ctx);
 	const h = comps(home);
-	return [['state', comps(stateDir)], ...HOME_PLACES.map(([place, rel]) => [place, [...h, ...rel]])];
+	// The machine folder holds the secrets and every repository's state folder. A repository may keep its run state in a folder of its own
+	// under it (`install --isolate`, DF_STATE_DIR), and that must not leave the folder above it open to a run.
+	return [['state', comps(stateDir)], ['state', [...h, '.dev-factory']], ...HOME_PLACES.map(([place, rel]) => [place, [...h, ...rel]])];
 }
 
 // -> a short name for what an absolute path is, or null. The path may hold globs (`~/.dev-fac*`), and is compared in lower case.

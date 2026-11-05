@@ -433,3 +433,53 @@ test('a failed preflight is recorded once, shown by status, and cleared by a pas
 	f.tick();
 	assert.equal(fs.existsSync(path.join(f.state, 'preflight-alert.json')), false, 'cleared');
 });
+
+// ---- a state folder of its own per repository (install --isolate) ----
+
+const slugOf = (f) =>
+	spawnSync('bash', ['-c', `DIR="${ROOT}"; . "${ROOT}/scripts/runtime.sh"; df_slug "${f.repo}"`], { encoding: 'utf8', env: f.env }).stdout.trim();
+const installSh = (f, ...args) => spawnSync('bash', [path.join(ROOT, 'scripts/install.sh'), ...args], { encoding: 'utf8', env: f.env, cwd: f.repo });
+const plistOf = (f, job) => fs.readFileSync(path.join(f.agents, `com.dev-factory.${slugOf(f)}.${job}.plist`), 'utf8');
+
+test('install --isolate gives the repository a state folder of its own and shares the secrets and the launcher', () => {
+	const f = fixture();
+	const machine = path.join(f.home, 'state');
+	const own = path.join(machine, slugOf(f));
+	const plan = installSh(f, '--isolate');
+	assert.equal(plan.status, 0, plan.stderr);
+	assert.match(plan.stdout, /plan .*state folder of its own/);
+	assert.equal(fs.existsSync(own), false, 'a dry run writes nothing');
+	const r = installSh(f, '--apply', '--isolate');
+	assert.equal(r.status, 0, r.stderr);
+	for (const name of ['.env.local', 'bin', 'plugin-dir'])
+		assert.equal(fs.realpathSync(path.join(own, name)), fs.realpathSync(path.join(machine, name)), `${name} is the machine's, not a copy`);
+	for (const job of ['tick', 'improve']) {
+		const plist = plistOf(f, job);
+		assert.match(plist, new RegExp(`<key>DF_STATE_DIR</key><string>${own}</string>`), `${job} runs on its own state`);
+		assert.match(plist, new RegExp(`<key>WorkingDirectory</key><string>${own}</string>`));
+		assert.match(plist, new RegExp(`<string>${machine}/bin/dev-factory</string>`), 'the launcher stays the machine one');
+	}
+	// installing again without the flag keeps the repository isolated rather than moving its jobs back
+	assert.equal(installSh(f, '--apply').status, 0);
+	assert.match(plistOf(f, 'tick'), new RegExp(`<key>DF_STATE_DIR</key><string>${own}</string>`));
+});
+
+test('install without --isolate keeps every job on the machine state folder', () => {
+	const f = fixture();
+	assert.equal(installSh(f, '--apply').status, 0);
+	assert.match(plistOf(f, 'tick'), new RegExp(`<key>DF_STATE_DIR</key><string>${path.join(f.home, 'state')}</string>`));
+	assert.equal(fs.existsSync(path.join(f.home, 'state', slugOf(f))), false);
+});
+
+test('the pause switch follows the repository to its own state folder', () => {
+	const f = fixture();
+	const slug = f.install();
+	const env = { ...f.env };
+	delete env.DF_STATE_DIR;
+	const own = path.join(f.home, '.dev-factory', slug);
+	fs.mkdirSync(own, { recursive: true });
+	const off = spawnSync('bash', [SCRIPT, 'off'], { encoding: 'utf8', env, cwd: f.repo });
+	assert.equal(off.status, 0, off.stderr);
+	assert.ok(fs.existsSync(path.join(own, `paused.${slug}.tick`)), 'the scheduled pass reads its own folder, so the switch is set there');
+	assert.equal(fs.existsSync(path.join(f.home, '.dev-factory', `paused.${slug}.tick`)), false);
+});
