@@ -111,7 +111,15 @@ export function recommend(cfg, cat = catalog(), { file, env = process.env, dir, 
 	return ids.filter((id) => !jira.includes(id) || id === pick);
 }
 
-export function claudeListing(env = process.env) {
+// The doctor reads the secrets file first (doctor.sh), and a CLAUDE_CODE_OAUTH_TOKEN from it would make `claude mcp list` answer as
+// the unattended login, which lists no claude.ai connectors: a server the person has as a connector would look missing. So a token the
+// shell did not export (DF_SHELL_ENV_NAMES lacks it) is left out of the listing, except before a pass (`pass`), which runs with it.
+export function claudeListing(env = process.env, { pass = false } = {}) {
+	const shell = env.DF_SHELL_ENV_NAMES;
+	if (!pass && shell !== undefined && env.CLAUDE_CODE_OAUTH_TOKEN && !shell.split(/\s+/).includes('CLAUDE_CODE_OAUTH_TOKEN')) {
+		env = { ...env };
+		delete env.CLAUDE_CODE_OAUTH_TOKEN;
+	}
 	if (env.DF_MCP_LISTING) {
 		try {
 			return fs.readFileSync(env.DF_MCP_LISTING, 'utf8');
@@ -120,7 +128,7 @@ export function claudeListing(env = process.env) {
 		}
 	}
 	try {
-		return execFileSync(claudeBin(env), ['mcp', 'list'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 60000 });
+		return execFileSync(claudeBin(env), ['mcp', 'list'], { env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 60000 });
 	} catch {
 		return '';
 	}
@@ -450,7 +458,7 @@ if (isMain(import.meta.url)) {
 			}
 		} else if (cmd === 'recommend') console.log(recommend(load(undefined, { from: root }), cat, { file, listing: claudeListing() }).join(' '));
 		else if (cmd === 'doctor')
-			for (const l of doctorLines(file, claudeListing(), cat, {
+			for (const l of doctorLines(file, claudeListing(process.env, { pass: process.argv.includes('--pass') }), cat, {
 				lenient: process.argv.includes('--lenient'),
 				pass: process.argv.includes('--pass'),
 				want: desired(ls(), cat),
