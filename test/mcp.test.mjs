@@ -1286,3 +1286,19 @@ test('in a pass, a server on in the settings that Claude does not list is starte
 	const doctor = fs.readFileSync(new URL('../scripts/doctor.sh', import.meta.url), 'utf8');
 	assert.match(doctor, /\[ "\$CI" = 1 \] && MCP_ARGS\+=\(--pass\)/);
 });
+
+test('the doctor lists servers as the person, not as the unattended login the secrets file holds; a pass keeps that login', async () => {
+	const { claudeListing } = await import('../scripts/mcp.mjs');
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'df-listing-'));
+	const fake = path.join(dir, 'claude');
+	fs.writeFileSync(fake, '#!/bin/sh\nif [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then echo "as token"; else echo "as person"; fi\n', { mode: 0o755 });
+	const base = { PATH: process.env.PATH, DF_CLAUDE_BIN: fake, CLAUDE_CODE_OAUTH_TOKEN: 'from-env-local' };
+	// doctor.sh read the token from .env.local: the shell had not exported it (DF_SHELL_ENV_NAMES lacks it)
+	assert.equal(claudeListing({ ...base, DF_SHELL_ENV_NAMES: 'PATH HOME' }).trim(), 'as person');
+	// before a pass the listing is what the pass sees
+	assert.equal(claudeListing({ ...base, DF_SHELL_ENV_NAMES: 'PATH HOME' }, { pass: true }).trim(), 'as token');
+	// a token the person's own shell exports is theirs: kept
+	assert.equal(claudeListing({ ...base, DF_SHELL_ENV_NAMES: 'PATH CLAUDE_CODE_OAUTH_TOKEN' }).trim(), 'as token');
+	// outside the doctor (no DF_SHELL_ENV_NAMES) nothing changes
+	assert.equal(claudeListing(base).trim(), 'as token');
+});
