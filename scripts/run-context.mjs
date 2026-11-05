@@ -6,6 +6,12 @@
 //
 //   run-context.mjs set --worktree DIR     point hooks at DIR's .dev-factory/run.json
 //   run-context.mjs clear                  forget the pointer
+//   run-context.mjs write --worktree DIR --json '{"key":"APP-1","role":"builder"}'
+//                                          create DIR's .dev-factory/run.json, or merge these fields into it (null removes one)
+//
+// `write` exists because the edit hook and the shell hook protect run.json from every tool call once a scheduled pass is active
+// (DF_ACTIVE=1), the scheduler's own session included: the file is how a run's role and limits are recorded, so only this command, which
+// a factory agent is not allowed to run (scripts/guard-lib.mjs), changes it.
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -62,12 +68,46 @@ export function setPointer(worktree, env = process.env) {
 
 export const clearPointer = (env = process.env) => fs.rmSync(pointerFile(env), { force: true });
 
+export const ROLES = ['builder', 'reviewer', 'debugger', 'researcher', 'improver', 'promoter'];
+
+// Create <worktree>/.dev-factory/run.json from `patch`, or merge `patch` into the file already there; a null value removes a field.
+// The result must name a key and, when it names a role, one the hooks know, or nothing is written.
+export function writeRun(worktree, patch) {
+	if (!worktree || !path.isAbsolute(worktree)) throw new Error('write needs an absolute --worktree');
+	if (!fs.existsSync(worktree) || !fs.statSync(worktree).isDirectory()) throw new Error(`no such worktree: ${worktree}`);
+	if (!patch || typeof patch !== 'object' || Array.isArray(patch))
+		throw new Error('write needs --json with an object, such as \'{"role":"reviewer"}\'');
+	const dir = path.join(worktree, '.dev-factory');
+	const file = path.join(dir, 'run.json');
+	const merged = { ...(readJson(file) ?? {}), ...patch };
+	for (const [k, v] of Object.entries(merged)) if (v === null) delete merged[k];
+	if (typeof merged.key !== 'string' || !merged.key) throw new Error('run.json needs a key (the task key): none given and none in the file');
+	if (merged.role !== undefined && !ROLES.includes(merged.role))
+		throw new Error(`role must be one of ${ROLES.join(', ')} (got ${JSON.stringify(merged.role)})`);
+	fs.mkdirSync(dir, { recursive: true });
+	// written beside the file and renamed over it, so a hook never reads half of it
+	const tmp = `${file}.${process.pid}.tmp`;
+	fs.writeFileSync(tmp, JSON.stringify(merged) + '\n');
+	fs.renameSync(tmp, file);
+	return merged;
+}
+
 if (isMain(import.meta.url)) {
-	const [cmd, flag, value] = process.argv.slice(2);
+	const [cmd, ...rest] = process.argv.slice(2);
+	const flags = {};
+	for (let i = 0; i < rest.length; i += 2) flags[rest[i]] = rest[i + 1];
 	try {
-		if (cmd === 'set' && flag === '--worktree') setPointer(value);
+		if (cmd === 'set' && flags['--worktree']) setPointer(flags['--worktree']);
 		else if (cmd === 'clear') clearPointer();
-		else throw new Error('usage: run-context.mjs set --worktree DIR | clear');
+		else if (cmd === 'write' && flags['--worktree'] && flags['--json'] !== undefined) {
+			let patch;
+			try {
+				patch = JSON.parse(flags['--json']);
+			} catch {
+				throw new Error('--json is not valid JSON');
+			}
+			writeRun(flags['--worktree'], patch);
+		} else throw new Error('usage: run-context.mjs set --worktree DIR | clear | write --worktree DIR --json OBJECT');
 	} catch (e) {
 		console.error(`run-context: ${e.message}`);
 		process.exit(3);

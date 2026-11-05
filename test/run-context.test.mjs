@@ -80,3 +80,67 @@ test('qa.mjs reads the dispatched worktree through the pointer when run from the
 	assert.equal(workRoot({ cwd: repo, env }), worktree);
 	assert.equal(workRoot({ cwd: worktree, env }), worktree);
 });
+
+// The scheduler session cannot create or change run.json with the edit tools: the hook protects run state during a scheduled pass
+// (DF_ACTIVE=1), so `write` is the one way it records a run.
+const RUN_CONTEXT = path.join(SCRIPTS, 'run-context.mjs');
+const write = (env, worktree, patch) =>
+	spawnSync('node', [RUN_CONTEXT, 'write', '--worktree', worktree, '--json', JSON.stringify(patch)], { env, encoding: 'utf8' });
+const readRun = (worktree) => JSON.parse(fs.readFileSync(path.join(worktree, '.dev-factory', 'run.json'), 'utf8'));
+
+// A worktree as `worktree.mjs add` leaves it: a checkout with no .dev-factory folder yet.
+function freshWorktree() {
+	const base = fs.mkdtempSync(path.join(os.tmpdir(), 'df-write-'));
+	const worktree = path.join(base, '.worktrees', 'APP-7');
+	fs.mkdirSync(worktree, { recursive: true });
+	return { repo: path.join(base, 'repo'), worktree, env: { ...process.env, DF_STATE_DIR: path.join(base, 'state'), DF_ACTIVE: '1' } };
+}
+
+test('during a scheduled pass the edit hook refuses run.json but write creates it and set points the hooks at it', () => {
+	const { repo, worktree, env } = freshWorktree();
+	const runJson = path.join(worktree, '.dev-factory', 'run.json');
+	assert.equal(
+		hook('edit-guard.mjs', env, { cwd: repo, tool_input: { file_path: runJson, content: '{}' } }).status,
+		2,
+		'the edit tools stay refused',
+	);
+	const made = write(env, worktree, { key: 'APP-7', role: 'builder', until: 'build', mode: 'scheduled', runId: '1793873600' });
+	assert.equal(made.status, 0, made.stderr);
+	assert.deepEqual(readRun(worktree), { key: 'APP-7', role: 'builder', until: 'build', mode: 'scheduled', runId: '1793873600' });
+	setPointer(worktree, env);
+	const r = resolveRun({ cwd: repo, agentType: 'dev-factory:factory-builder', env });
+	assert.equal(r.via, 'pointer');
+	assert.equal(r.run.key, 'APP-7');
+});
+
+test('write merges into an existing run.json, and null removes a field', () => {
+	const { worktree, env } = freshWorktree();
+	assert.equal(write(env, worktree, { key: 'APP-7', role: 'builder', until: 'build', kind: 'story' }).status, 0);
+	assert.equal(write(env, worktree, { role: 'reviewer', axis: 'spec' }).status, 0);
+	assert.deepEqual(readRun(worktree), { key: 'APP-7', role: 'reviewer', until: 'build', kind: 'story', axis: 'spec' });
+	assert.equal(write(env, worktree, { role: 'builder', axis: null }).status, 0);
+	assert.deepEqual(readRun(worktree), { key: 'APP-7', role: 'builder', until: 'build', kind: 'story' });
+});
+
+test('write refuses what would leave a run that no hook can trust', () => {
+	const { worktree, env } = freshWorktree();
+	const runJson = path.join(worktree, '.dev-factory', 'run.json');
+	const refused = (r) => {
+		assert.equal(r.status, 3, r.stderr);
+		assert.match(r.stderr, /^run-context: /);
+	};
+	refused(write(env, worktree, { role: 'builder' })); // a new run.json needs a key
+	assert.equal(fs.existsSync(runJson), false, 'nothing is written on a refusal');
+	refused(write(env, worktree, { key: 'APP-7', role: 'admin' })); // not a role the hooks know
+	refused(write(env, worktree, { key: '' }));
+	refused(write(env, 'rel/dir', { key: 'APP-7' }));
+	refused(write(env, path.join(worktree, 'missing'), { key: 'APP-7' }));
+	refused(spawnSync('node', [RUN_CONTEXT, 'write', '--worktree', worktree, '--json', '[1]'], { env, encoding: 'utf8' }));
+	refused(spawnSync('node', [RUN_CONTEXT, 'write', '--worktree', worktree, '--json', '{nope'], { env, encoding: 'utf8' }));
+	refused(spawnSync('node', [RUN_CONTEXT, 'write', '--worktree', worktree], { env, encoding: 'utf8' }));
+	assert.equal(fs.existsSync(runJson), false);
+	// the same command with a good patch succeeds, so the refusals above are about the input, not a command that does not exist
+	assert.equal(write(env, worktree, { key: 'APP-7', role: 'builder' }).status, 0);
+	refused(write(env, worktree, { role: 'admin' })); // a bad patch leaves the earlier file as it was
+	assert.deepEqual(readRun(worktree), { key: 'APP-7', role: 'builder' });
+});

@@ -940,3 +940,12 @@ test('only a builder gets the own-cases exception: an unknown role does not', ()
 	assert.equal(e('tester').deny, true);
 	assert.equal(e(undefined).deny, true);
 });
+
+test('run-context.mjs write is the scheduler’s: a factory agent may not rewrite its own run state', () => {
+	const write = `node "${PLUGIN_ROOT}/scripts/run-context.mjs" write --worktree /w/APP-1 --json '{"role":"reviewer"}'`;
+	for (const role of ['builder', 'reviewer', 'debugger', 'researcher', 'improver', 'promoter']) {
+		assert.equal(evaluate(write, { role, branch: 'task/APP-1-x' }).deny, true, `${role} may not`);
+	}
+	assert.equal(evaluate(write, { branch: 'task/APP-1-x' }).deny, false, 'the scheduler has no agent role');
+	assert.equal(evaluate(`FOO=1 ${write}`, { role: 'builder' }).deny, true, 'a leading variable does not hide it');
+});
