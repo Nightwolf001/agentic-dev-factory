@@ -27,24 +27,43 @@ export function loadState({ repo = mainCheckout(), env = process.env } = {}) {
 	const mcpCat = catalog();
 	const secrets = secretsReport({ want: desired(ls, mcpCat), cat: mcpCat, env });
 	const rows = buildRows({ layers: ls, mcpCat, pluginCat: pluginCatalog(), options: optionCatalog(), secrets, env });
-	return initialState(rows, { repo });
+	return initialState(rows, { repo, projectReplaced: env.DF_CONFIG || null });
 }
 
-// Writes the changes. A removal in a layer that has no such key writes nothing (so no empty file appears).
-// -> the lines to tell the person, one per change, never a secret's value
-export function writeChanges(list, { repo = mainCheckout(), env = process.env } = {}) {
+// Writes the changes, telling `say` about each as it is written. A removal in a layer that has no such key writes nothing (so no empty
+// file appears). If a write fails, the error says how many earlier changes were saved and how to apply them: they stay written.
+// -> the lines told, never a secret's value
+export function writeChanges(list, { repo = mainCheckout(), env = process.env, say = console.log } = {}) {
 	const from = repo ?? process.cwd();
 	const told = [];
-	for (const c of list) {
-		if (c.layer === 'env') {
-			setEnvValue(c.key, c.value, { env });
-			told.push(`saved ${c.key} to .env.local`);
-			continue;
+	const tell = (line) => {
+		told.push(line);
+		say(line);
+	};
+	try {
+		for (const c of list) {
+			if (c.layer === 'env') {
+				setEnvValue(c.key, c.value, { env });
+				tell(`saved ${c.key} to .env.local`);
+				continue;
+			}
+			// DF_CONFIG stands in for the project layer: the page refuses these, so a removal of nothing is all that can arrive
+			if (c.layer === 'project' && env.DF_CONFIG) {
+				if (c.value === undefined) continue;
+				throw new Error(`the project layer is DF_CONFIG (${env.DF_CONFIG}): edit that file`);
+			}
+			const has = dig(layers({ from, env }).find((l) => l.name === c.layer)?.data, c.key) !== undefined;
+			if (c.value === undefined && !has) continue;
+			setIn(c.layer, c.key, c.value, { from, env });
+			tell(c.value === undefined ? `removed ${c.key} (${c.layer})` : `set ${c.key} = ${JSON.stringify(c.value)} (${c.layer})`);
 		}
-		const has = dig(layers({ from, env }).find((l) => l.name === c.layer)?.data, c.key) !== undefined;
-		if (c.value === undefined && !has) continue;
-		setIn(c.layer, c.key, c.value, { from, env });
-		told.push(c.value === undefined ? `removed ${c.key} (${c.layer})` : `set ${c.key} = ${JSON.stringify(c.value)} (${c.layer})`);
+	} catch (e) {
+		const n = told.length;
+		throw new Error(
+			n === 0
+				? e.message
+				: `${e.message} (${n} earlier change${n === 1 ? ' was' : 's were'} saved, listed above; dev-factory mcp sync and dev-factory plugins sync apply them)`,
+		);
 	}
 	return told;
 }
@@ -52,23 +71,31 @@ export function writeChanges(list, { repo = mainCheckout(), env = process.env } 
 const touches = (list, re) => list.some((c) => c.layer !== 'env' && re.test(c.key));
 
 // Makes Claude match, for what changed: the servers when a server (or the mobile app that makes one required) changed, the plugins when a plugin did.
+// A sync that fails says so and how to try again; the settings it was applying stay saved.
 export function syncAfter(list, { repo = mainCheckout() } = {}) {
+	let before = process.exitCode;
 	for (const [what, re, run] of [
 		['mcp', /^(mcp\.|mobile\.appDir$)/, syncMcp],
 		['plugins', /^plugins\./, syncPlugins],
 	]) {
 		if (!touches(list, re)) continue;
+		process.exitCode = undefined;
 		try {
 			run({ root: repo ?? undefined });
 		} catch (e) {
 			console.error(`${what} sync: ${e.message}`);
 			process.exitCode = 1;
 		}
+		if (process.exitCode) {
+			console.error(`settings: the ${what} sync did not finish; run dev-factory ${what} sync to retry`);
+			before = 1;
+		}
 	}
+	process.exitCode = before;
 }
 
 function save(list, repo) {
-	for (const line of writeChanges(list, { repo })) console.log(line);
+	writeChanges(list, { repo });
 	syncAfter(list, { repo });
 }
 
@@ -91,61 +118,77 @@ function toKey(state, str, key = {}) {
 	return ['u', 'p', 'd', 'q', 's'].includes(str) ? str : undefined;
 }
 
-// Runs the page until the person saves or quits. The terminal is put back on every way out. -> the final state
-function runPage(first) {
-	const { stdin, stdout } = process;
+// Runs the page until the person saves or quits. The terminal is put back on every way out, an error before the first draw included
+// (it is put back before the error is passed on, so the message is not printed on the alternate screen). -> the final state
+// `streams` and `draw` are for tests.
+export function runPage(first, { stdin = process.stdin, stdout = process.stdout, draw: paint = render } = {}) {
 	readline.emitKeypressEvents(stdin);
-	let restored = false;
-	const restore = () => {
-		if (restored) return;
-		restored = true;
-		try {
-			stdin.setRawMode(false);
-		} catch {
-			// not a terminal any more
-		}
-		stdout.write(ALT_OFF);
-		stdin.pause();
-	};
-	const onSignal = (signal) => () => {
-		restore();
-		process.exit(signal === 'SIGINT' ? 130 : 143);
-	};
-	const handlers = ['SIGINT', 'SIGTERM', 'SIGHUP'].map((s) => [s, onSignal(s)]);
-	for (const [s, h] of handlers) process.on(s, h);
-	process.on('exit', restore);
-	process.on('uncaughtException', (e) => {
-		restore();
-		console.error(e?.stack ?? e);
-		process.exit(1);
-	});
-	stdin.setRawMode(true);
-	stdin.resume();
-	stdout.write(ALT_ON);
-	return new Promise((resolve) => {
+	return new Promise((resolve, reject) => {
+		let restored = false;
+		const restore = () => {
+			if (restored) return;
+			restored = true;
+			try {
+				stdin.setRawMode(false);
+			} catch {
+				// not a terminal any more
+			}
+			stdout.write(ALT_OFF);
+			stdin.pause();
+		};
+		const onSignal = (signal) => () => {
+			restore();
+			process.exit(signal === 'SIGINT' ? 130 : 143);
+		};
+		const handlers = [
+			...['SIGINT', 'SIGTERM', 'SIGHUP'].map((sig) => [sig, onSignal(sig)]),
+			['exit', restore],
+			[
+				'uncaughtException',
+				(e) => {
+					restore();
+					console.error(e?.stack ?? e);
+					process.exit(1);
+				},
+			],
+		];
 		let state = first;
+		const finish = (fn) => {
+			stdin.off('keypress', onKey);
+			stdout.off('resize', redraw);
+			for (const [ev, h] of handlers) process.off(ev, h);
+			restore();
+			fn();
+		};
 		const draw = () => {
-			const text = render(state, { width: stdout.columns || 80, height: stdout.rows || 24 });
+			const text = paint(state, { width: stdout.columns || 80, height: stdout.rows || 24 });
 			stdout.write(`\x1b[H\x1b[2J${text.split('\n').join('\r\n')}`);
 		};
-		const done = (final) => {
-			stdin.off('keypress', onKey);
-			stdout.off('resize', draw);
-			for (const [s, h] of handlers) process.off(s, h);
-			restore();
-			resolve(final);
-		};
-		const onKey = (str, key = {}) => {
-			if (key.ctrl && key.name === 'c') return done({ ...state, exit: 'discard' });
+		const guarded =
+			(fn) =>
+			(...args) => {
+				try {
+					fn(...args);
+				} catch (e) {
+					finish(() => reject(e));
+				}
+			};
+		const redraw = guarded(draw);
+		const onKey = guarded((str, key = {}) => {
+			if (key.ctrl && key.name === 'c') return finish(() => resolve({ ...state, exit: 'discard' }));
 			const k = toKey(state, str, key);
 			if (k === undefined) return;
 			state = reduce(state, k);
-			if (state.exit) done(state);
+			if (state.exit) finish(() => resolve(state));
 			else draw();
-		};
+		});
+		for (const [ev, h] of handlers) process.on(ev, h);
+		stdin.setRawMode(true);
+		stdin.resume();
+		stdout.write(ALT_ON);
 		stdin.on('keypress', onKey);
-		stdout.on('resize', draw);
-		draw();
+		stdout.on('resize', redraw);
+		redraw();
 	});
 }
 
@@ -192,11 +235,12 @@ if (isMain(import.meta.url)) {
 			const name = secret && !ref.startsWith('secret:') ? `secret:${ref}` : ref;
 			const next = cmd === 'reset' ? resetRow(state, name, { layer }) : setRow(state, name, secret ? readSecret() : value, { layer });
 			const list = changes(next);
-			if (!list.length) {
+			// already as asked is not a failure (setup runs `set` again and again); a refused change is
+			if (!list.length && next.noop) console.log(`settings: ${next.message}`);
+			else if (!list.length) {
 				console.error(`settings: ${next.message || 'nothing to change'}`);
 				process.exit(1);
-			}
-			save(list, repo);
+			} else save(list, repo);
 		} else {
 			console.error(
 				'usage: settings.mjs [list [--json] | set ID VALUE [--user|--project] | set secret:NAME (value on stdin) | reset ID [--user|--project]]',

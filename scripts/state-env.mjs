@@ -47,6 +47,12 @@ export function loadTrackerEnv({ env = process.env, dir = stateDir(env) } = {}) 
 	return filled;
 }
 
+// Why .env.local cannot keep `value`, or null. The file is sourced by a shell, and a single quote or a line break cannot be written
+// into it safely. setEnvValue refuses by this test, and the settings page asks it before accepting a secret.
+export function envValueProblem(value) {
+	return /['\r\n\0]/.test(String(value)) ? 'the value holds a quote or a line break, which .env.local cannot keep safely' : null;
+}
+
 // Sets NAME in <state>/.env.local, mode 600. The line that holds NAME is replaced where it stands (an `export ` prefix is kept) and
 // every other line, comment and blank is left as it is; a new name is appended. The file is sourced by the shell that starts a
 // scheduled pass, so a value that is not plain text is single-quoted, and one that cannot be (a quote or a line break) is refused.
@@ -54,7 +60,8 @@ export function loadTrackerEnv({ env = process.env, dir = stateDir(env) } = {}) 
 export function setEnvValue(name, value, { env = process.env, dir = stateDir(env) } = {}) {
 	if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error(`${name} is not a variable name`);
 	const text = String(value);
-	if (/['\r\n\0]/.test(text)) throw new Error(`the value of ${name} holds a quote or a line break, which .env.local cannot keep safely`);
+	const problem = envValueProblem(text);
+	if (problem) throw new Error(`${name}: ${problem}`);
 	const file = path.join(dir, '.env.local');
 	let lines = [];
 	try {

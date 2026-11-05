@@ -5,7 +5,7 @@
 //   initialState(rows, { repo })     the page's state; reduce(state, key) returns the next one
 //   changes(state)                   the layer writes the edits come to: { layer: 'user' | 'project' | 'env', key, value }
 //   setRow(state, ref, text, opts)   the same edit by id or key, for `settings set`
-//   grouped(state) / stops(state)    what the page shows and where the cursor can stand (scripts/settings-view.mjs draws it)
+//   grouped(state) / stops(state)    what the page shows and where the cursor can stand (`render` draws it)
 //
 // A server or plugin row is `off`, `project` (this project), `user` (all projects) or `off here` (on for all projects, a project-layer
 // false in this one). Required rows are `locked`: they can be moved between scopes (a server) but never turned off.
@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ENV_OVERRIDES, get, merge, requiredServers, sourceFrom, validate } from './config.mjs';
+import { envValueProblem } from './state-env.mjs';
 
 const PLUGIN_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -100,6 +101,7 @@ export function buildRows({ layers: ls, mcpCat = {}, pluginCat = { plugins: [] }
 				kind: 'mcp',
 				id,
 				title: s.purpose ?? s.title ?? id,
+				catRequired: s.required === true,
 				locked: required.includes(id),
 				defaultOn: required.includes(id),
 				home: s.defaultScope === 'project' ? 'project' : 'user',
@@ -180,9 +182,11 @@ export const publicRow = ({ group, kind, id, title, type, value, source, locked,
 
 // ---- the page's state ----
 
-export function initialState(rows, { repo = null } = {}) {
+// projectReplaced: the DF_CONFIG file when it stands in for the project layer, so a write to .devfactory/config.json would have no effect.
+export function initialState(rows, { repo = null, projectReplaced = null } = {}) {
 	return {
 		repo,
+		projectReplaced,
 		rows,
 		cursor: 0,
 		collapsed: new Set(),
@@ -225,8 +229,14 @@ const keyOf = (row) => (row.kind === 'mcp' ? `mcp.servers.${row.id}` : row.kind 
 // Stores a row's new layer values: updates the row and its edits (none left when it is back where it started).
 function store(state, index, lv, message = '') {
 	const old = state.rows[index];
+	// the project layer can be written only in a repository, and not while DF_CONFIG stands in for it
+	if (old.kind !== 'secret' && !sameLv({ v: lv.project }, { v: old.lv.project })) {
+		const blocked = projectBlock(state);
+		if (blocked) return { ...state, message: blocked };
+	}
 	const row = finish({ ...old, lv });
-	const rows = state.rows.map((r, i) => (i === index ? row : r));
+	let rows = state.rows.map((r, i) => (i === index ? row : r));
+	if (row.kind === 'option' && row.id === 'mobile.appDir') rows = relock(rows);
 	const edits = new Map([...state.edits].filter(([k]) => !k.startsWith(`${rowKey(row)}:`)));
 	if (row.pending) {
 		// a server or plugin edit writes both layers (the other loses its key); a setting only the layers that differ
@@ -241,15 +251,25 @@ function store(state, index, lv, message = '') {
 	return { ...state, rows, edits, message };
 }
 
+// A mobile app makes the device runner required (requiredServers), so its lock follows the setting, in both directions.
+function relock(rows) {
+	const cat = Object.fromEntries(rows.filter((r) => r.kind === 'mcp').map((r) => [r.id, { required: r.catRequired }]));
+	const required = requiredServers(configOf(rows), cat);
+	return rows.map((r) =>
+		r.kind === 'mcp' && r.locked !== required.includes(r.id) ? finish({ ...r, locked: !r.locked, defaultOn: !r.locked }) : r,
+	);
+}
+
 const REQUIRED = (row) => `${row.id} is required: it cannot be turned off`;
 const NO_REPO = 'there is no git repository here: only u (all projects) can be changed';
+const projectBlock = (state) =>
+	state.projectReplaced ? `the project layer is DF_CONFIG (${state.projectReplaced}): edit that file` : state.repo ? null : NO_REPO;
 
 // Moves a server or plugin row to `target`: off, project, user, offhere or default.
 function retarget(state, index, target) {
 	const row = state.rows[index];
 	if (row.locked && (row.kind === 'plugin' ? target !== 'default' : target === 'off' || target === 'offhere'))
 		return { ...state, message: REQUIRED(row) };
-	if (!state.repo && (target === 'project' || target === 'offhere')) return { ...state, message: NO_REPO };
 	const { user, project } = row.lv;
 	const lv =
 		target === 'off'
@@ -347,7 +367,6 @@ function configOf(rows, replace) {
 
 function writeOption(state, index, layer, value) {
 	const row = state.rows[index];
-	if (!state.repo && layer === 'project') return { ...state, message: NO_REPO };
 	const before = validate(configOf(state.rows));
 	const added = validate(configOf(state.rows, { id: row.id, value })).filter((p) => !before.includes(p));
 	if (added.length) return { ...state, message: added[0] };
@@ -372,7 +391,6 @@ function optionKey(state, index, key) {
 // u / p on a setting: its value in effect goes to that layer; for u the project layer drops its own, so the value stays what it is.
 function moveTo(state, index, layer) {
 	const row = state.rows[index];
-	if (!state.repo && layer === 'project') return { ...state, message: NO_REPO };
 	return store(state, index, { ...row.lv, [layer]: clone(row.value), ...(layer === 'user' ? { project: undefined } : {}) });
 }
 
@@ -392,6 +410,8 @@ function editKey(state, key) {
 	else return state;
 	if (editing.secret) {
 		if (!text) return { ...state, editing: null, message: 'nothing entered: the secret is unchanged' };
+		// refused here, with the entry still open: a value .env.local cannot keep would fail at save, after other changes were written
+		if (envValueProblem(text)) return { ...state, message: envValueProblem(text) };
 		return store({ ...state, editing: null }, index, { env: text }, `${row.id} will be saved to .env.local`);
 	}
 	const parsed = parseInput(row, text);
@@ -490,24 +510,36 @@ export function setRow(state, ref, text, { layer } = {}) {
 	}
 	if (index < 0) return { ...state, message: `${name} is not a server, plugin, secret or setting (dev-factory settings list)` };
 	const row = state.rows[index];
-	const edited = (next, none) => (next.edits.size === 0 && !next.message ? { ...next, message: none } : next);
+	// nothing to change because the row is already as asked: not a refusal, so `settings set` can be run again and again
+	const noop = (message) => ({ ...state, message, noop: true });
+	const edited = (next, none) => (next.edits.size === 0 && !next.message ? { ...next, message: none, noop: true } : next);
+	const where = (l) => (l === 'user' ? 'all projects' : 'this project');
 	if (row.kind === 'secret') {
 		if (!text) return { ...state, message: 'nothing to save: the value was empty' };
+		const problem = envValueProblem(text);
+		if (problem) return { ...state, message: `${row.id}: ${problem}` };
 		return store(state, index, { env: text }, '');
 	}
 	if (row.kind === 'option') {
 		if (row.fixed) return { ...state, message: FIXED(row) };
 		const parsed = parseInput(row, text);
 		if (parsed.problem) return { ...state, message: parsed.problem };
-		const next = writeOption(state, index, layer ?? row.scopeHint, parsed.value);
-		return edited(next, `${row.id} is already ${JSON.stringify(parsed.value)}`);
+		const at = layer ?? row.scopeHint;
+		if (sameLv({ v: row.lv[at] }, { v: parsed.value })) return noop(`${row.id} is already ${JSON.stringify(parsed.value)} (${where(at)})`);
+		return edited(writeOption(state, index, at, parsed.value), `${row.id} is already ${JSON.stringify(parsed.value)}`);
 	}
 	const word = String(text).toLowerCase();
 	if (!(word in TOGGLE_WORDS)) return { ...state, message: `${text} is not on, off, user, project or default` };
-	let target = word === 'on' ? (layer === 'user' ? 'user' : 'project') : TOGGLE_WORDS[word];
+	let target = TOGGLE_WORDS[word];
+	if (word === 'on') {
+		// `on` with no layer never narrows a server that is on for all projects to this one, and clears a project-level off
+		if (!layer && (row.value === 'user' || row.value === 'project')) return noop(`${row.id} is already on (${where(row.value)})`);
+		target = layer === 'user' ? 'user' : layer === 'project' || row.value !== 'off here' ? 'project' : 'default';
+	}
 	if (target === 'off' && layer === 'project' && row.value === 'user') target = 'offhere';
-	const goes = { off: 'off', project: 'project', user: 'user', offhere: 'off here' }[target];
-	if (goes && row.value === goes) return { ...state, message: `${row.id} is already ${goes}` };
+	const states = { off: 'off', project: 'on (this project)', user: 'on (all projects)', offhere: 'off in this project' };
+	const reached = { off: 'off', project: 'project', user: 'user', offhere: 'off here' }[target];
+	if (reached && row.value === reached) return noop(`${row.id} is already ${states[target]}`);
 	return edited(retarget(state, index, target), `${row.id} is already as it would be`);
 }
 
@@ -581,8 +613,8 @@ export function resetRow(state, ref, { layer } = {}) {
 	if (row.kind === 'option') {
 		const lv = { ...row.lv, ...(layer ? { [layer]: undefined } : { user: undefined, project: undefined }) };
 		const next = store(state, index, lv);
-		return next.edits.size ? next : { ...next, message: `${row.id} has no override to remove` };
+		return next.edits.size || next.message ? next : { ...next, message: `${row.id} has no override to remove`, noop: true };
 	}
 	const next = layer && row.value !== 'off here' ? store(state, index, { ...row.lv, [layer]: undefined }) : retarget(state, index, 'default');
-	return next.edits.size || next.message ? next : { ...next, message: `${row.id} has no override to remove` };
+	return next.edits.size || next.message ? next : { ...next, message: `${row.id} has no override to remove`, noop: true };
 }
