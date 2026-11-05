@@ -19,13 +19,15 @@ export const TAKEOVER_EXCLUDED = ['kill *', 'pkill *', 'killall *', 'lsof *', 'p
 
 // `want` is desired(): the servers the settings turn on, whose hosts and tools the pass gets. The ids in a legacy .mcp.json and the
 // `external` ones (catalog servers Claude has from elsewhere: user scope, a claude.ai connector) are added to them.
+// `root` is the folder both `cfg` and `want` are read from (the main checkout), so they never come from two places.
 export function build({
-	cfg = load(),
+	env = process.env,
+	root = mainCheckout() ?? process.cwd(),
+	cfg = load(undefined, { from: root, env }),
 	mcpFile = path.resolve('.mcp.json'),
 	base = JSON.parse(fs.readFileSync(BASE, 'utf8')),
 	cat = catalog(),
-	env = process.env,
-	want = desired(layers({ from: mainCheckout() ?? process.cwd(), env }), cat),
+	want = desired(layers({ from: root, env }), cat),
 	external = [],
 	state = env.DF_STATE_DIR || path.join(os.homedir(), '.dev-factory'),
 } = {}) {
@@ -63,7 +65,7 @@ if (isMain(import.meta.url)) {
 		catalog(),
 		want.map((w) => w.id),
 	).map((s) => s.id);
-	const text = JSON.stringify(build({ cfg: load(undefined, { from: root }), mcpFile, want, external }), null, '\t') + '\n';
+	const text = JSON.stringify(build({ root, mcpFile, want, external }), null, '\t') + '\n';
 	if (process.argv[2]) fs.writeFileSync(process.argv[2], text);
 	else process.stdout.write(text);
 }

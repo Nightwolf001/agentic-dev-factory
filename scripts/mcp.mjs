@@ -375,7 +375,9 @@ if (isMain(import.meta.url)) {
 				const names = process.env.DF_SHELL_ENV_NAMES;
 				const shell = names === undefined ? null : new Set(names.split(/\s+/).filter(Boolean));
 				const file = path.join(stateDir(process.env), '.env.local');
-				for (const l of secretLines({ rows, want, cat, lenient: rest.includes('--lenient'), shell, file }))
+				// the login for unattended runs has its own check in the doctor (and a logged-in person does not need it): not listed here
+				const listed = rows.filter((r) => !(r.neededBy.length === 1 && r.neededBy[0] === 'unattended runs'));
+				for (const l of secretLines({ rows: listed, want, cat, lenient: rest.includes('--lenient'), shell, file }))
 					console.log(`${{ ok: 'ok   ', warn: 'warn ', fail: 'FAIL ' }[l.level]} ${l.text}`);
 			} else
 				for (const r of rows)

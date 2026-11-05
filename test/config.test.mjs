@@ -147,12 +147,12 @@ test('every remote host an MCP server in the catalog registers is allowed throug
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'df-mcp-'));
 	const mcpFile = path.join(dir, '.mcp.json');
 	fs.writeFileSync(mcpFile, JSON.stringify({ mcpServers: Object.fromEntries(Object.entries(cat).map(([id, s]) => [id, s.config])) }));
-	const allowed = build({ cfg: load(), mcpFile, cat }).sandbox.network.allowedDomains;
+	const allowed = build({ cfg: load(), mcpFile, want: [], cat }).sandbox.network.allowedDomains;
 	const ok = (h) => allowed.some((d) => d === h || (d.startsWith('*.') && h.endsWith(d.slice(1))));
 	for (const [id, s] of Object.entries(cat)) if (s.config.url) assert.equal(ok(new URL(s.config.url).hostname), true, `${id}: ${s.config.url}`);
 	// and nothing is opened for a server that is not enabled
 	fs.writeFileSync(mcpFile, JSON.stringify({ mcpServers: {} }));
-	const none = build({ cfg: load(), mcpFile, cat }).sandbox.network.allowedDomains;
+	const none = build({ cfg: load(), mcpFile, want: [], cat }).sandbox.network.allowedDomains;
 	assert.equal(none.includes('mcp.sentry.dev'), false);
 });
 

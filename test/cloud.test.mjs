@@ -136,8 +136,8 @@ test('the sandbox can be switched off for a cloud environment that supplies its 
 	const { build } = await import('../scripts/factory-settings.mjs');
 	const { merge } = await import('../scripts/config.mjs');
 	const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'df-sb-')), '.mcp.json');
-	assert.equal(build({ cfg: load(), mcpFile: file }).sandbox.enabled, true);
-	assert.equal(build({ cfg: merge(load(), { sandbox: { enabled: false } }), mcpFile: file }).sandbox.enabled, false);
+	assert.equal(build({ cfg: load(), mcpFile: file, want: [] }).sandbox.enabled, true);
+	assert.equal(build({ cfg: merge(load(), { sandbox: { enabled: false } }), mcpFile: file, want: [] }).sandbox.enabled, false);
 });
 
 test('the worktree folder is configurable and resolves beside the repository by default', () => {

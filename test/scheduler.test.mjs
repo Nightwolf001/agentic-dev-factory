@@ -459,6 +459,18 @@ for (const script of ['tick', 'improve']) {
 		assert.match(log, /note: mine comes from \.mcp\.json/);
 	});
 
+	test(`${script}.sh keeps its log clean when mktemp fails, and still falls back`, () => {
+		const f = passFixture(RESULT);
+		f.env.DF_LOG = path.join(f.home, `${script}.log`);
+		fs.writeFileSync(path.join(f.repo, '.mcp.json'), JSON.stringify({ mcpServers: { mine: { command: 'x' } } }));
+		fs.writeFileSync(path.join(f.repo, '.devfactory'), 'in the way');
+		f.env.TMPDIR = path.join(f.home, 'no-such-folder');
+		const { args, log } = runPass(f, script);
+		assert.ok(args.includes('--mcp-config'), args.join(' '));
+		assert.match(log, /could not write the MCP config; using \.mcp\.json when present/);
+		assert.doesNotMatch(log, /mktemp/);
+	});
+
 	test(`${script}.sh falls back to the legacy .mcp.json and says why when the config cannot be written`, () => {
 		const f = passFixture(RESULT);
 		f.env.DF_LOG = path.join(f.home, `${script}.log`);

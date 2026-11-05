@@ -87,19 +87,23 @@ test('for tasks.source = jira exactly one Jira server is recommended: the enable
 
 test('the scheduled settings open only the hosts of enabled servers and of the chosen tracker', () => {
 	const file = tmp();
-	const base = build({ cfg: load(), mcpFile: file }).sandbox.network.allowedDomains;
+	const base = build({ cfg: load(), mcpFile: file, want: [] }).sandbox.network.allowedDomains;
 	assert.equal(
 		base.some((d) => /sentry|axiom|notion|atlassian|context7/.test(d)),
 		false,
 	);
 	enable(['sentry', 'context7'], file);
-	const on = build({ cfg: load(), mcpFile: file });
+	const on = build({ cfg: load(), mcpFile: file, want: [] });
 	assert.ok(on.sandbox.network.allowedDomains.includes('mcp.sentry.dev'));
 	assert.ok(on.sandbox.network.allowedDomains.includes('context7.com'));
 	assert.ok(on.permissions.allow.includes('mcp__sentry'));
-	const jira = build({ cfg: merge(load(), { tasks: { source: 'jira' }, sources: { jira: { site: 'example.atlassian.net' } } }), mcpFile: file });
+	const jira = build({
+		cfg: merge(load(), { tasks: { source: 'jira' }, sources: { jira: { site: 'example.atlassian.net' } } }),
+		mcpFile: file,
+		want: [],
+	});
 	assert.ok(jira.sandbox.network.allowedDomains.includes('example.atlassian.net'));
-	const extra = build({ cfg: merge(load(), { sandbox: { extraDomains: ['registry.example.com'] } }), mcpFile: file });
+	const extra = build({ cfg: merge(load(), { sandbox: { extraDomains: ['registry.example.com'] } }), mcpFile: file, want: [] });
 	assert.ok(extra.sandbox.network.allowedDomains.includes('registry.example.com'));
 });
 
@@ -205,10 +209,10 @@ test('the doctor reports each server where it comes from, waiting approvals, log
 test('the scheduled pass may use servers Claude has from elsewhere, and their hosts are opened', () => {
 	const file = tmp();
 	assert.deepEqual(allowRules(file, ['context7']), ['mcp__context7', 'mcp__plugin_dev-factory_context7']);
-	const s = build({ cfg: load(), mcpFile: file, external: ['sentry', 'context7'] });
+	const s = build({ cfg: load(), mcpFile: file, want: [], external: ['sentry', 'context7'] });
 	assert.ok(s.permissions.allow.includes('mcp__sentry') && s.permissions.allow.includes('mcp__context7'));
 	assert.ok(s.sandbox.network.allowedDomains.includes('mcp.sentry.dev'));
-	assert.equal(build({ cfg: load(), mcpFile: file }).permissions.allow.includes('mcp__sentry'), false);
+	assert.equal(build({ cfg: load(), mcpFile: file, want: [] }).permissions.allow.includes('mcp__sentry'), false);
 });
 
 test('the CLI leaves what Claude already has alone and says so, and the doctor still reports it', () => {
@@ -231,9 +235,9 @@ test('takeover lets the sandbox run the commands that stop host processes, and o
 	const { load, merge } = await import('../scripts/config.mjs');
 	const { TAKEOVER_EXCLUDED } = await import('../scripts/factory-settings.mjs');
 	const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'df-takeover-')), '.mcp.json');
-	const off = build({ cfg: load(), mcpFile: file, env: {} }).sandbox.excludedCommands;
-	const fromFile = build({ cfg: merge(load(), { cleanup: { takeover: true } }), mcpFile: file, env: {} }).sandbox.excludedCommands;
-	const on = build({ cfg: load(), mcpFile: file, env: { DF_TAKEOVER: '1' } }).sandbox.excludedCommands;
+	const off = build({ cfg: load(), mcpFile: file, want: [], env: {} }).sandbox.excludedCommands;
+	const fromFile = build({ cfg: merge(load(), { cleanup: { takeover: true } }), mcpFile: file, want: [], env: {} }).sandbox.excludedCommands;
+	const on = build({ cfg: load(), mcpFile: file, want: [], env: { DF_TAKEOVER: '1' } }).sandbox.excludedCommands;
 	for (const c of TAKEOVER_EXCLUDED) assert.ok(!fromFile.includes(c), `${c}: a config value does not grant takeover`);
 	for (const c of TAKEOVER_EXCLUDED) {
 		assert.ok(!off.includes(c), `${c} is not excluded by default`);
@@ -245,13 +249,13 @@ test('takeover lets the sandbox run the commands that stop host processes, and o
 test('the scheduled pass may write the state folder and runs e2e-env.sh outside the sandbox', async () => {
 	const { load } = await import('../scripts/config.mjs');
 	const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'df-state-')), '.mcp.json');
-	const out = build({ cfg: load(), mcpFile: file, env: {}, state: '/Users/dev/.dev-factory' });
+	const out = build({ cfg: load(), mcpFile: file, want: [], env: {}, state: '/Users/dev/.dev-factory' });
 	assert.deepEqual(out.sandbox.filesystem.allowWrite, ['/Users/dev/.dev-factory']);
 	assert.ok(out.sandbox.filesystem.denyRead.includes('~/.ssh'), 'the base denials stay');
 	for (const c of ['bash *e2e-env.sh*', 'dev-factory env*', 'node *open-prs.mjs*']) assert.ok(out.sandbox.excludedCommands.includes(c), c);
 	// open-prs.mjs runs gh and reads the task source: inside the sandbox gh cannot read its token and the count would always be unknown
 	assert.match(fs.readFileSync(new URL('../commands/tick.md', import.meta.url), 'utf8'), /scripts\/open-prs\.mjs/);
-	const env = build({ cfg: load(), mcpFile: file, env: { DF_STATE_DIR: '/custom/state' } });
+	const env = build({ cfg: load(), mcpFile: file, want: [], env: { DF_STATE_DIR: '/custom/state' } });
 	assert.deepEqual(env.sandbox.filesystem.allowWrite, ['/custom/state'], 'DF_STATE_DIR is where it is');
 });
 
@@ -1085,4 +1089,28 @@ test('CLI: secrets --lines prints doctor lines for the wanted servers and never 
 	const set = spawnSync('node', [MCP, 'secrets', '--lines'], { cwd: repo, env: { ...env, DF_SHELL_ENV_NAMES: 'PATH HOME' }, encoding: 'utf8' });
 	assert.match(set.stdout, /GITHUB_PERSONAL_ACCESS_TOKEN is set only in/);
 	assert.doesNotMatch(set.stdout, /abc123/);
+});
+
+test('CLI: secrets --lines leaves out the login for unattended runs, which the plain listing keeps', () => {
+	const { run, env } = sandbox();
+	delete env.CLAUDE_CODE_OAUTH_TOKEN;
+	assert.match(run('secrets').stdout, /CLAUDE_CODE_OAUTH_TOKEN\s+empty\s+unattended runs/);
+	const lines = run('secrets', '--lines');
+	assert.equal(lines.status, 0, lines.stderr);
+	assert.doesNotMatch(lines.stdout, /CLAUDE_CODE_OAUTH_TOKEN|unattended runs/);
+});
+
+test('build reads its settings and its servers from one root, not from the checkout the tests run in', () => {
+	const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'df-root-')));
+	execFileSync('git', ['init', '-q', root]);
+	fs.mkdirSync(path.join(root, '.devfactory'));
+	fs.writeFileSync(
+		path.join(root, '.devfactory', 'config.json'),
+		JSON.stringify({ sandbox: { extraDomains: ['from-root.example.test'] }, mcp: { servers: { sentry: true } } }),
+	);
+	const env = { ...process.env };
+	delete env.DF_CONFIG;
+	const s = build({ root, env, mcpFile: tmp() });
+	assert.ok(s.sandbox.network.allowedDomains.includes('from-root.example.test'), 'cfg from the root');
+	assert.ok(s.sandbox.network.allowedDomains.includes('mcp.sentry.dev'), 'want from the root');
 });

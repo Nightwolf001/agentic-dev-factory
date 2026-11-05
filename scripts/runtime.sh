@@ -52,18 +52,19 @@ df_mcp_args() {
   # The Claude arguments for the MCP servers of a pass, into the array DF_MCP_ARGS: whatever `mcp.mjs write-config` prints, one per line
   # (the strict flag only when nothing wanted is outside the generated file). Its note goes to LOG. If it fails the pass goes on with
   # the legacy .mcp.json when there is one, and LOG says why: a pass must not stop for this.
-  local repo="$1" log="$2" out err l
+  local repo="$1" log="$2" out err l why
   DF_MCP_ARGS=()
-  err="$(mktemp "${TMPDIR:-/tmp}/df-mcp-err.XXXXXX")"
+  err="$(mktemp "${TMPDIR:-/tmp}/df-mcp-err.XXXXXX" 2>/dev/null)" || err=/dev/null
   if out="$(cd "$repo" && node "$DIR/scripts/mcp.mjs" write-config 2>"$err")"; then
     [ -s "$err" ] && sed "s/^/$(date -u +%FT%TZ) mcp: /" "$err" >> "$log"
     while IFS= read -r l; do [ -n "$l" ] && DF_MCP_ARGS+=("$l"); done <<EOF
 $out
 EOF
   else
-    echo "$(date -u +%FT%TZ) could not write the MCP config ($(tr "\n" " " < "$err")); using .mcp.json when present" >> "$log"
+    why="$(tr "\n" " " < "$err")"
+    echo "$(date -u +%FT%TZ) could not write the MCP config${why:+ ($why)}; using .mcp.json when present" >> "$log"
     DF_MCP_ARGS=(); [ -f "$repo/.mcp.json" ] && DF_MCP_ARGS=(--mcp-config "$repo/.mcp.json")
   fi
-  rm -f "$err"
+  [ "$err" = /dev/null ] || rm -f "$err"
   return 0
 }
