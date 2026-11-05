@@ -376,7 +376,7 @@ export function runStateRoot(abs) {
 }
 
 // Whether an absolute path (globs allowed) is run state or a factory file, wherever the worktree is. `key` is the ticket the
-// caller runs for: the one folder of QA cases inside .devfactory/ that is its own (with no key, any single ticket's folder is).
+// caller runs for: the one folder of QA cases inside .devfactory/ that is its own (with no key, none is, as for the edit tools).
 export function runStatePlace(abs, key = null) {
 	const cs = comps(abs);
 	for (let i = 0; i < cs.length; i++) {
@@ -385,8 +385,7 @@ export function runStatePlace(abs, key = null) {
 			// a ticket's own QA cases live under the vendored folder
 			if (ps.length === 1 && ps[0] === 'dev-factory' && cs[i + 1] === 'qa' && cs[i + 2] === 'cases') continue;
 			if (ps.length === 1 && ps[0] === '.devfactory' && cs[i + 1] === 'qa' && cs[i + 2] === 'cases' && cs[i + 3] !== undefined) {
-				const own = key ? cs[i + 3] === key.toLowerCase() : !hasGlob(cs[i + 3]);
-				if (own) continue;
+				if (key && cs[i + 3] === key.toLowerCase()) continue;
 			}
 			return true;
 		}

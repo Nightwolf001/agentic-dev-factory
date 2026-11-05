@@ -3,6 +3,7 @@
 // and against ordinary bypasses (wrappers, global options, substitutions, inline interpreters), not a
 // sandbox: an agent that writes and runs its own program is stopped by the real separation, which is that
 // the builder has no task-tracker or GitHub tools, the scheduler holds the credentials, and a person merges.
+import fs from 'node:fs';
 import path from 'node:path';
 import {
 	LIMITS,
@@ -746,23 +747,94 @@ export function hitsTrackerHost(inv, ctx = {}, vars = {}) {
 	return false;
 }
 
-// A run reads the configuration; it does not write it (`write-from-env` fills the owner's settings folder from DF_PROJECT_*).
-// So `node <any path>/config.mjs`, and `dev-factory config` (or `node <any path>/cli.mjs config`), is run only with a subcommand
-// that is written out as one of the read-only ones. The words are the ones the shell hands over, after quotes are removed, and a
-// word that is built at run time ($cmd, $(...), a brace list) is not one of them.
+// A run reads the person's settings; it does not change them. The factory's own commands that write the configuration
+// (`write-from-env` fills the owner's settings folder from DF_PROJECT_*), the user settings and secrets, the person's Claude servers
+// and plugins, or the repository's cloud setup run under a factory role only in a form written out as a read:
+// `node <plugin>/scripts/<script>`, `node <plugin>/scripts/cli.mjs <command>` or `dev-factory <command>` (the launcher, by any path,
+// also through bash), each with the subcommand the shell hands over after quotes are removed. A word built at run time ($cmd,
+// $(...), a brace list) is not a read. `mcp write-config` writes the pass's server file, which is the scheduler's step.
 const CONFIG_READS = new Set(['get', 'agent', 'validate']);
-function denyConfigWrite(inv) {
+const FACTORY_WRITERS = {
+	'config.mjs': {
+		cli: 'config',
+		reads: (a) => CONFIG_READS.has(a[0]),
+		what: `config writes (write-from-env) fill ${PROJECT_DIR}/ from the owner's environment; a factory run reads the configuration only (get, agent, validate)`,
+	},
+	'settings.mjs': {
+		cli: 'settings',
+		reads: (a) => a[0] === 'list',
+		what: "the person's settings and secrets are changed by the person: a factory run only lists them (settings list)",
+	},
+	'project-dir.mjs': {
+		cli: 'migrate',
+		prefix: ['migrate'],
+		reads: (a) => a[0] === 'migrate' && a.length === 1,
+		what: "moving a repository's settings into its project folder is the person's step: a factory run only shows the plan (migrate without --apply)",
+	},
+	'mcp.mjs': {
+		cli: 'mcp',
+		reads: (a) => ['list', 'recommend', 'doctor', 'secrets', 'allow'].includes(a[0]),
+		what: "the person's MCP servers are changed by the person or the scheduler: a factory run only reads them (mcp list, recommend, doctor, secrets, allow)",
+	},
+	'plugins.mjs': {
+		cli: 'plugins',
+		reads: (a) => a[0] === 'list',
+		what: "the person's plugins are changed by the person: a factory run only lists them (plugins list)",
+	},
+	'cloud.mjs': { cli: 'cloud', reads: () => false, what: "the repository's cloud setup is the person's: a factory run does not run cloud init" },
+	'install.sh': {
+		cli: 'install',
+		reads: (a) => a.every((w) => w !== '--apply' && !/[$`{]/.test(w)),
+		what: "installing changes the person's launchers, servers, plugins and scheduler: a factory run only shows the plan (install without --apply)",
+	},
+};
+const BY_CLI = new Map(Object.entries(FACTORY_WRITERS).map(([script, w]) => [w.cli, script]));
+const RUNTIMES = new Set(['node', 'nodejs', 'bash', 'sh', 'zsh', 'dash', 'ksh']);
+
+// Whether a script named like one of the factory's is the factory's: in the plugin's own folder, or in a folder named `scripts` of a
+// root that holds bin/qa.mjs or a plugin manifest (a vendored or copied plugin). A repository's own config.mjs, in a scripts folder
+// of a root that is neither, or in any other folder, is not. A path that cannot be resolved, or a root that is not on disk, cannot be
+// told apart from the plugin, so it counts as the plugin's.
+function factoryScript(word, st) {
+	const resolved = candidates(word, st.vars)[0] ?? word;
+	if (/[$`]/.test(resolved)) return true;
+	const abs = path.posix.resolve(st.cwd, resolved);
+	if (abs.toLowerCase().startsWith(`${PLUGIN_ROOT.toLowerCase()}/`)) return true;
+	const dir = path.posix.dirname(abs);
+	if (path.posix.basename(dir).toLowerCase() !== 'scripts') return false;
+	const root = path.posix.dirname(dir);
+	if (!fs.existsSync(root)) return true;
+	return fs.existsSync(path.join(root, 'bin', 'qa.mjs')) || fs.existsSync(path.join(root, '.claude-plugin', 'plugin.json'));
+}
+
+function denyFactoryWrite(inv, st) {
 	const { cmd, args } = inv;
-	const named = (a, n) => base(a).toLowerCase() === n;
-	let sub;
-	if (cmd === 'node') {
-		const i = args.findIndex((a) => named(a, 'config.mjs'));
-		const j = args.findIndex((a) => named(a, 'cli.mjs'));
-		if (i >= 0) sub = args[i + 1] ?? '';
-		else if (j >= 0 && args[j + 1] === 'config') sub = args[j + 2] ?? '';
-	} else if (cmd.toLowerCase() === 'dev-factory' && args[0] === 'config') sub = args[1] ?? '';
-	if (sub === undefined || CONFIG_READS.has(sub)) return null;
-	return `config writes (write-from-env) fill ${PROJECT_DIR}/ from the owner's environment; a factory run reads the configuration only (${[...CONFIG_READS].join(', ')})`;
+	let script;
+	let rest;
+	const viaCli = (words) => {
+		const s = BY_CLI.get(words[0]);
+		if (!s) return;
+		script = s;
+		rest = [...(FACTORY_WRITERS[s].prefix ?? []), ...words.slice(1)];
+	};
+	if (cmd.toLowerCase() === 'dev-factory') viaCli(args);
+	else if (RUNTIMES.has(cmd)) {
+		const i = args.findIndex((a) => {
+			const n = base(a).toLowerCase();
+			return n === 'dev-factory' || n === 'cli.mjs' || Object.hasOwn(FACTORY_WRITERS, n);
+		});
+		if (i < 0) return null;
+		const name = base(args[i]).toLowerCase();
+		if (name === 'dev-factory') viaCli(args.slice(i + 1));
+		else if (!factoryScript(args[i], st)) return null;
+		else if (name === 'cli.mjs') viaCli(args.slice(i + 1));
+		else {
+			script = name;
+			rest = args.slice(i + 1);
+		}
+	}
+	if (!script || FACTORY_WRITERS[script].reads(rest)) return null;
+	return FACTORY_WRITERS[script].what;
 }
 
 const TAKEOVER_REFUSAL =
@@ -818,7 +890,7 @@ function judge(command, ctx) {
 		);
 		if (common) return deny(common);
 		if (FACTORY_ROLES.has(ctx.role)) {
-			const config = denyConfigWrite(inv);
+			const config = denyFactoryWrite(inv, st);
 			if (config) return deny(config);
 		}
 		const machine = denyMachinePaths(seg, inv, ctx, st);

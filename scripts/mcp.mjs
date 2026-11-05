@@ -8,7 +8,8 @@
 // of it (that makes Claude warn about duplicates and run two definitions) and never removes it.
 //
 //   mcp.mjs list                  every catalog server: where it is on (user, proj, repo = legacy .mcp.json, ext = from elsewhere, off)
-//   mcp.mjs enable ID... [--user|--project]   turn servers on (default: each one's defaultScope), then sync
+//   mcp.mjs enable ID... [--user|--project]   turn servers on, then sync; with no flag one already on stays where it is, and one
+//                                 that is off goes on at its defaultScope
 //   mcp.mjs disable ID... [--user|--project]  turn them off in that layer (both without a flag), then sync; a required server cannot be
 //   mcp.mjs sync [--dry-run]      make Claude's user and local scopes match the settings
 //   mcp.mjs write-config          write .devfactory/mcp.json and print the Claude arguments for a pass, one per line
@@ -43,6 +44,7 @@ import {
 	secretsReport,
 	serverConfig,
 	stateOf,
+	trackerIds,
 	userEnabled,
 	writePassConfig,
 } from './mcp-scope.mjs';
@@ -86,8 +88,9 @@ export function disable(ids, file) {
 export function recommend(cfg, cat = catalog(), { file, env = process.env, dir, listing = '' } = {}) {
 	const source = get('tasks.source', { config: cfg });
 	const tracker = source === 'jira' ? 'jira' : source === 'notion' ? 'notion' : null;
+	const required = requiredServers(cfg ?? {}, cat);
 	const ids = Object.entries(cat)
-		.filter(([, s]) => s.required === true || s.recommended || s.tracker === tracker)
+		.filter(([id, s]) => required.includes(id) || s.recommended || s.tracker === tracker)
 		.map(([id]) => id);
 	const jira = ids.filter((id) => tracker === 'jira' && cat[id].tracker === 'jira');
 	if (jira.length < 2) return ids;
@@ -178,8 +181,12 @@ export function reportFor(ids, listOutput = '', cat = catalog()) {
 export const connectReport = (file, listOutput = '', cat = catalog()) => reportFor(Object.keys(readProject(file).mcpServers ?? {}), listOutput, cat);
 
 // One line per server in use, for the doctor: { level: 'ok' | 'warn', text }. `want` is desired(): those servers are in use as well as
-// the ones in the legacy .mcp.json.
-export function doctorLines(file, listing, cat = catalog(), { lenient = false, want = [] } = {}) {
+// the ones in the legacy .mcp.json. `config` (the merged settings) says which servers are required (requiredServers: maestro once a
+// mobile app is set) and, with `source` (default: its tasks.source), which tracker server the pass needs; without it only the catalog's
+// `required` flag counts.
+export function doctorLines(file, listing, cat = catalog(), { lenient = false, want = [], config, source } = {}) {
+	const required = new Set(config ? requiredServers(config, cat) : Object.keys(cat).filter((id) => cat[id].required === true));
+	source ??= config ? get('tasks.source', { config }) : undefined;
 	const entries = parseListing(listing);
 	const lines = [];
 	const legacy = Object.keys(readProject(file).mcpServers ?? {});
@@ -190,8 +197,8 @@ export function doctorLines(file, listing, cat = catalog(), { lenient = false, w
 	// a required server fails the doctor while it is missing or not connected (a warning under --lenient or --ci)
 	const level = lenient ? 'warn' : 'fail';
 	const external = externalServers(file, listing, cat, [...at.keys()]);
-	for (const [id, s] of Object.entries(cat)) {
-		if (s.required !== true) continue;
+	for (const id of Object.keys(cat)) {
+		if (!required.has(id)) continue;
 		const own = report.find((r) => r.id === id);
 		const ext = external.find((e) => e.id === id);
 		const state = own?.state ?? ext?.state ?? null;
@@ -204,7 +211,7 @@ export function doctorLines(file, listing, cat = catalog(), { lenient = false, w
 			});
 	}
 	for (const r of report) {
-		if (cat[r.id]?.required === true) continue; // reported above
+		if (required.has(r.id)) continue; // reported above
 		if (r.state === 'connected') lines.push({ level: 'ok', text: `MCP ${r.id} connected (${where(r.id)})` });
 		else if (r.state === 'pending approval')
 			lines.push({ level: 'warn', text: `MCP ${r.id} is waiting for your approval: run claude in this repository and approve it` });
@@ -221,7 +228,7 @@ export function doctorLines(file, listing, cat = catalog(), { lenient = false, w
 			});
 	}
 	for (const s of external) {
-		if (cat[s.id]?.required === true) continue;
+		if (required.has(s.id)) continue;
 		lines.push({
 			level: s.state === 'connected' ? 'ok' : 'warn',
 			text: `MCP ${s.id} comes from "${s.name}" (${s.state}); the factory uses it as it is and adds nothing to .mcp.json`,
@@ -235,6 +242,13 @@ export function doctorLines(file, listing, cat = catalog(), { lenient = false, w
 			text: `playwright ("${pw.name}") runs without --isolated, so QA walks share one browser profile and can collide. Fix: claude mcp remove playwright -s user && claude mcp add playwright -s user -- npx -y @playwright/mcp@0.0.82 --isolated --ignore-https-errors`,
 		});
 	}
+	// the pass moves and comments tasks of a Notion or Jira source through the tracker's server
+	const trackers = trackerIds(source, cat);
+	if (trackers.length && !trackers.some((id) => mine.includes(id) || findServer(id, entries)))
+		lines.push({
+			level: 'warn',
+			text: `tasks.source is ${source}, but no tracker server for it is on or available (${trackers.join(' or ')}): a pass cannot move or comment its tasks; dev-factory mcp enable ${trackers.includes(source) ? source : trackers[0]}`,
+		});
 	if (!mine.length && !external.length) lines.push({ level: 'ok', text: 'no MCP servers in use (all are optional: dev-factory mcp list)' });
 	return lines;
 }
@@ -287,6 +301,21 @@ function turnOn(id, scope, cat, root) {
 	const other = scope === 'user' ? 'project' : 'user';
 	if (layerHas(other, id, root)) setIn(other, `mcp.servers.${id}`, undefined, { from: root });
 	console.log(`on    ${id.padEnd(20)} (${WHERE[scope]})`);
+}
+
+// `enable ID` with no flag, as `settings set ID on`: a server already on stays where it is (one on for all projects is never narrowed
+// to this one), one on for all projects but off here loses the project's off, and one that is off goes on at its defaultScope.
+function enableHere(id, cat, root) {
+	if (!cat[id]) throw new Error(`unknown MCP server '${id}' (see: mcp.mjs list)`);
+	const ls = layers({ from: root });
+	const at = (name) => ls.find((l) => l.name === name)?.data.mcp?.servers?.[id];
+	const on = desired(ls, cat).find((w) => w.id === id);
+	if (on) return console.log(`on    ${id.padEnd(20)} already on (${WHERE[on.scope]})`);
+	if (at('user') === true && at('project') === false) {
+		setIn('project', `mcp.servers.${id}`, undefined, { from: root });
+		return console.log(`on    ${id.padEnd(20)} (${WHERE.user}: the project's off is removed)`);
+	}
+	turnOn(id, cat[id].defaultScope === 'project' ? 'project' : 'user', cat, root);
 }
 
 // Makes Claude's user and local scopes match the settings and prints what it did.
@@ -343,7 +372,10 @@ if (isMain(import.meta.url)) {
 				);
 		} else if (cmd === 'enable') {
 			for (const id of ids) if (!cat[id]) throw new Error(`unknown MCP server '${id}' (see: mcp.mjs list)`);
-			for (const id of ids) turnOn(id, flagScope ?? cat[id].defaultScope ?? 'user', cat, root);
+			for (const id of ids) {
+				if (flagScope) turnOn(id, flagScope, cat, root);
+				else enableHere(id, cat, root);
+			}
 			runSync({ root });
 		} else if (cmd === 'disable') {
 			const required = requiredServers(load(undefined, { from: root }), cat);
@@ -368,6 +400,7 @@ if (isMain(import.meta.url)) {
 				listing: claudeListing(),
 				legacyFile: file,
 				repo: root,
+				source: get('tasks.source', { config: load(undefined, { from: root }) }),
 			});
 			if (out.strict) console.log('--strict-mcp-config');
 			else console.error(`note: ${out.reason}`);
@@ -393,8 +426,10 @@ if (isMain(import.meta.url)) {
 			const chosen = rest.includes('--all')
 				? Object.keys(cat)
 				: recommend(load(undefined, { from: root }), cat, { file, listing: claudeListing() });
+			// a server already wanted (a required one included: maestro for a mobile app is this project's) is left where it is
+			const wanted = new Set(desired(ls(), cat).map((w) => w.id));
 			for (const id of chosen)
-				if (!layerHas('user', id, root) && !layerHas('project', id, root))
+				if (!wanted.has(id) && !layerHas('user', id, root) && !layerHas('project', id, root))
 					turnOn(id, cat[id].defaultScope === 'project' ? 'project' : 'user', cat, root);
 			runSync({ root });
 			const hint = {
@@ -411,7 +446,11 @@ if (isMain(import.meta.url)) {
 			}
 		} else if (cmd === 'recommend') console.log(recommend(load(undefined, { from: root }), cat, { file, listing: claudeListing() }).join(' '));
 		else if (cmd === 'doctor')
-			for (const l of doctorLines(file, claudeListing(), cat, { lenient: process.argv.includes('--lenient'), want: desired(ls(), cat) }))
+			for (const l of doctorLines(file, claudeListing(), cat, {
+				lenient: process.argv.includes('--lenient'),
+				want: desired(ls(), cat),
+				config: load(undefined, { from: root }),
+			}))
 				console.log(`${{ ok: 'ok   ', warn: 'warn ', fail: 'FAIL ' }[l.level]} ${l.text}`);
 		else if (cmd === 'allow')
 			console.log(

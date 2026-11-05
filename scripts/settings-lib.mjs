@@ -37,7 +37,8 @@ function toggleView(row) {
 	if (row.kind === 'plugin' && row.locked) value = 'user';
 	else if (u === true) value = p === false && !row.locked ? 'off here' : 'user';
 	else if (p === true) value = 'project';
-	else if (row.locked) value = row.home;
+	// a server the catalog requires is at its home; one this repository's settings make required is this project's
+	else if (row.locked) value = row.kind === 'mcp' && !row.catRequired ? 'project' : row.home;
 	else if (u === undefined && row.defaultOn) value = p === false ? (row.home === 'user' ? 'off here' : 'off') : row.home;
 	else value = 'off';
 	const source =
@@ -236,19 +237,42 @@ function store(state, index, lv, message = '') {
 	}
 	const row = finish({ ...old, lv });
 	let rows = state.rows.map((r, i) => (i === index ? row : r));
-	if (row.kind === 'option' && row.id === 'mobile.appDir') rows = relock(rows);
-	const edits = new Map([...state.edits].filter(([k]) => !k.startsWith(`${rowKey(row)}:`)));
-	if (row.pending) {
-		// a server or plugin edit writes both layers (the other loses its key); a setting only the layers that differ
-		const toggle = row.kind === 'mcp' || row.kind === 'plugin';
-		const writes = (row.kind === 'secret' ? ['env'] : ['user', 'project'])
-			.filter((layer) => toggle || !sameLv({ v: row.lv[layer] }, { v: row.origLv[layer] }))
-			.map((layer) => ({ layer, key: keyOf(row), value: row.lv[layer] }))
-			// the layer that gets a value first, then the one that is cleared
-			.sort((a, b) => (b.value !== undefined) - (a.value !== undefined));
-		for (const w of writes) edits.set(`${rowKey(row)}:${w.layer}`, w);
+	const edits = new Map(state.edits);
+	setEdits(edits, row);
+	if (row.kind === 'option' && row.id === 'mobile.appDir') {
+		rows = relock(rows);
+		// a server that has just become required cannot stay off: a pending off is dropped, and a false saved in either layer is removed
+		const freed = [];
+		rows = rows.map((r, i) => {
+			if (r.kind !== 'mcp' || !r.locked || state.rows[i].locked) return r;
+			if (r.lv.user !== false && r.lv.project !== false && r.origLv.user !== false && r.origLv.project !== false) return r;
+			const off = (v) => (v === false ? undefined : v);
+			const next = finish({ ...r, lv: { user: off(r.lv.user), project: off(r.lv.project) } });
+			setEdits(edits, next);
+			freed.push(r.id);
+			return next;
+		});
+		if (freed.length)
+			message ||= `${freed.join(', ')} ${freed.length === 1 ? 'is' : 'are'} now required (mobile.appDir is set): its off is removed`;
 	}
+	// what the change comes to must not add a problem (a toggle as well as a setting)
+	const added = validate(configOf(rows)).filter((p) => !validate(configOf(state.rows)).includes(p));
+	if (added.length) return { ...state, message: added[0] };
 	return { ...state, rows, edits, message };
+}
+
+// The edits for one row, replacing the ones it had: none when it is back where it started.
+function setEdits(edits, row) {
+	for (const k of [...edits.keys()]) if (k.startsWith(`${rowKey(row)}:`)) edits.delete(k);
+	if (!row.pending) return;
+	// a server or plugin edit writes both layers (the other loses its key); a setting only the layers that differ
+	const toggle = row.kind === 'mcp' || row.kind === 'plugin';
+	const writes = (row.kind === 'secret' ? ['env'] : ['user', 'project'])
+		.filter((layer) => toggle || !sameLv({ v: row.lv[layer] }, { v: row.origLv[layer] }))
+		.map((layer) => ({ layer, key: keyOf(row), value: row.lv[layer] }))
+		// the layer that gets a value first, then the one that is cleared
+		.sort((a, b) => (b.value !== undefined) - (a.value !== undefined));
+	for (const w of writes) edits.set(`${rowKey(row)}:${w.layer}`, w);
 }
 
 // A mobile app makes the device runner required (requiredServers), so its lock follows the setting, in both directions.
@@ -350,27 +374,28 @@ export function editText(row) {
 	return String(v);
 }
 
-// The configuration the rows come to, for validate().
-function configOf(rows, replace) {
+// The configuration the rows come to, for validate(): the settings in effect, and each server and plugin toggle as its layers hold it
+// (a false in either layer is what a layer's own check refuses for a required one).
+function configOf(rows) {
 	const cfg = {};
-	for (const r of rows) {
-		if (r.kind !== 'option') continue;
-		const value = replace && replace.id === r.id ? replace.value : r.value;
-		if (value === undefined) continue;
-		const keys = r.id.split('.');
+	const put = (id, value) => {
+		const keys = id.split('.');
 		let at = cfg;
 		for (const k of keys.slice(0, -1)) at = at[k] ??= {};
 		at[keys.at(-1)] = value;
+	};
+	for (const r of rows) {
+		if (r.kind === 'option' && r.value !== undefined) put(r.id, r.value);
+		if (r.kind !== 'mcp' && r.kind !== 'plugin') continue;
+		const held = [r.lv.user, r.lv.project].filter((v) => v !== undefined);
+		if (held.length) put(keyOf(r), held.includes(false) ? false : held[0]);
 	}
 	return cfg;
 }
 
+// store() refuses a value that adds a problem to the configuration
 function writeOption(state, index, layer, value) {
-	const row = state.rows[index];
-	const before = validate(configOf(state.rows));
-	const added = validate(configOf(state.rows, { id: row.id, value })).filter((p) => !before.includes(p));
-	if (added.length) return { ...state, message: added[0] };
-	return store(state, index, { ...row.lv, [layer]: value });
+	return store(state, index, { ...state.rows[index].lv, [layer]: value });
 }
 
 const FIXED = (row) => `${row.id} is set by ${ENV_OVERRIDES[row.id]}; change it in your shell or ~/.dev-factory/.env.local`;

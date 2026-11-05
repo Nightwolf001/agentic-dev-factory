@@ -148,6 +148,71 @@ test('planPlugins disables a user-level plugin for the project that turns it off
 	assert.deepEqual(plan([]).install, [{ id: FD, scope: 'user' }]);
 });
 
+// An entry as `claude plugin list --json` prints it: an array of these, `scope` one of user, project, local or synced.
+const real = (id, scope, enabled, more = {}) => ({
+	id,
+	version: '1.0.0',
+	scope,
+	enabled,
+	...(scope === 'synced' ? {} : { projectEnabled: false, installedAt: '2026-01-01T00:00:00Z', lastUpdated: '2026-01-01T00:00:00Z' }),
+	installPath: `/x/${id}`,
+	...more,
+});
+
+test('a plugin the person disabled themselves is never disabled, recorded or enabled by the factory', () => {
+	const repo = repoDir();
+	const want = [{ id: FD, scope: 'user', required: false, off: 'project' }];
+	// the person turned it off for every project (the shape the real listing shows), or for this one
+	for (const installed of [
+		[real(FD, 'user', false)],
+		[real(FD, 'user', true), real(FD, 'local', false, { projectPath: repo })],
+		[real(FD, 'user', true), real(FD, 'local', false)],
+		[real(FD, 'user', true), real(FD, 'project', false)],
+	]) {
+		const plan = planPlugins({ want, managed: empty(), installed, repo, userIds: [FD] });
+		assert.deepEqual(plan, { install: [], disable: [], enable: [], uninstall: [] }, JSON.stringify(installed));
+	}
+	// when the project false goes away, nothing is turned back on: it was not the factory's disable
+	const plan = planPlugins({
+		want: [{ id: FD, scope: 'user', required: false }],
+		managed: empty(),
+		installed: [real(FD, 'user', true), real(FD, 'local', false)],
+		repo,
+		userIds: [FD],
+	});
+	assert.deepEqual(plan.enable, []);
+	// still enabled where the person has it: the factory disables it, and only then is it its own to enable later
+	assert.deepEqual(planPlugins({ want, managed: empty(), installed: [real(FD, 'user', true)], repo, userIds: [FD] }).disable, [
+		{ id: FD, scope: 'local' },
+	]);
+});
+
+test('a plugin synced from claude.ai is available from elsewhere: never installed over, disabled, enabled or uninstalled', () => {
+	const repo = repoDir();
+	const synced = (enabled) => [real('frontend-design@synced', 'synced', enabled), real('code-simplifier@synced', 'synced', enabled)];
+	const managed = empty();
+	managed.plugins.user = [CS];
+	managed.plugins.local[repo] = [CS];
+	managed.plugins.disabled = { [repo]: [FD] };
+	for (const on of [true, false]) {
+		const plan = planPlugins({
+			want: [
+				{ id: FD, scope: 'user', required: false, off: 'project' },
+				{ id: CS, scope: 'project', required: false },
+			],
+			managed,
+			installed: synced(on),
+			repo,
+			userIds: [],
+		});
+		assert.deepEqual(plan, { install: [], disable: [], enable: [], uninstall: [] }, `synced enabled: ${on}`);
+	}
+	// a plugin of the same name from the catalog's marketplace is still the factory's to install
+	assert.deepEqual(planPlugins({ want: [{ id: SP, scope: 'user', required: true }], managed: empty(), installed: synced(true), repo }).install, [
+		{ id: SP, scope: 'user' },
+	]);
+});
+
 test('an unmanaged plugin is never uninstalled', () => {
 	const repo = repoDir();
 	const installed = [entry(FD, 'user'), entry(CS, 'local')];
@@ -418,9 +483,9 @@ test('a disable is recorded, and not issued again while it is recorded and the l
 	assert.deepEqual(first.disable, [{ id: FD, scope: 'local' }]);
 	const inEffect = [userCopy, entry(FD, 'local', { enabled: false, projectPath: repo })];
 	assert.deepEqual(planPlugins({ want: OFF, managed: disabledBy(repo, FD), installed: inEffect, repo, userIds: [FD] }).disable, []);
-	// recorded but the listing does not show it disabled: issued again; shown disabled but not recorded (the person's own): ours to issue
+	// recorded but the listing does not show it disabled: issued again; shown disabled but not recorded (the person's own): left alone
 	assert.deepEqual(planPlugins({ want: OFF, managed: disabledBy(repo, FD), installed: [userCopy], repo, userIds: [FD] }).disable.length, 1);
-	assert.deepEqual(planPlugins({ want: OFF, managed: empty(), installed: inEffect, repo, userIds: [FD] }).disable.length, 1);
+	assert.deepEqual(planPlugins({ want: OFF, managed: empty(), installed: inEffect, repo, userIds: [FD] }).disable.length, 0);
 	// recording survives a sync of the MCP part and another repository's record is not this one's
 	assert.deepEqual(planPlugins({ want: OFF, managed: disabledBy(repoDir(), FD), installed: inEffect, repo, userIds: [FD] }).enable, []);
 });

@@ -75,7 +75,8 @@ const toggles = (layer) => (isObject(layer?.data?.mcp?.servers) ? layer.data.mcp
 // The servers to have on. A user-layer `true` is every project, else a project-layer `true` is this one. A project-layer `false`
 // takes a user-level server out of this result, which the generated pass config honours; Claude's own scopes cannot (a user-scope
 // server is there for every project), which is why planSync is also told which ids the user layer has on. A required server (requiredServers(config): playwright, and maestro once a mobile app is set) is
-// always present, at the layer that names it, else at its defaultScope.
+// always present, at the layer that names it, else at its defaultScope when the catalog requires it and at project scope when only
+// this repository's settings do.
 export function desired(ls = layers(), cat = catalog()) {
 	const user = toggles(ls.find((l) => l.name === 'user'));
 	const project = toggles(ls.find((l) => l.name === 'project'));
@@ -88,7 +89,9 @@ export function desired(ls = layers(), cat = catalog()) {
 		const must = required.includes(id);
 		let scope = user[id] === true ? 'user' : project[id] === true ? 'project' : null;
 		if (project[id] === false && !must) continue;
-		if (!scope && must) scope = s.defaultScope === 'project' ? 'project' : 'user';
+		// a server the catalog requires is wanted everywhere, at its defaultScope; one this repository's settings make required
+		// (maestro for a mobile app) is this project's: at user scope the next sync in another repository would remove it again
+		if (!scope && must) scope = s.required === true && s.defaultScope !== 'project' ? 'user' : 'project';
 		if (scope) out.push({ id, scope, required: must });
 	}
 	return out;
@@ -280,13 +283,29 @@ export function applySync(plan, { repo, env = process.env, cat = catalog() } = {
 
 // ---- the scheduled pass ----
 
+// The catalog servers that serve a task source's tracker (the `tracker` field): none for local and github.
+export const trackerIds = (source, cat = catalog()) => (source ? Object.keys(cat).filter((id) => cat[id].tracker === source) : []);
+
 // Writes { mcpServers } for the wanted servers, variable references intact. The entries of a legacy .mcp.json are never copied:
 // without --strict-mcp-config Claude loads that file's servers itself, and a copy is a second place for a literal secret to land.
 // So a legacy entry the wanted set does not write makes the pass non-strict, and the reason names it. A wanted server Claude has
 // only from elsewhere (a claude.ai connector, a hand-made user entry: listed, not ours, not in the legacy file) is not written
 // either, so it is used as it is; the pass then cannot be strict, or it would lose it.
+// The tracker server of `source` (tasks.source: notion, or jira and atlassian for jira) is counted as wanted when the listing has it,
+// even when no layer names it: the pass moves and comments tasks through it, and an upgraded repository may have it only as the
+// person's own entry or a claude.ai connector.
 // Returns { file, strict, reason }: strict says whether `--strict-mcp-config` is safe to pass.
-export function writePassConfig({ want, cat = catalog(), env = process.env, file, listing = '', legacyFile, managed = readManaged(env), repo } = {}) {
+export function writePassConfig({
+	want,
+	cat = catalog(),
+	env = process.env,
+	file,
+	listing = '',
+	legacyFile,
+	managed = readManaged(env),
+	repo,
+	source,
+} = {}) {
 	const root = repo ?? projectRoot();
 	if (!file) {
 		if (!root) throw new Error('not inside a git repository: the pass config lives in <repository>/.devfactory/mcp.json');
@@ -305,6 +324,11 @@ export function writePassConfig({ want, cat = catalog(), env = process.env, file
 			continue;
 		}
 		mcpServers[id] = serverConfig(id, cat, env);
+	}
+	for (const id of trackerIds(source, cat)) {
+		if (want.some((w) => w.id === id) || legacy.includes(id) || !findServer(id, entries)) continue;
+		if (mine.has(id)) mcpServers[id] = serverConfig(id, cat, env);
+		else external.push(id);
 	}
 	const fromLegacy = legacy.filter((id) => !(id in mcpServers));
 	fs.mkdirSync(path.dirname(file), { recursive: true });

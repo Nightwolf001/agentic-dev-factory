@@ -118,17 +118,19 @@ test('a server or plugin row shows what desired() and desiredPlugins() make of t
 			for (const optional of ['1', '0']) {
 				const env = { DF_INSTALL_OPTIONAL: optional };
 				const user = {
-					...(u === undefined ? {} : servers({ sentry: u, playwright: u })),
+					...(u === undefined ? {} : servers({ sentry: u, playwright: u, maestro: u })),
 					...(u === undefined ? {} : enabled({ [FD]: u, [SP]: u })),
 				};
+				// a mobile app makes maestro required by this repository's settings
 				const project = {
-					...(p === undefined ? {} : servers({ sentry: p, playwright: p })),
+					mobile: { appDir: 'apps/mobile' },
+					...(p === undefined ? {} : servers({ sentry: p, playwright: p, maestro: p })),
 					...(p === undefined ? {} : enabled({ [FD]: p, [SP]: p })),
 				};
 				const ls = L(user, project);
 				const rows = rowsFor(user, project, env);
 				const here = `user ${u} project ${p} optional ${optional}`;
-				for (const id of ['sentry', 'playwright']) {
+				for (const id of ['sentry', 'playwright', 'maestro']) {
 					const w = desired(ls, catalog()).find((x) => x.id === id);
 					const expected = w ? w.scope : u === true && p === false ? 'off here' : 'off';
 					assert.equal(row({ rows }, id).value, expected, `${id}: ${here}`);
@@ -743,8 +745,8 @@ test('turning mobile.appDir on or off makes maestro required or not, in the sess
 	const set = press(state, 'mobile.appDir', 'enter', { input: 'app' });
 	assert.equal(row(set, 'mobile.appDir').value, 'app');
 	assert.equal(row(set, 'maestro').locked, true);
-	assert.equal(row(set, 'maestro').value, 'user');
-	assert.equal(press(set, 'maestro', 'u').message, 'maestro is required: it cannot be turned off');
+	assert.equal(row(set, 'maestro').value, 'project', 'required by this repository: on for this project, as desired() places it');
+	assert.equal(press(set, 'maestro', 'space').message, 'maestro is required: it cannot be turned off');
 	// and back
 	const cleared = press(set, 'mobile.appDir', 'd');
 	assert.equal(row(cleared, 'maestro').locked, false);
@@ -754,6 +756,48 @@ test('turning mobile.appDir on or off makes maestro required or not, in the sess
 	const given = page({}, { mobile: { appDir: 'app' } });
 	assert.equal(row(given, 'maestro').locked, true);
 	assert.equal(row(press(given, 'mobile.appDir', 'd'), 'maestro').locked, false);
+});
+
+test('a server that becomes required loses a pending off, and a saved false in either layer is removed', () => {
+	// pending: off in this project, then the mobile app is set
+	const pending = setRow(page(servers({ maestro: true })), 'maestro', 'off', { layer: 'project' });
+	assert.deepEqual(
+		changes(pending).find((c) => c.layer === 'project'),
+		{ layer: 'project', key: 'mcp.servers.maestro', value: false },
+	);
+	const set = setRow(pending, 'mobile.appDir', 'apps/mobile');
+	assert.ok(!changes(set).some((c) => c.key === 'mcp.servers.maestro' && c.value === false), JSON.stringify(changes(set)));
+	assert.equal(row(set, 'maestro').locked, true);
+	assert.match(set.message, /maestro is now required/);
+	// saved: a false already in both layers is queued for removal, and the result validates
+	const saved = page(servers({ maestro: false }), servers({ maestro: false }));
+	const next = setRow(saved, 'mobile.appDir', 'apps/mobile');
+	const list = changes(next);
+	for (const layer of ['user', 'project'])
+		assert.deepEqual(
+			list.find((c) => c.layer === layer && c.key === 'mcp.servers.maestro'),
+			{ layer, key: 'mcp.servers.maestro', value: undefined },
+			layer,
+		);
+	assert.ok(list.some((c) => c.key === 'mobile.appDir' && c.value === 'apps/mobile'));
+	assert.equal(row(next, 'maestro').value, 'project');
+	// clearing the app again leaves maestro as the layers now hold it: not back to false
+	const back = press(next, 'mobile.appDir', 'd');
+	assert.equal(row(back, 'maestro').locked, false);
+});
+
+test('CLI: settings set mobile.appDir with maestro false saved removes the false, and config validate passes', () => {
+	const { run, read, project, user, repo, env } = sandbox();
+	fs.mkdirSync(path.dirname(project), { recursive: true });
+	fs.writeFileSync(project, JSON.stringify(servers({ maestro: false })));
+	fs.writeFileSync(user, JSON.stringify(servers({ maestro: false })));
+	const r = run(['set', 'mobile.appDir', 'apps/mobile']);
+	assert.equal(r.status, 0, r.stderr);
+	assert.equal(read(project).mobile.appDir, 'apps/mobile');
+	assert.equal(read(project).mcp?.servers?.maestro, undefined);
+	assert.equal(read(user).mcp?.servers?.maestro, undefined);
+	const v = spawnSync('node', [new URL('../scripts/config.mjs', import.meta.url).pathname, 'validate'], { cwd: repo, env, encoding: 'utf8' });
+	assert.doesNotMatch(`${v.stdout}${v.stderr}`, /maestro/);
 });
 
 test('on with no layer clears a project-level off instead of narrowing', () => {

@@ -123,9 +123,12 @@ export function legacyLocalNotes({ plan, installed, repo } = {}) {
 //   install    wanted at a scope where Claude does not have it. A plugin that is enabled at user scope serves a project that asks
 //              for it, so that project installs nothing
 //   disable    a plugin on for every project that this project's layer turns off: disabled at local scope, and recorded per repository.
-//              Not issued again while it is recorded and the listing shows it disabled locally
+//              Not issued when the listing already shows it disabled here (for every project or for this one): if the factory did
+//              not record that disable it is the person's own, and it stays theirs
 //   enable     recorded as disabled by us in this repository, and no longer turned off by its layer: enabled again at local scope.
 //              A plugin the factory did not disable is never enabled
+//   A plugin the listing shows as synced from claude.ai (`<name>@synced`) comes from elsewhere: nothing of that name is installed,
+//   disabled, enabled or uninstalled
 //   uninstall  recorded as ours at a scope where it is no longer wanted. A user-scope plugin is there for every project, so it is
 //              removed only when `userIds` (userKept) is given and no longer holds it: a project's `false` never removes it, and
 //              without `userIds` no user-scope plugin is removed at all
@@ -148,23 +151,29 @@ export function planPlugins({ want, managed = readManaged(), installed, repo, us
 	const wanted = { user: new Set(), project: new Set() };
 	for (const w of want) wanted[w.scope].add(w.id);
 	const userOn = userIds ? new Set(userIds) : null;
+	// a plugin synced from claude.ai (listed as `<name>@synced`) comes from elsewhere: nothing of that name is touched
+	const nameOf = (id) => String(id).split('@')[0];
+	const syncedNames = new Set(installed.filter((e) => e?.scope === 'synced').map((e) => nameOf(e.id)));
+	const free = (id) => !syncedNames.has(nameOf(id));
+	// already off for this repository: disabled for every project, or for this one
+	const offHere = (id) => ['user', 'project', 'local'].some((s) => have(id, s)?.enabled === false);
 	for (const w of want) {
+		if (!free(w.id)) continue;
 		if (w.scope === 'user') {
 			if (!have(w.id, 'user')) plan.install.push({ id: w.id, scope: 'user' });
-			if (w.off === 'project' && !required.has(w.id) && have(w.id, 'user')) {
-				const inEffect = disabledByUs.has(w.id) && have(w.id, 'local')?.enabled === false;
-				if (!inEffect) plan.disable.push({ id: w.id, scope: 'local' });
-			}
+			// a plugin the listing already shows off here is left alone, whoever turned it off: the factory never records a person's own
+			// disable as its own, so it never turns that plugin back on
+			if (w.off === 'project' && !required.has(w.id) && have(w.id, 'user') && !offHere(w.id)) plan.disable.push({ id: w.id, scope: 'local' });
 		} else {
 			const usable = have(w.id, 'local') ?? have(w.id, 'project') ?? (have(w.id, 'user')?.enabled !== false ? have(w.id, 'user') : null);
 			if (!usable) plan.install.push({ id: w.id, scope: 'local' });
 		}
 	}
 	const off = new Set(want.filter((w) => w.off === 'project').map((w) => w.id));
-	for (const id of disabledByUs) if (!off.has(id) && !required.has(id)) plan.enable.push({ id, scope: 'local' });
+	for (const id of disabledByUs) if (!off.has(id) && !required.has(id) && free(id)) plan.enable.push({ id, scope: 'local' });
 	for (const id of ours.user)
-		if (!required.has(id) && !wanted.user.has(id) && userOn && !userOn.has(id)) plan.uninstall.push({ id, scope: 'user' });
-	for (const id of ours.local) if (!required.has(id) && !wanted.project.has(id)) plan.uninstall.push({ id, scope: 'local' });
+		if (!required.has(id) && !wanted.user.has(id) && userOn && !userOn.has(id) && free(id)) plan.uninstall.push({ id, scope: 'user' });
+	for (const id of ours.local) if (!required.has(id) && !wanted.project.has(id) && free(id)) plan.uninstall.push({ id, scope: 'local' });
 	return plan;
 }
 

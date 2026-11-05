@@ -94,6 +94,9 @@ done < <(node -e '
 PLUGIN_FLAGS="--dry-run"; [ $APPLY = 1 ] && PLUGIN_FLAGS=""
 # inside a repository its own settings count too; the sync reads them from the main checkout
 (cd "${REPO:-.}" && node "$DIR/scripts/plugins.mjs" sync $PLUGIN_FLAGS) || FAILED=1
+# the MCP servers the settings turn on: run after the launcher is written (step 2), which a server such as jira is started through, so
+# one saved by setup before this install is added now
+(cd "${REPO:-.}" && node "$DIR/scripts/mcp.mjs" sync $PLUGIN_FLAGS) || FAILED=1
 
 # 5. the scheduler, by runtime.scheduler: it belongs to a repository, so outside one there is none to set up
 SCHED=none
@@ -135,4 +138,4 @@ manual steps:
      (it goes to $ENVF), and for jira or notion also the API token the scheduler's preflight uses (see .env.example)
 TXT
 [ $ISOLATE = 1 ] && echo "  4. this repository keeps its state in $OWN: dev-factory finds it from inside the repository; export DF_STATE_DIR=$OWN to run a script by hand"
-[ "$FAILED" = 0 ] || { echo "install: a plugin or marketplace could not be installed (see above); fix it and run again" >&2; exit 1; }
+[ "$FAILED" = 0 ] || { echo "install: a plugin, marketplace or MCP server could not be installed (see above); fix it and run again" >&2; exit 1; }

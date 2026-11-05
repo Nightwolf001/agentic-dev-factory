@@ -383,6 +383,27 @@ test('install installs the plugins at user scope by default, and at local scope 
 	);
 });
 
+test('install --apply syncs the MCP servers after it writes the launcher, so a jira server saved before is added; the dry run only plans', () => {
+	const f = fixture();
+	fs.mkdirSync(path.join(f.home, 'state'), { recursive: true });
+	fs.writeFileSync(path.join(f.home, 'state/config.json'), JSON.stringify({ mcp: { servers: { jira: true } } }));
+	const adds = () =>
+		f
+			.calls()
+			.split('\n')
+			.filter((l) => /claude mcp add-json/.test(l));
+	let r = spawnSync('bash', [path.join(ROOT, 'scripts/install.sh')], { encoding: 'utf8', env: f.env, cwd: f.repo });
+	assert.equal(r.status, 0, r.stderr);
+	assert.match(r.stdout, /^add\s+jira\s+\(all projects\)$/m);
+	assert.deepEqual(adds(), [], 'a dry run adds nothing');
+	r = spawnSync('bash', [path.join(ROOT, 'scripts/install.sh'), '--apply'], { encoding: 'utf8', env: f.env, cwd: f.repo });
+	assert.equal(r.status, 0, r.stderr);
+	const jira = adds().find((l) => / -s user jira /.test(l));
+	assert.ok(jira, adds().join('\n'));
+	assert.ok(jira.includes(path.join(f.home, 'state/bin/dev-factory')), 'through the launcher install just wrote');
+	assert.deepEqual(JSON.parse(fs.readFileSync(path.join(f.home, 'state/managed.json'), 'utf8')).mcp.user.sort(), ['jira', 'playwright']);
+});
+
 test('install outside a repository is a machine-only setup: launcher, env file and plugins, no scheduler', () => {
 	const f = fixture();
 	const cwd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'df-install-nogit-')));

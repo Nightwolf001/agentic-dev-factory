@@ -159,7 +159,9 @@ test('the .devfactory/ settings folder is protected at any depth and in any case
 	assert.equal(runStatePlace('/w/.devfactory/qa/cases', 'APP-1'), true, 'the folder that holds every ticket’s cases');
 	assert.equal(runStatePlace('/w/.devfactory/qa/cases/*/a.yaml', 'APP-1'), true, 'a glob can reach another ticket’s folder');
 	assert.equal(runStatePlace('/w/.devfactory/qa/cases/../config.json', 'APP-1'), true);
-	assert.equal(runStatePlace('/w/.devfactory/qa/cases/APP-1/a.yaml'), false, 'with no key, one ticket’s folder');
+	assert.equal(runStatePlace('/w/.devfactory/qa/cases/APP-1/a.yaml'), true, 'with no key, no ticket’s folder is the run’s own');
+	assert.equal(evaluate('echo x > .devfactory/qa/cases/APP-1/a.yaml', { role: 'builder', cwd: '/w' }).deny, true, 'a shell write with no key');
+	assert.equal(evaluate('echo x > .devfactory/qa/cases/APP-1/a.yaml', { role: 'builder', key: 'APP-1', cwd: '/w' }).deny, false);
 	assert.equal(runStatePlace('/w/.devfactory-notes/a.md', 'APP-1'), false);
 	assert.equal(runStateRoot('/w/.devfactory'), true, 'removing the folder whole takes the settings with it');
 });

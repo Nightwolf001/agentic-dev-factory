@@ -432,10 +432,39 @@ test('desired: user wins over project, project false drops a user-level server, 
 
 test('desired: maestro is present when mobile.appDir is set (requiredServers), otherwise only when a layer turns it on', () => {
 	assert.ok(!desired(L()).some((x) => x.id === 'maestro'));
+	// required only by this repository's settings: this project, unless a layer puts it elsewhere
 	const mobile = desired(L({}, { mobile: { appDir: 'app' } })).find((x) => x.id === 'maestro');
-	assert.deepEqual([mobile.scope, mobile.required], ['user', true]);
+	assert.deepEqual([mobile.scope, mobile.required], ['project', true]);
+	const everywhere = desired(L(servers({ maestro: true }), { mobile: { appDir: 'app' } })).find((x) => x.id === 'maestro');
+	assert.deepEqual([everywhere.scope, everywhere.required], ['user', true]);
 	const asked = desired(L({}, servers({ maestro: true }))).find((x) => x.id === 'maestro');
 	assert.deepEqual([asked.scope, asked.required], ['project', false]);
+});
+
+test('a server one repository requires is never added or removed at user scope by a sync in another repository', () => {
+	const repoA = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'df-repo-a-')));
+	const repoB = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'df-repo-b-')));
+	const managed = noManaged();
+	const userScope = (plan) => [...plan.add, ...plan.remove].filter((s) => s.id === 'maestro' && s.scope === 'user');
+	// repository A has a mobile app
+	const lsA = L({}, { mobile: { appDir: 'apps/mobile' } });
+	const planA = planSync({ want: desired(lsA), managed, listing: '', repo: repoA, userIds: userEnabled(lsA) });
+	assert.deepEqual(userScope(planA), []);
+	assert.deepEqual(
+		planA.add.filter((s) => s.id === 'maestro'),
+		[{ id: 'maestro', scope: 'project' }],
+	);
+	// what applySync would record
+	managed.mcp.local[repoA] = ['maestro'];
+	managed.mcp.user = ['playwright'];
+	// repository B has none, on the same machine
+	const lsB = L();
+	const planB = planSync({ want: desired(lsB), managed, listing: '', repo: repoB, userIds: userEnabled(lsB) });
+	assert.deepEqual(userScope(planB), []);
+	assert.deepEqual(planB.remove, [], 'nothing of repository A is removed from B');
+	// and A again is settled
+	const again = planSync({ want: desired(lsA), managed, listing: '', repo: repoA, userIds: userEnabled(lsA) });
+	assert.deepEqual([again.add, again.remove], [[], []]);
 });
 
 test('planSync adds a wanted server at its scope and moves a scope as remove plus add', () => {
@@ -629,6 +658,71 @@ test('writePassConfig is not strict when a wanted server is available only from 
 	fs.writeFileSync(legacyFile, JSON.stringify({ mcpServers: { notion: { command: 'mine' } } }));
 	const again = writePassConfig({ want, cat: catalog(), env: {}, file, listing, legacyFile, managed });
 	assert.equal(again.strict, true);
+});
+
+test('writePassConfig keeps the tracker server of tasks.source that Claude has outside the settings', () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'df-pass-'));
+	const file = path.join(dir, 'mcp.json');
+	const want = [{ id: 'playwright', scope: 'user', required: true }];
+	const managed = noManaged();
+	managed.mcp.user = ['playwright'];
+	const pass = (source, listing) => writePassConfig({ want, cat: catalog(), env: {}, file, listing, managed, source });
+	// a claude.ai connector, or the person's own user-scope entry, that no layer names
+	const notion = pass('notion', 'claude.ai Notion: https://mcp.notion.com/mcp - ✔ Connected');
+	assert.equal(notion.strict, false);
+	assert.match(notion.reason, /^notion is available only from outside the generated file/);
+	const jira = pass('jira', 'atlassian: https://mcp.atlassian.com/v1/mcp (HTTP) - ✔ Connected');
+	assert.equal(jira.strict, false);
+	assert.match(jira.reason, /^atlassian is available only/);
+	assert.equal(pass('jira', 'jira: /x/bin/dev-factory jira-mcp - ✔ Connected').strict, false);
+	// not the source's tracker, or not there at all: strict as before
+	assert.equal(pass('github', 'claude.ai Notion: https://mcp.notion.com/mcp - ✔ Connected').strict, true);
+	assert.equal(pass('notion', '').strict, true);
+	assert.equal(pass(undefined, 'claude.ai Notion: https://mcp.notion.com/mcp - ✔ Connected').strict, true);
+	// one the factory added itself is written to the file, so the strict pass keeps it
+	const ours = noManaged();
+	ours.mcp.user = ['playwright', 'notion'];
+	const out = writePassConfig({
+		want,
+		cat: catalog(),
+		env: {},
+		file,
+		listing: 'notion: https://mcp.notion.com/mcp (HTTP) - ✔ Connected',
+		managed: ours,
+		source: 'notion',
+	});
+	assert.equal(out.strict, true);
+	assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(file, 'utf8')).mcpServers).sort(), ['notion', 'playwright']);
+});
+
+test('the doctor warns when tasks.source needs a tracker server that is neither on nor available', () => {
+	const file = tmp();
+	const tracker = (source, listing = '', want = []) =>
+		doctorLines(file, listing, catalog(), { want, source }).filter((l) => /tracker/.test(l.text));
+	assert.deepEqual(
+		tracker('notion').map((l) => l.level),
+		['warn'],
+	);
+	assert.match(tracker('notion')[0].text, /tasks\.source is notion.*dev-factory mcp enable notion/);
+	assert.match(tracker('jira')[0].text, /atlassian or jira\): .*enable jira$/);
+	assert.deepEqual(tracker('notion', 'claude.ai Notion: https://mcp.notion.com/mcp - ✔ Connected'), []);
+	assert.deepEqual(tracker('jira', '', [{ id: 'jira', scope: 'user', required: false }]), []);
+	for (const s of ['local', 'github', undefined]) assert.deepEqual(tracker(s), [], String(s));
+});
+
+test('the doctor fails on a server this repository requires: maestro once mobile.appDir is set', () => {
+	const file = tmp();
+	const cfg = merge(load(), { mobile: { appDir: 'apps/mobile' } });
+	const lines = doctorLines(file, '', catalog(), { config: cfg });
+	assert.ok(
+		lines.some((l) => l.level === 'fail' && /required MCP maestro is not enabled/.test(l.text)),
+		JSON.stringify(lines),
+	);
+	assert.ok(!doctorLines(file, '', catalog(), { config: merge(load(), { mobile: { appDir: null } }) }).some((l) => /maestro/.test(l.text)));
+	// and recommend names it
+	const none = { env: {}, dir: fs.mkdtempSync(path.join(os.tmpdir(), 'df-rec-')) };
+	assert.ok(recommend(cfg, catalog(), none).includes('maestro'));
+	assert.ok(!recommend(merge(load(), { mobile: { appDir: null } }), catalog(), none).includes('maestro'));
 });
 
 test('writePassConfig never copies a legacy .mcp.json entry; they make the pass non-strict and are named', () => {
@@ -835,6 +929,30 @@ test('CLI: enable records the server in the layer of its scope, removes it from 
 		fake.calls().some((c) => c.args.join(' ') === 'mcp remove -s user sentry'),
 		'removed from Claude',
 	);
+});
+
+test('CLI: enable with no flag leaves an already-on server where it is, and clears a project-level off', () => {
+	const { run, read, repo, stateDirectory } = sandbox();
+	const userFile = path.join(stateDirectory, 'config.json');
+	const projectFile = path.join(repo, '.devfactory', 'config.json');
+	const project = () => (fs.existsSync(projectFile) ? read(projectFile) : {});
+	// sentry's defaultScope is project: on for all projects, it is not narrowed to this one
+	assert.equal(run('enable', 'sentry', '--user').status, 0);
+	const r = run('enable', 'sentry');
+	assert.equal(r.status, 0, r.stderr);
+	assert.match(r.stdout, /sentry\s+already on \(all projects\)/);
+	assert.equal(read(userFile).mcp.servers.sentry, true);
+	assert.equal(project().mcp?.servers?.sentry, undefined);
+	// on for all projects but off here: the project's off goes, the user layer stays
+	fs.mkdirSync(path.dirname(projectFile), { recursive: true });
+	fs.writeFileSync(projectFile, JSON.stringify({ mcp: { servers: { sentry: false } } }));
+	assert.equal(run('enable', 'sentry').status, 0);
+	assert.equal(read(userFile).mcp.servers.sentry, true);
+	assert.equal(project().mcp?.servers?.sentry, undefined);
+	// a flag still moves it
+	assert.equal(run('enable', 'sentry', '--project').status, 0);
+	assert.equal(read(projectFile).mcp.servers.sentry, true);
+	assert.equal(read(userFile).mcp?.servers?.sentry, undefined);
 });
 
 test('CLI: sync --dry-run changes nothing, and write-config prints the Claude arguments for the pass', () => {
