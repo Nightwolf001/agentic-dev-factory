@@ -1,7 +1,7 @@
 // Companion plugins (plugins.json): which are on, at which scope, and what the factory installed into Claude Code. A person turns
 // one on for every project (their user settings file) or for one (its .devfactory/config.json) as `plugins.enabled.<id>: true`;
 // `sync` makes Claude match, with `claude plugin install <id> --scope user|local` run in the main checkout for the local scope.
-// <state>/managed.json records what the factory installed, so only that is ever uninstalled; a plugin you installed yourself is
+// <machine folder>/managed.json records what the factory installed, so only that is ever uninstalled; a plugin you installed yourself is
 // used as it is, and a project-layer `false` on a plugin that is on for every project only disables it in that project
 // (`claude plugin disable <id> --scope local`). Beside the `mcp` record, which this file leaves as it finds it.
 //

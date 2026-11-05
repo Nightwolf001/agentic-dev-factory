@@ -1,6 +1,6 @@
 // Reads the factory's settings in layers, later layers winning (objects merge key by key; arrays and scalars replace):
 //   1. defaults  config.json inside the plugin, shared and free of any organisation
-//   2. user      <DF_STATE_DIR or ~/.dev-factory>/config.json, one person's choices for every project
+//   2. user      <the machine folder: DF_STATE_DIR or ~/.dev-factory>/config.json, one person's choices for every project
 //   3. project   <repo>/.devfactory/config.json (the old <repo>/dev-factory.config.json is still read, with a notice,
 //                when the new file is absent), or the file named by DF_CONFIG, which replaces this layer
 //   4. env       the DF_* variables of ENV_OVERRIDES, applied by get()
@@ -16,11 +16,11 @@
 // A path that starts with `source.` reads from the active task source: `source.states.inProgress` is
 // `sources.<tasks.source>.states.inProgress`.
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isMain } from './is-main.mjs';
 import { PROJECT_FILES, ensureProjectDir, projectRoot } from './project-dir.mjs';
+import { machineDir } from './state-env.mjs';
 
 const PLUGIN_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const FILE = path.join(PLUGIN_ROOT, 'config.json');
@@ -147,7 +147,8 @@ export function findRepoConfig(from = process.cwd(), env = process.env) {
 
 export const isLegacyConfig = (file) => path.basename(file) === REPO_CONFIG;
 
-export const userConfigFile = (env = process.env) => path.join(env.DF_STATE_DIR || path.join(os.homedir(), '.dev-factory'), 'config.json');
+// In the machine folder, not a repository's own state folder (install --isolate): one person's choices hold for every repository.
+export const userConfigFile = (env = process.env) => path.join(machineDir(env), 'config.json');
 
 function readJson(file) {
 	try {

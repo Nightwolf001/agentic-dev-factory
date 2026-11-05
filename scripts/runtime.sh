@@ -3,7 +3,9 @@
 #   df_runtime            local or cloud: DF_RUNTIME, else runtime.mode from the config, else detected
 #                         (Claude Code on the web and GitHub Actions are cloud)
 #   df_repo               the repository under work: DF_REPO, else the git top level of the current directory
-#   df_state_dir          machine state: DF_STATE_DIR, else ~/.dev-factory
+#   df_state_dir          the state of this repository's passes: DF_STATE_DIR, else the folder of its own that `install --isolate` made under
+#                         the machine folder (~/.dev-factory/<slug>), else the machine folder
+#   df_machine_dir        ~/.dev-factory: the secrets (.env.local), the launcher and, for an isolated repository, its folder
 #   df_log_file JOB       DF_LOG, else the macOS log folder for a local Mac, else <state>/logs/JOB.log
 #   df_slug REPO          a name for the repository, used in launchd labels and the pause switch
 #   df_paused_file REPO   the pause switch file of the repository (see scripts/scheduler.sh)
@@ -20,7 +22,13 @@ df_runtime() {
   if [ "${CLAUDE_CODE_REMOTE:-}" = true ] || [ "${GITHUB_ACTIONS:-}" = true ]; then echo cloud; else echo local; fi
 }
 df_repo() { printf '%s' "${DF_REPO:-$(git rev-parse --show-toplevel 2>/dev/null)}"; }
-df_state_dir() { printf '%s' "${DF_STATE_DIR:-$HOME/.dev-factory}"; }
+df_machine_dir() { printf '%s' "$HOME/.dev-factory"; }
+df_state_dir() {
+  if [ -n "${DF_STATE_DIR:-}" ]; then printf '%s' "$DF_STATE_DIR"; return; fi
+  local repo own; repo="$(df_repo)"
+  if [ -n "$repo" ]; then own="$(df_machine_dir)/$(df_slug "$repo")"; if [ -d "$own" ]; then printf '%s' "$own"; return; fi; fi
+  df_machine_dir
+}
 df_log_file() {
   if [ -n "${DF_LOG:-}" ]; then printf '%s' "$DF_LOG"; return; fi
   if [ "$(uname)" = Darwin ] && [ "$(df_runtime)" = local ]; then printf '%s' "$HOME/Library/Logs/dev-factory-$1.log"

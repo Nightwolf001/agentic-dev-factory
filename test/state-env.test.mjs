@@ -221,3 +221,70 @@ test('import-env skips the lines of a multi-line value, and a name written twice
 	assert.match(r.stdout, /2 name\(s\) added/);
 	assert.equal(fs.existsSync(pwned), false);
 });
+
+test('the command line runs a repository with a state folder of its own on that folder', async () => {
+	const ROOT = new URL('../', import.meta.url).pathname.replace(/\/$/, '');
+	const { stateDirFor } = await import('../scripts/cli.mjs');
+	const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'df-cli-')));
+	const repo = path.join(home, 'repo');
+	fs.mkdirSync(repo);
+	const slug = spawnSync('bash', ['-c', `DIR="${ROOT}"; . "${ROOT}/scripts/runtime.sh"; df_slug "${repo}"`], { encoding: 'utf8' }).stdout.trim();
+	const env = { PATH: process.env.PATH, HOME: home, DF_REPO: repo };
+	assert.equal(stateDirFor(env), null, 'nothing to change while the repository has no folder of its own');
+	fs.mkdirSync(path.join(home, '.dev-factory', slug), { recursive: true });
+	assert.equal(stateDirFor(env), path.join(home, '.dev-factory', slug));
+	assert.equal(stateDirFor({ ...env, DF_STATE_DIR: '/s' }), null, 'an explicit folder is left alone');
+});
+
+test("an isolated repository's pass reads the machine's settings for all projects, managed.json and .env.local", async () => {
+	const ROOT = path.resolve(import.meta.dirname, '..');
+	const { machineDir } = await import('../scripts/state-env.mjs');
+	const { userConfigFile, layers } = await import('../scripts/config.mjs');
+	const { managedFile, readManaged } = await import('../scripts/mcp-scope.mjs');
+	const home = tmp();
+	const machine = path.join(home, '.dev-factory');
+	const own = path.join(machine, 'app-123456');
+	fs.mkdirSync(own, { recursive: true });
+	fs.writeFileSync(path.join(machine, 'config.json'), JSON.stringify({ scheduler: { intervalMinutes: 17 } }));
+	fs.writeFileSync(path.join(machine, 'managed.json'), JSON.stringify({ mcp: { user: ['context7'] } }));
+	fs.writeFileSync(path.join(machine, '.env.local'), 'JIRA_EMAIL=me@example.com\n');
+	// the scheduled job of an isolated repository runs with DF_STATE_DIR on the repository's own folder
+	const env = { PATH: process.env.PATH, HOME: home, DF_STATE_DIR: own };
+	assert.equal(machineDir(env), machine);
+	assert.equal(userConfigFile(env), path.join(machine, 'config.json'));
+	assert.equal(managedFile(env), path.join(machine, 'managed.json'));
+	assert.deepEqual(readManaged(env).mcp.user, ['context7'], 'one record of what the factory added, not a second empty one');
+	assert.equal(layers({ from: home, env }).find((l) => l.name === 'user').data.scheduler.intervalMinutes, 17);
+	const filled = { ...env };
+	assert.deepEqual(loadTrackerEnv({ env: filled }), ['JIRA_EMAIL'], 'the secrets come from the machine folder, linked or not');
+	// and the way a pass asks for a setting: config.mjs get, from the command line
+	const r = spawnSync('node', [path.join(ROOT, 'scripts/config.mjs'), 'get', 'scheduler.intervalMinutes'], { cwd: home, env, encoding: 'utf8' });
+	assert.equal(r.stdout.trim(), '17', r.stderr);
+	assert.equal(fs.existsSync(path.join(own, 'config.json')), false);
+});
+
+test('a repository folder made under another machine folder is known by the links install --isolate puts in it', async () => {
+	const { machineDir } = await import('../scripts/state-env.mjs');
+	const root = tmp();
+	const own = path.join(root, 'app-123456');
+	fs.mkdirSync(path.join(root, 'bin'), { recursive: true });
+	fs.mkdirSync(own);
+	assert.equal(machineDir({ HOME: tmp(), DF_STATE_DIR: own }), own, 'no link yet: an ordinary state folder');
+	fs.symlinkSync('../bin', path.join(own, 'bin'));
+	assert.equal(machineDir({ HOME: tmp(), DF_STATE_DIR: own }), root);
+});
+
+test('a plain DF_STATE_DIR, with no repository folder, is the machine folder as before', async () => {
+	const { machineDir } = await import('../scripts/state-env.mjs');
+	const { userConfigFile } = await import('../scripts/config.mjs');
+	const { managedFile } = await import('../scripts/mcp-scope.mjs');
+	const state = tmp();
+	const env = { HOME: tmp(), DF_STATE_DIR: state };
+	assert.equal(machineDir(env), state);
+	assert.equal(userConfigFile(env), path.join(state, 'config.json'));
+	assert.equal(managedFile(env), path.join(state, 'managed.json'));
+	// the machine folder itself, named by DF_STATE_DIR, is not a repository's folder
+	const home = tmp();
+	assert.equal(machineDir({ HOME: home, DF_STATE_DIR: path.join(home, '.dev-factory') }), path.join(home, '.dev-factory'));
+	assert.equal(machineDir({ HOME: home }), path.join(os.homedir(), '.dev-factory'), 'unset: the default folder, as stateDir');
+});

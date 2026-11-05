@@ -415,3 +415,23 @@ test('reviewers, debuggers and researchers may run config.mjs get for one settin
 	}
 	assert.equal(run(`${cfg} get review.readFirst`, { role: 'builder' }).deny, false, 'and nothing changes for the builder');
 });
+
+test('the machine folder stays protected when a repository keeps its run state in a folder of its own', () => {
+	const own = `${STATE}/app`;
+	const c = { ...base, stateDir: own };
+	for (const cmd of [
+		'cat ~/.dev-factory/.env.local',
+		'echo x > ~/.dev-factory/.env.local',
+		`rm ${STATE}/bin/dev-factory`,
+		'echo x > ~/.dev-factory/other-repo/ports.lock',
+		'echo x > ~/.dev-factory/app/ports.lock',
+	])
+		assert.equal(evaluate(cmd, c).deny, true, `should be refused: ${cmd}`);
+	assert.equal(protectedPlace(`${STATE}/.env.local`, { home: HOME, stateDir: own }), 'state', 'the secrets above the folder');
+	assert.equal(protectedPlace(`${STATE}/other-repo/tick.lock`, { home: HOME, stateDir: own }), 'state', "another repository's folder");
+	assert.equal(protectedPlace(`${own}/ports.lock`, { home: HOME, stateDir: own }), 'state');
+	// a state folder somewhere else does not unprotect the default one, and the default one does not make the other free
+	assert.equal(protectedPlace(`${STATE}/.env.local`, { home: HOME, stateDir: '/srv/df' }), 'state');
+	assert.equal(protectedPlace('/srv/df/x', { home: HOME, stateDir: '/srv/df' }), 'state');
+	assert.equal(protectedPlace(`${HOME}/projects/app`, { home: HOME, stateDir: own }), null);
+});

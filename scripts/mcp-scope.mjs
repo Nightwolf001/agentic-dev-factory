@@ -4,7 +4,7 @@
 //
 //   desired(layers)         the servers the settings layers turn on: { id, scope: 'user' | 'project', required }
 //   planSync(...)           what to add to and remove from Claude's user and local scopes to match it
-//   applySync(plan, ...)    runs `claude mcp add-json` / `claude mcp remove`, and records in <state>/managed.json what it did
+//   applySync(plan, ...)    runs `claude mcp add-json` / `claude mcp remove`, and records in <machine folder>/managed.json what it did
 //   writePassConfig(...)    the generated .devfactory/mcp.json a scheduled pass is started with
 //   secretsReport(...)      which variables the wanted servers read, set or empty (never a value)
 //   planLegacyMigration     which entries of an old .mcp.json are the catalog's own
@@ -19,7 +19,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { layers, merge, requiredServers } from './config.mjs';
 import { entry as legacyJiraEntry } from './jira-mcp-config.mjs';
 import { ensureProjectDir, PROJECT_FILES, projectRoot } from './project-dir.mjs';
-import { parseEnvText, stateDir } from './state-env.mjs';
+import { machineDir, parseEnvText } from './state-env.mjs';
 
 const CATALOG = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'mcp', 'catalog.json');
 
@@ -100,9 +100,9 @@ export function userEnabled(ls = layers()) {
 	return Object.keys(user).filter((id) => user[id] === true);
 }
 
-// ---- what the factory added to Claude, kept in <state>/managed.json ----
+// ---- what the factory added to Claude, kept in <machine folder>/managed.json ----
 
-export const managedFile = (env = process.env) => path.join(stateDir(env), 'managed.json');
+export const managedFile = (env = process.env) => path.join(machineDir(env), 'managed.json');
 
 const names = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []);
 
@@ -213,7 +213,7 @@ export function planSync({ want, managed = readManaged(), listing = '', repo, us
 }
 
 // The launcher `dev-factory install` writes: it always runs the newest installed copy, so a user-scope entry survives updates.
-export const launcherPath = (env = process.env) => path.join(stateDir(env), 'bin', 'dev-factory');
+export const launcherPath = (env = process.env) => path.join(machineDir(env), 'bin', 'dev-factory');
 
 const LAUNCHER_REF = /^\$\{DF_LAUNCHER:-[^}]*\}$/;
 
@@ -329,7 +329,7 @@ export function writePassConfig({ want, cat = catalog(), env = process.env, file
 export function secretsReport({ want, cat = catalog(), env = process.env } = {}) {
 	let stored = new Map();
 	try {
-		stored = parseEnvText(fs.readFileSync(path.join(stateDir(env), '.env.local'), 'utf8'));
+		stored = parseEnvText(fs.readFileSync(path.join(machineDir(env), '.env.local'), 'utf8'));
 	} catch {
 		// no store yet
 	}

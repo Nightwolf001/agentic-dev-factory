@@ -1,7 +1,7 @@
 // One entry point for the things a person runs in a terminal, so nobody has to know where the plugin is installed:
 //
 //   dev-factory doctor [--ci|--wizard]     check this machine and the configuration
-//   dev-factory install [--apply] [--load] launchers, plugins and the scheduler for this repository
+//   dev-factory install [--apply] [--load] [--isolate]  launchers, plugins and the scheduler for this repository (--isolate: a state folder of its own)
 //   dev-factory mcp list|enable|connect... optional MCP servers
 //   dev-factory plugins sync|list          companion plugins, for all projects or this one
 //   dev-factory settings [list|set|reset]  every server, plugin, secret and setting with its value and source; edit them on a page
@@ -49,6 +49,21 @@ export const COMMANDS = {
 	'jira-mcp': ['node', 'scripts/jira-mcp.mjs'],
 };
 
+// A repository that `install --isolate` gave a state folder of its own runs every command on that folder, as its scheduled passes do:
+// the folder df_state_dir (scripts/runtime.sh) picks, unless DF_STATE_DIR already names one. null means nothing to change.
+export function stateDirFor(env = process.env) {
+	if (env.DF_STATE_DIR) return null;
+	const r = spawnSync('bash', ['-c', `DIR="${PLUGIN_ROOT}"; . "${PLUGIN_ROOT}/scripts/runtime.sh"; df_state_dir; echo; df_machine_dir`], {
+		encoding: 'utf8',
+		env,
+	});
+	const [own, machine] = (r.stdout || '').split('\n');
+	return r.status === 0 && own && own !== machine ? own : null;
+}
+
+// install and import-env work on the machine folder itself.
+const MACHINE_WIDE = new Set(['install', 'import-env']);
+
 export function resolve(argv) {
 	const [name, ...rest] = argv;
 	if (name === 'path') return { print: PLUGIN_ROOT };
@@ -63,5 +78,8 @@ if (isMain(import.meta.url)) {
 	else if (r.usage) {
 		console.error(r.usage);
 		process.exit(3);
-	} else process.exit(spawnSync(r.cmd, r.args, { stdio: 'inherit' }).status ?? 1);
+	} else {
+		const dir = MACHINE_WIDE.has(process.argv[2]) ? null : stateDirFor();
+		process.exit(spawnSync(r.cmd, r.args, { stdio: 'inherit', env: dir ? { ...process.env, DF_STATE_DIR: dir } : process.env }).status ?? 1);
+	}
 }

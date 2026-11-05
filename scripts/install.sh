@@ -3,14 +3,27 @@
 # Works from any installed copy of the plugin (marketplace cache, a clone loaded with --plugin-dir). Inside a repository it also
 # renders that repository's scheduler jobs; anywhere else it sets up the machine only (launcher, env file, plugins).
 # Prefer `dev-factory install`, which finds the plugin for you.
-#   install.sh [--apply] [--load]
+#   install.sh [--apply] [--load] [--isolate]
+# --isolate gives this repository a state folder of its own (~/.dev-factory/<slug>) for its locks, run pointer, logs and ports lock, so a
+# pass in another repository no longer holds this one back. The secrets, the launcher, the plugin path, your settings for all projects
+# (config.json) and the record of what the factory added to Claude (managed.json) stay the machine's. Once the folder exists, later
+# installs keep the repository isolated.
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 . "$DIR/scripts/runtime.sh"
 REPO="$(df_repo)"
-STATE="$(df_state_dir)"; RUNTIME="$(df_runtime)"
-APPLY=0; LOAD=0
-for a in "$@"; do case "$a" in --apply) APPLY=1 ;; --load) APPLY=1; LOAD=1 ;; *) echo "usage: install.sh [--apply] [--load]" >&2; exit 3 ;; esac; done
+# the machine folder: not the repository's own folder, which df_state_dir would pick once it exists
+STATE="${DF_STATE_DIR:-$(df_machine_dir)}"; RUNTIME="$(df_runtime)"
+APPLY=0; LOAD=0; ISOLATE=0
+for a in "$@"; do case "$a" in --apply) APPLY=1 ;; --load) APPLY=1; LOAD=1 ;; --isolate) ISOLATE=1 ;; *) echo "usage: install.sh [--apply] [--load] [--isolate]" >&2; exit 3 ;; esac; done
+SLUG=""; OWN=""
+if [ -n "$REPO" ]; then
+  SLUG="$(df_slug "$REPO")"; OWN="$STATE/$SLUG"
+  [ -d "$OWN" ] && ISOLATE=1
+elif [ $ISOLATE = 1 ]; then
+  echo "install --isolate gives one repository a state folder of its own: run it from inside that repository (or set DF_REPO)" >&2; exit 3
+fi
+JOBSTATE="$STATE"; [ $ISOLATE = 1 ] && JOBSTATE="$OWN"
 say() { printf '%s %s\n' "$([ $APPLY = 1 ] && echo 'do  ' || echo 'plan')" "$1"; }
 
 echo "plugin: $DIR"; echo "runtime: $RUNTIME"
@@ -50,6 +63,20 @@ if [ ! -f "$ENVF" ]; then
   if [ $APPLY = 1 ]; then mkdir -p "$STATE"; cp "$DIR/.env.example" "$ENVF"; chmod 600 "$ENVF"; fi
 else say "$ENVF exists, left alone"; fi
 
+# 3b. a state folder of its own for this repository: its locks, run pointer, logs and ports lock stay apart from every other repository's.
+# What is shared is linked, not copied, so one .env.local and one launcher serve them all. The settings for all projects and managed.json
+# are not linked: the scripts read them from the machine folder (machineDir in scripts/state-env.mjs), so there is only ever one of each.
+if [ $ISOLATE = 1 ]; then
+  say "give this repository a state folder of its own: $OWN (the secrets, launcher and plugin path stay the machine's, by link)"
+  if [ $APPLY = 1 ]; then
+    mkdir -p "$OWN"
+    for shared in .env.local bin plugin-dir; do
+      if [ -e "$OWN/$shared" ] || [ -L "$OWN/$shared" ]; then continue; fi
+      if [ -e "$STATE/$shared" ]; then ln -s "../$shared" "$OWN/$shared"; fi
+    done
+  fi
+fi
+
 # 4. plugins the factory relies on. The marketplaces are added here; the plugins are installed by plugins.mjs from the settings
 # (plugins.enabled in the user settings for every project, or in this repository's for one; the required one is always on).
 # Optional ones are installed too unless DF_INSTALL_OPTIONAL=0. A marketplace or plugin that fails to install fails the run
@@ -75,7 +102,7 @@ SCHED="$(node "$DIR/scripts/config.mjs" get runtime.scheduler 2>/dev/null || ech
 if [ "$SCHED" = auto ]; then
   if [ "$(uname)" = Darwin ] && [ "$RUNTIME" = local ]; then SCHED=launchd; else SCHED=none; fi
 fi
-SLUG="$(df_slug "$REPO")"; INTERVAL="$(df_interval_minutes)"
+INTERVAL="$(df_interval_minutes)"
 fi
 case "$SCHED" in
   launchd)
@@ -83,8 +110,8 @@ case "$SCHED" in
       LABEL="com.dev-factory.$SLUG.$job"; PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
       if [ "$job" = tick ]; then say "render $PLIST (every $INTERVAL minutes: dev-factory tick in $REPO)"; else say "render $PLIST (weekly, Monday 07:00: dev-factory improve in $REPO)"; fi
       if [ $APPLY = 1 ]; then
-        mkdir -p "$(dirname "$PLIST")" "$STATE"   # the job runs in the state folder, which must exist
-        sed -e "s#__LABEL__#$LABEL#g" -e "s#__LAUNCHER__#$LAUNCHER#g" -e "s#__JOB__#$job#g" -e "s#__REPO__#$REPO#g" -e "s#__STATE__#$STATE#g" -e "s#__HOME__#$HOME#g" -e "s#__INTERVAL__#$((INTERVAL * 60))#g" -e "s#__PATH__#$PATH#g" "$DIR/launchd/$job.plist.template" > "$PLIST"
+        mkdir -p "$(dirname "$PLIST")" "$JOBSTATE"   # the job runs in its state folder, which must exist
+        sed -e "s#__LABEL__#$LABEL#g" -e "s#__LAUNCHER__#$LAUNCHER#g" -e "s#__JOB__#$job#g" -e "s#__REPO__#$REPO#g" -e "s#__STATE__#$JOBSTATE#g" -e "s#__HOME__#$HOME#g" -e "s#__INTERVAL__#$((INTERVAL * 60))#g" -e "s#__PATH__#$PATH#g" "$DIR/launchd/$job.plist.template" > "$PLIST"
         plutil -lint "$PLIST"
       fi
       if [ $LOAD = 1 ]; then
@@ -107,4 +134,5 @@ manual steps:
   3. unattended runs only: run 'claude setup-token' and save it with: pbpaste | dev-factory settings set secret:CLAUDE_CODE_OAUTH_TOKEN
      (it goes to $ENVF), and for jira or notion also the API token the scheduler's preflight uses (see .env.example)
 TXT
+[ $ISOLATE = 1 ] && echo "  4. this repository keeps its state in $OWN: dev-factory finds it from inside the repository; export DF_STATE_DIR=$OWN to run a script by hand"
 [ "$FAILED" = 0 ] || { echo "install: a plugin or marketplace could not be installed (see above); fix it and run again" >&2; exit 1; }

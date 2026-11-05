@@ -253,3 +253,22 @@ test('cloud init refuses a settings file it cannot read instead of overwriting i
 	assert.match(r.stderr, /cannot be read as JSON/);
 	assert.match(fs.readFileSync(file, 'utf8'), /a comment makes this invalid JSON/, 'the file is as it was');
 });
+
+test('a repository with a state folder of its own uses it, unless DF_STATE_DIR says otherwise', () => {
+	const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'df-own-')));
+	const repo = path.join(home, 'repo');
+	fs.mkdirSync(repo);
+	const slug = sh(`df_slug "${repo}"`).stdout;
+	const env = { HOME: home, DF_REPO: repo };
+	assert.equal(sh('df_state_dir', env).stdout, `${home}/.dev-factory`, 'no folder of its own yet');
+	assert.equal(sh('df_machine_dir', env).stdout, `${home}/.dev-factory`);
+	fs.mkdirSync(path.join(home, '.dev-factory', slug), { recursive: true });
+	assert.equal(sh('df_state_dir', env).stdout, `${home}/.dev-factory/${slug}`, 'the folder install --isolate made');
+	assert.equal(sh('df_machine_dir', env).stdout, `${home}/.dev-factory`, 'the machine folder does not move');
+	assert.equal(sh('df_state_dir', { ...env, DF_STATE_DIR: '/s' }).stdout, '/s', 'an explicit folder wins');
+	assert.equal(
+		sh('df_state_dir', { HOME: home, DF_REPO: path.join(home, 'other') }).stdout,
+		`${home}/.dev-factory`,
+		'another repository is not affected',
+	);
+});

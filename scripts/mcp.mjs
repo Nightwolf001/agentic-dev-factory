@@ -1,7 +1,7 @@
 // Optional MCP servers. The plugin ships none: every server is listed in mcp/catalog.json with what it is for and what
 // happens without it, and a person turns on the ones they want: for every project (their user settings file) or for this
 // project (its .devfactory/config.json), as `mcp.servers.<id>: true`. `sync` applies that to Claude Code (`claude mcp
-// add-json -s user|local`) and records in <state>/managed.json what it added, so only that is ever removed. A scheduled
+// add-json -s user|local`) and records in <machine folder>/managed.json what it added, so only that is ever removed. A scheduled
 // pass is started from a generated .devfactory/mcp.json instead (`write-config`). The planning is in scripts/mcp-scope.mjs.
 //
 // A server you already have, at user scope or as a claude.ai connector, is used as it is: `sync` does not add a second copy
@@ -46,7 +46,7 @@ import {
 	userEnabled,
 	writePassConfig,
 } from './mcp-scope.mjs';
-import { loadTrackerEnv, stateDir } from './state-env.mjs';
+import { loadTrackerEnv, machineDir } from './state-env.mjs';
 
 // What callers have always imported from here, and the planning they now also get from here.
 export * from './mcp-scope.mjs';
@@ -380,7 +380,7 @@ if (isMain(import.meta.url)) {
 				// DF_SHELL_ENV_NAMES: the variables exported before the state folder's .env.local was read (doctor.sh records them)
 				const names = process.env.DF_SHELL_ENV_NAMES;
 				const shell = names === undefined ? null : new Set(names.split(/\s+/).filter(Boolean));
-				const file = path.join(stateDir(process.env), '.env.local');
+				const file = path.join(machineDir(process.env), '.env.local');
 				// the login for unattended runs has its own check in the doctor (and a logged-in person does not need it): not listed here
 				const listed = rows.filter((r) => !(r.neededBy.length === 1 && r.neededBy[0] === 'unattended runs'));
 				for (const l of secretLines({ rows: listed, want, cat, lenient: rest.includes('--lenient'), shell, file }))
