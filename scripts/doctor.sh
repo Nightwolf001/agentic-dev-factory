@@ -125,6 +125,8 @@ alert="$(node "$DIR/scripts/preflight-alert.mjs" show 2>/dev/null)"
 # MCP servers are all optional: report what is in use, wherever it is configured, and say what a missing one costs
 MCP_FILE="${DF_MCP_FILE:-$REPO/.mcp.json}"
 MCP_ARGS=(); [ "$LENIENT" = 1 ] && MCP_ARGS=(--lenient)
+# before a pass (--ci) a server Claude does not list is started from the generated .devfactory/mcp.json, so it is not missing
+[ "$CI" = 1 ] && MCP_ARGS+=(--pass)
 while IFS= read -r line; do
   case "$line" in ok*) ok "${line#ok }" ;; warn*) warn "${line#warn }" ;; FAIL*) bad "${line#FAIL }" ;; esac
 done < <(DF_MCP_FILE="$MCP_FILE" node "$DIR/scripts/mcp.mjs" doctor ${MCP_ARGS[@]+"${MCP_ARGS[@]}"} 2>/dev/null | sed 's/^ok   */ok /;s/^warn  */warn /;s/^FAIL  */FAIL /')
