@@ -56,3 +56,35 @@ test('the README examples of settings are valid settings', async () => {
 	for (const k of Object.keys(example)) assert.ok(k in config, `${k} is a real section`);
 	assert.deepEqual(validate(merge(config, example)), []);
 });
+
+test('the README has a Settings page section and a Moving to .devfactory section that name their commands', () => {
+	const readme = read('README.md');
+	const section = (title) => {
+		const start = readme.indexOf(`\n## ${title}\n`);
+		assert.ok(start >= 0, `## ${title}`);
+		const next = readme.indexOf('\n## ', start + 1);
+		return readme.slice(start, next < 0 ? undefined : next);
+	};
+	const page = section('Settings page');
+	for (const needle of ['dev-factory settings list', 'dev-factory settings set', 'secret:', 'DF_CONFIG', '--json', 'exit'])
+		assert.ok(page.includes(needle), `Settings page: ${needle}`);
+	for (const group of optionCatalog().groups) assert.ok(page.includes(group), `Settings page names the group ${group}`);
+	const moving = section('Moving to .devfactory');
+	for (const needle of ['dev-factory migrate', 'git rm', 'dev-factory mcp migrate', '--apply'])
+		assert.ok(moving.includes(needle), `Moving to .devfactory: ${needle}`);
+});
+
+test('the README explains the three state folders in one place and the cloud variables', () => {
+	const readme = read('README.md');
+	for (const needle of [
+		'`.devfactory/`',
+		'`.factory/`',
+		'`.dev-factory/`',
+		'DF_PROJECT_CONFIG',
+		'DF_PROJECT_QA',
+		'enabledMcpjsonServers',
+		'managed.json',
+	])
+		assert.ok(readme.includes(needle), needle);
+	assert.match(readme, /claude plugin install dev-factory@dev-factory --scope user/);
+});

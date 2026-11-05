@@ -67,6 +67,94 @@ test('cloud init writes the settings and the workflow, and the workflow carries 
 	assert.doesNotMatch(wf, /Co-Authored-By|generated with/i, 'the person is the author');
 });
 
+// A routine or web session has no ~/.claude.json, so it reads the committed files: the servers the project wants go into .mcp.json
+// (as variable references: a value committed there would leak) and are approved in .claude/settings.json.
+function routineRepo() {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'df-routine-'));
+	spawnSync('git', ['init', '-q'], { cwd: dir });
+	fs.mkdirSync(path.join(dir, '.devfactory'));
+	fs.writeFileSync(
+		path.join(dir, '.devfactory/config.json'),
+		JSON.stringify({ mcp: { servers: { context7: true, github: true, jira: true, notion: true } } }),
+	);
+	return dir;
+}
+const runCloud = (dir, args, extra = {}) =>
+	spawnSync('node', [path.join(ROOT, 'scripts/cloud.mjs'), 'init', '--marketplace', 'o/r', ...args], {
+		cwd: dir,
+		encoding: 'utf8',
+		env: { ...process.env, DF_CONFIG: '', DF_PROJECT_CONFIG: '', DF_PROJECT_QA: '', ...extra },
+	});
+
+test('init --routine writes .mcp.json with variable references only and enabledMcpjsonServers', () => {
+	const dir = routineRepo();
+	const r = runCloud(dir, ['--routine'], { CONTEXT7_API_KEY: 'sk-live-should-never-appear', JIRA_API_TOKEN: 'tok-should-never-appear' });
+	assert.equal(r.status, 0, r.stderr);
+	const raw = fs.readFileSync(path.join(dir, '.mcp.json'), 'utf8');
+	const mcp = JSON.parse(raw);
+	for (const id of ['playwright', 'context7', 'github', 'jira', 'notion']) assert.ok(mcp.mcpServers[id], id);
+	assert.equal(mcp.mcpServers.context7.env.CONTEXT7_API_KEY, '${CONTEXT7_API_KEY:-}');
+	assert.equal(mcp.mcpServers.github.headers.Authorization, 'Bearer ${GITHUB_PERSONAL_ACCESS_TOKEN:-}');
+	assert.doesNotMatch(raw, /should-never-appear/, 'no value from the environment');
+	assert.ok(!raw.includes(os.homedir()), 'no path of this machine in a committed file');
+	assert.ok(!raw.includes(process.env.DF_STATE_DIR), 'no state folder path either');
+	const settings = JSON.parse(fs.readFileSync(path.join(dir, '.claude/settings.json'), 'utf8'));
+	assert.deepEqual([...settings.enabledMcpjsonServers].sort(), Object.keys(mcp.mcpServers).sort());
+	assert.equal(settings.enabledPlugins['dev-factory@dev-factory'], true);
+	assert.match(r.stdout, /DF_PROJECT_CONFIG/);
+	assert.match(r.stdout, /DF_PROJECT_QA/);
+	assert.match(r.stdout, /wrote .*\.mcp\.json/);
+});
+
+test('init --routine keeps a server the person added by hand and everything else in both files', () => {
+	const dir = routineRepo();
+	fs.writeFileSync(
+		path.join(dir, '.mcp.json'),
+		JSON.stringify({ mcpServers: { mine: { command: 'my-server', args: ['--x'] }, context7: { command: 'old', args: [] } }, other: 1 }),
+	);
+	fs.mkdirSync(path.join(dir, '.claude'));
+	fs.writeFileSync(
+		path.join(dir, '.claude/settings.json'),
+		JSON.stringify({ permissions: { allow: ['Bash(ls)'] }, enabledMcpjsonServers: ['mine'] }),
+	);
+	const r = runCloud(dir, ['--routine']);
+	assert.equal(r.status, 0, r.stderr);
+	const mcp = JSON.parse(fs.readFileSync(path.join(dir, '.mcp.json'), 'utf8'));
+	assert.deepEqual(mcp.mcpServers.mine, { command: 'my-server', args: ['--x'] }, 'the hand-made entry is untouched');
+	assert.equal(mcp.other, 1);
+	assert.equal(mcp.mcpServers.context7.command, 'npx', 'an entry the factory writes replaces only its own id');
+	const settings = JSON.parse(fs.readFileSync(path.join(dir, '.claude/settings.json'), 'utf8'));
+	assert.deepEqual(settings.permissions, { allow: ['Bash(ls)'] });
+	assert.ok(settings.enabledMcpjsonServers.includes('mine') && settings.enabledMcpjsonServers.includes('playwright'));
+	assert.equal(new Set(settings.enabledMcpjsonServers).size, settings.enabledMcpjsonServers.length, 'no duplicates');
+	const again = runCloud(dir, ['--routine']);
+	assert.equal(again.status, 0, again.stderr);
+	assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, '.mcp.json'), 'utf8')), mcp, 'idempotent');
+});
+
+test('init --routine changes nothing when .mcp.json cannot be read', () => {
+	const dir = routineRepo();
+	fs.writeFileSync(path.join(dir, '.mcp.json'), '{ // not json');
+	const r = runCloud(dir, ['--routine']);
+	assert.equal(r.status, 1);
+	assert.match(r.stderr, /\.mcp\.json exists but cannot be read/);
+	assert.equal(fs.existsSync(path.join(dir, '.claude/settings.json')), false, 'nothing was written');
+});
+
+test('without --routine no .mcp.json is written, and the Actions guidance names the repository variables', () => {
+	const dir = routineRepo();
+	const r = runCloud(dir, ['--github-actions']);
+	assert.equal(r.status, 0, r.stderr);
+	assert.equal(fs.existsSync(path.join(dir, '.mcp.json')), false);
+	assert.match(r.stdout, /DF_PROJECT_CONFIG/);
+	assert.match(r.stdout, /DF_PROJECT_QA/);
+	const wf = fs.readFileSync(path.join(dir, '.github/workflows/dev-factory-tick.yml'), 'utf8');
+	assert.match(wf, /config write-from-env --if-set/);
+	assert.match(wf, /DF_PROJECT_CONFIG: \$\{\{ vars\.DF_PROJECT_CONFIG \}\}/);
+	assert.match(wf, /DF_PROJECT_QA: \$\{\{ vars\.DF_PROJECT_QA \}\}/);
+	assert.doesNotMatch(wf, /\.mcp\.json/, 'the pass generates its own MCP config');
+});
+
 test('runtime settings validate: mode, scheduler, sandbox switch and worktree folder', () => {
 	const c = load();
 	assert.deepEqual(validate(c), []);

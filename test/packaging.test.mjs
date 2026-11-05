@@ -47,6 +47,36 @@ test('hooks reach their scripts through CLAUDE_PLUGIN_ROOT, and the shipped exec
 		assert.ok(fs.statSync(path.join(ROOT, 'scripts', f)).mode & 0o111, f);
 });
 
+// A checkout of a cloud session or a routine has no .devfactory/ (it is never committed): the session start writes it from the
+// variables, and must never fail the session, whether the variables are set, unset or the files already there.
+test('the SessionStart hook writes the project files from the environment and never fails a session', () => {
+	const start = json('hooks/hooks.json').hooks.SessionStart;
+	assert.equal(start.length, 1);
+	assert.equal(start[0].matcher, 'startup|resume');
+	assert.equal(start[0].hooks.length, 1);
+	const { command, timeout, type } = start[0].hooks[0];
+	assert.equal(type, 'command');
+	assert.equal(timeout, 15);
+	assert.equal(command, 'node "${CLAUDE_PLUGIN_ROOT}/scripts/config.mjs" write-from-env --if-set');
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'df-session-'));
+	spawnSync('git', ['init', '-q'], { cwd: dir });
+	const run = (env) =>
+		spawnSync('sh', ['-c', command], {
+			cwd: dir,
+			encoding: 'utf8',
+			env: { ...process.env, CLAUDE_PLUGIN_ROOT: ROOT, DF_PROJECT_CONFIG: '', DF_PROJECT_QA: '', ...env },
+		});
+	assert.equal(run({}).status, 0, 'nothing set');
+	assert.equal(fs.existsSync(path.join(dir, '.devfactory/config.json')), false);
+	const set = { DF_PROJECT_CONFIG: JSON.stringify({ tasks: { source: 'github' } }), DF_PROJECT_QA: 'profiles:\n  web: {}\n' };
+	assert.equal(run(set).status, 0);
+	assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, '.devfactory/config.json'), 'utf8')), { tasks: { source: 'github' } });
+	assert.match(fs.readFileSync(path.join(dir, '.devfactory/qa.yaml'), 'utf8'), /profiles:/);
+	const again = run({ ...set, DF_PROJECT_CONFIG: JSON.stringify({ tasks: { source: 'local' } }) });
+	assert.equal(again.status, 0, 'a file that is there is kept, not a failure');
+	assert.equal(JSON.parse(fs.readFileSync(path.join(dir, '.devfactory/config.json'), 'utf8')).tasks.source, 'github');
+});
+
 // ---- no path that only exists when the plugin is copied into a repository ----
 
 test('commands, skills and agents run the plugin through CLAUDE_PLUGIN_ROOT, never through a dev-factory/ folder of the repository', () => {

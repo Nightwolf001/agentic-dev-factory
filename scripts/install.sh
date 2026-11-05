@@ -101,9 +101,10 @@ esac
 
 cat <<TXT
 manual steps:
-  1. choose the task source: dev-factory.config.json at the repository root, or /dev-factory:setup inside claude (local needs nothing, github needs 'gh auth login')
-  2. optional MCP servers: dev-factory mcp connect (a tracker's OAuth login is done once: run /mcp in claude)
-  3. unattended runs only: run 'claude setup-token', put the value in $ENVF as CLAUDE_CODE_OAUTH_TOKEN,
-     and for jira or notion also the API token the scheduler's preflight uses (see .env.example)
+  1. in each repository, run /dev-factory:setup inside claude: it asks where tasks live (local needs nothing, github needs 'gh auth login'),
+     which MCP servers and plugins you want for all projects or one, and the secrets they read
+  2. change any choice later on the settings page: dev-factory settings (a tracker's OAuth login is done once: run /mcp in claude)
+  3. unattended runs only: run 'claude setup-token' and save it with: pbpaste | dev-factory settings set secret:CLAUDE_CODE_OAUTH_TOKEN
+     (it goes to $ENVF), and for jira or notion also the API token the scheduler's preflight uses (see .env.example)
 TXT
 [ "$FAILED" = 0 ] || { echo "install: a plugin or marketplace could not be installed (see above); fix it and run again" >&2; exit 1; }
