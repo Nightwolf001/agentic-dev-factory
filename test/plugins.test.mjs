@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { readManaged, writeManaged } from '../scripts/mcp-scope.mjs';
-import { applyPlugins, desiredPlugins, planPlugins, pluginCatalog, userKept } from '../scripts/plugins.mjs';
+import { applyPlugins, desiredPlugins, legacyLocalNotes, planPlugins, pluginCatalog, userKept } from '../scripts/plugins.mjs';
 
 const SCRIPT = new URL('../scripts/plugins.mjs', import.meta.url).pathname;
 const SP = 'superpowers@claude-plugins-official';
@@ -124,6 +124,7 @@ test('planPlugins installs what is wanted and not there, at the right scope', ()
 			{ id: FD, scope: 'local' },
 		],
 		disable: [],
+		enable: [],
 		uninstall: [],
 	});
 	// a plugin the user has at user scope and enabled is used as it is for a project that asks for it
@@ -150,21 +151,26 @@ test('planPlugins disables a user-level plugin for the project that turns it off
 test('an unmanaged plugin is never uninstalled', () => {
 	const repo = repoDir();
 	const installed = [entry(FD, 'user'), entry(CS, 'local')];
-	assert.deepEqual(planPlugins({ want: [], managed: empty(), installed, repo, userIds: [] }), { install: [], disable: [], uninstall: [] });
+	assert.deepEqual(planPlugins({ want: [], managed: empty(), installed, repo, userIds: [] }), {
+		install: [],
+		disable: [],
+		enable: [],
+		uninstall: [],
+	});
 });
 
 test('only a managed plugin that is no longer wanted is uninstalled, at user scope only with userIds that no longer hold it', () => {
 	const repo = repoDir();
 	const managed = empty();
 	managed.plugins.user = [FD, CS];
-	managed.plugins.local[repo] = [SP];
-	const installed = [entry(FD, 'user'), entry(CS, 'user'), entry(SP, 'local')];
+	managed.plugins.local[repo] = [CS];
+	const installed = [entry(FD, 'user'), entry(CS, 'user'), entry(CS, 'local')];
 	// no userIds: no user-scope uninstall, the local one still goes
-	assert.deepEqual(planPlugins({ want: [], managed, installed, repo }).uninstall, [{ id: SP, scope: 'local' }]);
+	assert.deepEqual(planPlugins({ want: [], managed, installed, repo }).uninstall, [{ id: CS, scope: 'local' }]);
 	// the user layer still has FD on: it stays; CS goes
 	assert.deepEqual(planPlugins({ want: [], managed, installed, repo, userIds: [FD] }).uninstall, [
 		{ id: CS, scope: 'user' },
-		{ id: SP, scope: 'local' },
+		{ id: CS, scope: 'local' },
 	]);
 	// a wanted plugin is not uninstalled at the scope it is wanted at; another repository's record is not this one's
 	const other = empty();
@@ -176,7 +182,7 @@ test('only a managed plugin that is no longer wanted is uninstalled, at user sco
 	const keep = [{ id: CS, scope: 'user', required: false }];
 	assert.deepEqual(
 		planPlugins({ want: keep, managed, installed, repo, userIds: [] }).uninstall.map((u) => u.id),
-		[FD, SP],
+		[FD, CS],
 	);
 });
 
@@ -188,6 +194,7 @@ test('a listing that cannot be read plans nothing at all', () => {
 		assert.deepEqual(planPlugins({ want: [{ id: SP, scope: 'user', required: true }], managed, installed, repo, userIds: [] }), {
 			install: [],
 			disable: [],
+			enable: [],
 			uninstall: [],
 		});
 });
@@ -221,7 +228,7 @@ test('project false on a user-level plugin disables it at local scope', () => {
 		f.changes().map((c) => [c.args.join(' '), c.cwd]),
 		[[`plugin disable ${FD} --scope local`, repo]],
 	);
-	assert.deepEqual(readManaged(env).plugins, { user: [], local: {} }, 'a disable is not an install: nothing is recorded');
+	assert.deepEqual(readManaged(env).plugins, { user: [], local: {}, disabled: { [repo]: [FD] } }, 'a disable is recorded for this repository only');
 });
 
 test('applyPlugins records only what succeeded, keeps the mcp record, and uninstalls only what it recorded', () => {
@@ -365,4 +372,139 @@ test('an unknown command prints usage and exits 3', () => {
 	const r = cli(['nope'], { cwd: repoDir() });
 	assert.equal(r.status, 3);
 	assert.match(r.stderr, /usage: plugins\.mjs/);
+});
+
+// ---- the required plugin is never removed ----
+
+test('the required plugin is wanted at user scope whatever the layers say, and is never uninstalled or disabled', () => {
+	const cat = pluginCatalog();
+	const layered = L(enabled({ [SP]: false }), enabled({ [SP]: true }));
+	const sp = desiredPlugins(layered, cat, {}).find((x) => x.id === SP);
+	assert.deepEqual([sp.scope, sp.required, sp.off], ['user', true, undefined]);
+	assert.ok(userKept(layered, cat, []).includes(SP), 'the user layer cannot take it out of the kept ids');
+	const repo = repoDir();
+	const managed = empty();
+	managed.plugins.user = [SP];
+	managed.plugins.local[repo] = [SP];
+	managed.plugins.disabled = { [repo]: [SP] };
+	const installed = [entry(SP, 'user'), entry(SP, 'local')];
+	// even a wanted list that forgot it (or marks it off) removes nothing and disables nothing
+	for (const want of [[], [{ id: SP, scope: 'project', required: true }], [{ id: SP, scope: 'user', required: true, off: 'project' }]])
+		assert.deepEqual(planPlugins({ want, managed, installed, repo, userIds: [] }), { install: [], disable: [], enable: [], uninstall: [] });
+	// through the command line: the repro of user false + project true, with the plugin recorded and installed
+	const state = stateDir();
+	fs.writeFileSync(path.join(state, 'config.json'), JSON.stringify(enabled({ [SP]: false })));
+	fs.mkdirSync(path.join(repo, '.devfactory'));
+	fs.writeFileSync(path.join(repo, '.devfactory', 'config.json'), JSON.stringify(enabled({ [SP]: true })));
+	writeManaged({ DF_STATE_DIR: state }, { mcp: { user: [], local: {} }, plugins: { user: [SP], local: {} } });
+	const r = cli(['sync'], { cwd: repo, state, env: { DF_FAKE_LIST: JSON.stringify([entry(SP, 'user')]) } });
+	assert.deepEqual(
+		r.f.changes().filter((c) => c.args.includes(SP)),
+		[],
+		'nothing is done to the required plugin',
+	);
+	assert.ok(readManaged({ DF_STATE_DIR: state }).plugins.user.includes(SP), 'and it is still recorded');
+});
+
+// ---- what the factory disabled is enabled again when the project stops asking ----
+
+const OFF = [{ id: FD, scope: 'user', required: false, off: 'project' }];
+const disabledBy = (repo, ...ids) => ({ ...empty(), plugins: { user: [], local: {}, disabled: { [repo]: ids } } });
+
+test('a disable is recorded, and not issued again while it is recorded and the listing shows it disabled locally', () => {
+	const repo = repoDir();
+	const userCopy = entry(FD, 'user');
+	const first = planPlugins({ want: OFF, managed: empty(), installed: [userCopy], repo, userIds: [FD] });
+	assert.deepEqual(first.disable, [{ id: FD, scope: 'local' }]);
+	const inEffect = [userCopy, entry(FD, 'local', { enabled: false, projectPath: repo })];
+	assert.deepEqual(planPlugins({ want: OFF, managed: disabledBy(repo, FD), installed: inEffect, repo, userIds: [FD] }).disable, []);
+	// recorded but the listing does not show it disabled: issued again; shown disabled but not recorded (the person's own): ours to issue
+	assert.deepEqual(planPlugins({ want: OFF, managed: disabledBy(repo, FD), installed: [userCopy], repo, userIds: [FD] }).disable.length, 1);
+	assert.deepEqual(planPlugins({ want: OFF, managed: empty(), installed: inEffect, repo, userIds: [FD] }).disable.length, 1);
+	// recording survives a sync of the MCP part and another repository's record is not this one's
+	assert.deepEqual(planPlugins({ want: OFF, managed: disabledBy(repoDir(), FD), installed: inEffect, repo, userIds: [FD] }).enable, []);
+});
+
+test('when the project layer stops turning a plugin off, a plugin the factory disabled is enabled again and the record dropped', () => {
+	const f = fakeClaude();
+	const repo = repoDir();
+	const env = { ...f.env, DF_STATE_DIR: stateDir() };
+	const want = [{ id: FD, scope: 'user', required: false }];
+	const plan = planPlugins({ want, managed: disabledBy(repo, FD, CS), installed: [entry(FD, 'user'), entry(CS, 'user')], repo, userIds: [FD, CS] });
+	assert.deepEqual(plan.enable, [
+		{ id: FD, scope: 'local' },
+		{ id: CS, scope: 'local' },
+	]);
+	writeManaged(env, disabledBy(repo, FD, CS));
+	const r = applyPlugins(plan, { repo, env });
+	assert.deepEqual(r.failed, []);
+	assert.deepEqual(
+		f.changes().map((c) => [c.args.join(' '), c.cwd]),
+		[
+			[`plugin enable ${FD} --scope local`, repo],
+			[`plugin enable ${CS} --scope local`, repo],
+		],
+	);
+	assert.deepEqual(readManaged(env).plugins, { user: [], local: {} });
+	// a plugin that is still turned off keeps its record and is not enabled
+	assert.deepEqual(planPlugins({ want: OFF, managed: disabledBy(repo, FD), installed: [entry(FD, 'user')], repo, userIds: [FD] }).enable, []);
+});
+
+test('a plugin the factory did not disable is never enabled', () => {
+	const repo = repoDir();
+	const installed = [entry(FD, 'user'), entry(FD, 'local', { enabled: false, projectPath: repo }), entry(CS, 'user', { enabled: false })];
+	const want = [
+		{ id: FD, scope: 'user', required: false },
+		{ id: CS, scope: 'user', required: false },
+	];
+	assert.deepEqual(planPlugins({ want, managed: empty(), installed, repo, userIds: [FD, CS] }).enable, []);
+	// ... and an enable that fails because the plugin is gone drops the record
+	const f = fakeClaude();
+	const env = { ...f.env, DF_STATE_DIR: stateDir(), DF_FAKE_GONE: '1' };
+	writeManaged(env, disabledBy(repo, FD));
+	const r = applyPlugins({ install: [], disable: [], enable: [{ id: FD, scope: 'local' }], uninstall: [] }, { repo, env });
+	assert.deepEqual(r.failed.length, 0);
+});
+
+test('the disabled record survives an MCP sync write and an unreadable record claims nothing', () => {
+	const repo = repoDir();
+	const env = { DF_STATE_DIR: stateDir() };
+	writeManaged(env, disabledBy(repo, FD));
+	assert.deepEqual(readManaged(env).plugins.disabled, { [repo]: [FD] });
+	writeManaged(env, { ...readManaged(env), mcp: { user: ['x'], local: {} } });
+	assert.deepEqual(readManaged(env).plugins.disabled, { [repo]: [FD] });
+});
+
+// ---- the leftovers of the older installer ----
+
+test('installing at user scope a plugin that is at local scope for this repository says the local copy is left as it is', () => {
+	const repo = repoDir();
+	const plan = {
+		install: [
+			{ id: FD, scope: 'user' },
+			{ id: CS, scope: 'user' },
+			{ id: SP, scope: 'local' },
+		],
+		disable: [],
+		enable: [],
+		uninstall: [],
+	};
+	const installed = [entry(FD, 'local', { projectPath: repo }), entry(CS, 'local', { projectPath: repoDir() }), entry(SP, 'local')];
+	const notes = legacyLocalNotes({ plan, installed, repo });
+	assert.equal(notes.length, 1);
+	assert.match(notes[0], new RegExp(`${FD} .*left as it is.*claude plugin uninstall ${FD} --scope local`));
+	assert.deepEqual(legacyLocalNotes({ plan, installed: null, repo }), []);
+	// the command prints it, and installs the user copy
+	const r = cli(['sync'], { cwd: repo, env: { DF_FAKE_LIST: JSON.stringify([entry(FD, 'local', { projectPath: repo })]) } });
+	assert.match(r.stdout, /note: frontend-design@\S+ .*left as it is.*claude plugin uninstall frontend-design@\S+ --scope local/);
+	assert.ok(r.f.changes().some((c) => c.args.join(' ') === `plugin install ${FD} --scope user`));
+});
+
+test('an entry of the project scope for another repository does not count as installed here', () => {
+	const repo = repoDir();
+	const want = [{ id: FD, scope: 'project', required: false }];
+	const there = [entry(FD, 'project', { projectPath: repoDir() })];
+	assert.deepEqual(planPlugins({ want, managed: empty(), installed: there, repo }).install, [{ id: FD, scope: 'local' }]);
+	const here = [entry(FD, 'project', { projectPath: repo })];
+	assert.deepEqual(planPlugins({ want, managed: empty(), installed: here, repo }).install, []);
 });

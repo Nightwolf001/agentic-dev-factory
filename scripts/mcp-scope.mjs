@@ -137,6 +137,12 @@ export function readManaged(env = process.env) {
 		const local = isObject(part.local) ? part.local : {};
 		out[kind] = { user: names(part.user), local: Object.fromEntries(Object.entries(local).map(([repo, ids]) => [repo, names(ids)])) };
 	}
+	// plugins the factory disabled at a repository's local scope: { [repoRealPath]: [ids] }. Present only when something is recorded.
+	const disabled = isObject(raw?.plugins?.disabled) ? raw.plugins.disabled : {};
+	const kept = Object.entries(disabled)
+		.map(([repo, ids]) => [repo, names(ids)])
+		.filter(([, ids]) => ids.length);
+	if (kept.length) out.plugins.disabled = Object.fromEntries(kept);
 	return out;
 }
 
