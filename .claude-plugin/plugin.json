@@ -1,6 +1,6 @@
 {
 	"name": "dev-factory",
-	"version": "0.17.0",
+	"version": "0.18.0",
 	"description": "Plans, builds, verifies and ships tasks to draft PRs. Takes tasks from GitHub Issues, Notion, Jira or local files; builds each in an isolated worktree, records QA evidence, reviews in two steps, and opens a draft PR. Every MCP server is optional.",
 	"author": {
 		"name": "dev-factory contributors"
@@ -8,5 +8,6 @@
 	"homepage": "https://github.com/Nightwolf001/agentic-dev-factory",
 	"repository": "https://github.com/Nightwolf001/agentic-dev-factory",
 	"license": "MIT",
-	"keywords": ["agents", "automation", "pull-requests", "qa", "github", "jira", "notion", "workflow"]
+	"keywords": ["agents", "automation", "pull-requests", "qa", "github", "jira", "notion", "workflow"],
+	"types": "./types/settings-pane.d.ts"
 }
