@@ -154,6 +154,15 @@ test('the CLI plans by default and moves with --apply', () => {
 	assert.ok(fs.existsSync(path.join(root, PROJECT_FILES.config)));
 });
 
+test('the CLI reminds a repository with a legacy .mcp.json to run mcp migrate, and says nothing otherwise', () => {
+	const root = legacyRepo();
+	const run = (...args) => spawnSync('node', [SCRIPT, 'migrate', ...args], { cwd: root, encoding: 'utf8' });
+	assert.doesNotMatch(run().stdout, /mcp migrate/);
+	fs.writeFileSync(path.join(root, '.mcp.json'), '{"mcpServers":{}}');
+	assert.match(run().stdout, /^note: .*dev-factory mcp migrate/m);
+	assert.match(run('--apply').stdout, /^note: .*dev-factory mcp migrate/m);
+});
+
 test('the CLI reports a conflict as skip and fails outside a repository', () => {
 	const root = repo();
 	write(root, LEGACY_FILES.config, 'old\n');

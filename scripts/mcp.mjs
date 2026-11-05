@@ -1,39 +1,56 @@
 // Optional MCP servers. The plugin ships none: every server is listed in mcp/catalog.json with what it is for and what
-// happens without it, and a repository turns on the ones it wants. They are written to the repository's own
-// .mcp.json (project scope, merged, never overwriting a server that is already there), which Claude Code reads and
-// which the scheduled pass is started with.
+// happens without it, and a person turns on the ones they want: for every project (their user settings file) or for this
+// project (its .devfactory/config.json), as `mcp.servers.<id>: true`. `sync` applies that to Claude Code (`claude mcp
+// add-json -s user|local`) and records in <state>/managed.json what it added, so only that is ever removed. A scheduled
+// pass is started from a generated .devfactory/mcp.json instead (`write-config`). The planning is in scripts/mcp-scope.mjs.
 //
-// A server you already have, at user scope or as a claude.ai connector, is used as it is: `enable` and `connect` do not
-// write a second copy of it into .mcp.json (that makes Claude warn about duplicates and run two definitions), unless
-// you pass --force. The scheduled pass is allowed to use those servers too.
+// A server you already have, at user scope or as a claude.ai connector, is used as it is: `sync` does not add a second copy
+// of it (that makes Claude warn about duplicates and run two definitions) and never removes it.
 //
-//   mcp.mjs list                  every catalog server: enabled or not, what it is for, what you lose without it
-//   mcp.mjs enable ID [ID...]     add the servers to .mcp.json (skips ones already configured elsewhere; --force adds anyway)
-//   mcp.mjs disable ID [ID...]    remove them again
+//   mcp.mjs list                  every catalog server: where it is on (user, proj, repo = legacy .mcp.json, ext = from elsewhere, off)
+//   mcp.mjs enable ID... [--user|--project]   turn servers on (default: each one's defaultScope), then sync
+//   mcp.mjs disable ID... [--user|--project]  turn them off in that layer (both without a flag), then sync; a required server cannot be
+//   mcp.mjs sync [--dry-run]      make Claude's user and local scopes match the settings
+//   mcp.mjs write-config          write .devfactory/mcp.json and print the Claude arguments for a pass, one per line
+//   mcp.mjs secrets               the variables the servers read, set or empty (never a value)
+//   mcp.mjs migrate [--apply]     move the factory's own entries out of a legacy .mcp.json into the settings
 //   mcp.mjs recommend             the ids worth enabling for tasks.source and this repository
-//   mcp.mjs connect [--all] [--force]   enable the recommended servers (or all), then show which still need a login
+//   mcp.mjs connect [--all]       enable the recommended servers (or all), then show which still need a login
 //   mcp.mjs doctor [--lenient]    one line per server: connected, pending approval, needs login, or not isolated; a server the catalog
 //                                 flags `required` is a FAIL while missing or down (a warning with --lenient)
 //   mcp.mjs allow                 the permission rules for the servers in use (used by the scheduler's settings)
 //
 // DF_MCP_LISTING names a file holding the output of `claude mcp list`, used instead of running it (tests, offline).
+// DF_CLAUDE_BIN names the claude program to run (tests put a fake there). DF_MCP_FILE names the legacy .mcp.json.
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { get, load } from './config.mjs';
+import { get, layers, load, requiredServers, setIn } from './config.mjs';
 import { isMain } from './is-main.mjs';
+import {
+	applySync,
+	catalog,
+	claudeBin,
+	desired,
+	findServer,
+	parseListing,
+	planLegacyMigration,
+	planSync,
+	readManaged,
+	readProject,
+	secretsReport,
+	serverConfig,
+	stateOf,
+	writePassConfig,
+} from './mcp-scope.mjs';
+import { projectRoot } from './project-dir.mjs';
 import { loadTrackerEnv } from './state-env.mjs';
 
-const CATALOG = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'mcp', 'catalog.json');
+// What callers have always imported from here, and the planning they now also get from here.
+export * from './mcp-scope.mjs';
 
-export const catalog = () => JSON.parse(fs.readFileSync(CATALOG, 'utf8')).servers;
-
-export function readProject(file) {
-	return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : { mcpServers: {} };
-}
-
-export function enable(ids, file, cat = catalog()) {
+// The legacy writer for an unmigrated repository's .mcp.json. The command line no longer calls it.
+export function enable(ids, file, cat = catalog(), env = process.env) {
 	if (!ids.length) return [];
 	const doc = readProject(file);
 	doc.mcpServers ??= {};
@@ -41,7 +58,7 @@ export function enable(ids, file, cat = catalog()) {
 	for (const id of ids) {
 		if (!cat[id]) throw new Error(`unknown MCP server '${id}' (see: mcp.mjs list)`);
 		if (doc.mcpServers[id]) continue;
-		doc.mcpServers[id] = cat[id].config;
+		doc.mcpServers[id] = serverConfig(id, cat, env);
 		added.push(id);
 	}
 	fs.writeFileSync(file, JSON.stringify(doc, null, '\t') + '\n');
@@ -61,9 +78,10 @@ export function disable(ids, file) {
 // while it is missing or down. The catalog flags playwright (every UI change needs a browser walk); maestro is required by requiredServers(config) once mobile.appDir is set.
 //
 // Two servers serve Jira with the same tool names (`jira` on an API token, `atlassian` on OAuth), so exactly one is recommended: the one
-// the repository's .mcp.json already has, else `jira` when JIRA_EMAIL and JIRA_API_TOKEN are available (the environment, or the state
-// folder's .env.local read as text), else `atlassian`, whose login at least works by hand. `file`, `env` and `dir` are for tests.
-export function recommend(cfg, cat = catalog(), { file, env = process.env, dir } = {}) {
+// already in use (turned on in the settings, in the repository's .mcp.json, or found in `listing`, the text of `claude mcp list`, which
+// includes a claude.ai connector), else `jira` when JIRA_EMAIL and JIRA_API_TOKEN are available (the environment, or the state
+// folder's .env.local read as text), else `atlassian`, whose login at least works by hand. `file`, `env`, `dir` and `listing` are for tests.
+export function recommend(cfg, cat = catalog(), { file, env = process.env, dir, listing = '' } = {}) {
 	const source = get('tasks.source', { config: cfg });
 	const tracker = source === 'jira' ? 'jira' : source === 'notion' ? 'notion' : null;
 	const ids = Object.entries(cat)
@@ -71,49 +89,21 @@ export function recommend(cfg, cat = catalog(), { file, env = process.env, dir }
 		.map(([id]) => id);
 	const jira = ids.filter((id) => tracker === 'jira' && cat[id].tracker === 'jira');
 	if (jira.length < 2) return ids;
-	const have = file ? Object.keys(readProject(file).mcpServers ?? {}) : [];
-	let pick = jira.find((id) => have.includes(id));
+	const entries = parseListing(listing);
+	const have = new Set([
+		...(file ? Object.keys(readProject(file).mcpServers ?? {}) : []),
+		...Object.entries(cfg?.mcp?.servers ?? {})
+			.filter(([, on]) => on === true)
+			.map(([id]) => id),
+		...jira.filter((id) => findServer(id, entries)),
+	]);
+	let pick = jira.find((id) => have.has(id));
 	if (!pick) {
 		const scratch = { ...env };
 		loadTrackerEnv({ env: scratch, ...(dir ? { dir } : {}) });
 		pick = scratch.JIRA_EMAIL && scratch.JIRA_API_TOKEN && jira.includes('jira') ? 'jira' : jira.includes('atlassian') ? 'atlassian' : jira[0];
 	}
 	return ids.filter((id) => !jira.includes(id) || id === pick);
-}
-
-// ---- what Claude already knows about: the text of `claude mcp list` ----
-
-// "name: target - status" lines. A name may contain colons (plugin:dev-factory:notion), never a colon and a space.
-export function parseListing(text) {
-	return String(text ?? '')
-		.split('\n')
-		.map((line) => {
-			const m = /^(.+?): (.*)$/.exec(line.trim());
-			return m ? { name: m[1], rest: m[2] } : null;
-		})
-		.filter(Boolean);
-}
-
-// The entry that is this catalog server, however it was added: by its own name (user, project or local scope), as the
-// plugin's own server, or as a claude.ai connector of that name. Other plugins' servers with a similar name are not it.
-export function findServer(id, entries) {
-	const lower = (e) => e.name.toLowerCase();
-	return (
-		entries.find((e) => e.name === id) ??
-		entries.find((e) => e.name === `plugin:dev-factory:${id}`) ??
-		entries.find((e) => lower(e).startsWith(`claude.ai ${id}`))
-	);
-}
-
-export function stateOf(rest) {
-	// the line is "<command and arguments> - <status>": the status is what follows the last " - ", never a word in the command
-	const text = String(rest ?? '');
-	const status = text.includes(' - ') ? text.slice(text.lastIndexOf(' - ') + 3) : text;
-	if (/pending approval/i.test(status)) return 'pending approval';
-	if (/needs auth/i.test(status)) return 'needs login';
-	if (/failed/i.test(status)) return 'failed';
-	if (/connected/i.test(status)) return 'connected';
-	return 'not started';
 }
 
 export function claudeListing(env = process.env) {
@@ -125,15 +115,15 @@ export function claudeListing(env = process.env) {
 		}
 	}
 	try {
-		return execFileSync('claude', ['mcp', 'list'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 60000 });
+		return execFileSync(claudeBin(env), ['mcp', 'list'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 60000 });
 	} catch {
 		return '';
 	}
 }
 
-// Catalog servers Claude has from somewhere other than this repository's .mcp.json.
-export function externalServers(file, listing, cat = catalog()) {
-	const mine = new Set(Object.keys(readProject(file).mcpServers ?? {}));
+// Catalog servers Claude has from somewhere other than this repository's .mcp.json (or the `also` ids, such as the ones the settings turn on).
+export function externalServers(file, listing, cat = catalog(), also = []) {
+	const mine = new Set([...Object.keys(readProject(file).mcpServers ?? {}), ...also]);
 	const entries = parseListing(listing);
 	return Object.keys(cat)
 		.filter((id) => !mine.has(id))
@@ -156,12 +146,15 @@ export function planEnable(ids, file, listing, { force = false } = {}, cat = cat
 	return { write, skipped };
 }
 
-export function status(file, cat = catalog(), listing = '') {
-	const on = new Set(Object.keys(readProject(file).mcpServers ?? {}));
-	const elsewhere = new Map(externalServers(file, listing, cat).map((s) => [s.id, s]));
+// `want` is desired(): with it, each row also says where the server is on (user, project, repo = the legacy .mcp.json, ext, off).
+export function status(file, cat = catalog(), listing = '', want = []) {
+	const legacy = new Set(Object.keys(readProject(file).mcpServers ?? {}));
+	const at = new Map(want.map((w) => [w.id, w.scope]));
+	const elsewhere = new Map(externalServers(file, listing, cat, [...at.keys()]).map((s) => [s.id, s]));
 	return Object.entries(cat).map(([id, s]) => ({
 		id,
-		enabled: on.has(id),
+		enabled: legacy.has(id) || at.has(id),
+		scope: at.get(id) ?? (legacy.has(id) ? 'repo' : elsewhere.has(id) ? 'ext' : 'off'),
 		elsewhere: elsewhere.get(id)?.name ?? null,
 		title: s.title,
 		category: s.category,
@@ -170,27 +163,34 @@ export function status(file, cat = catalog(), listing = '') {
 	}));
 }
 
-// Where each enabled server stands, from the text of `claude mcp list`: connected, waiting for approval, needs a login
-// (run /mcp), or not started yet (restart claude so it reads .mcp.json).
-export function connectReport(file, listOutput = '', cat = catalog()) {
+// Where each of `ids` stands, from the text of `claude mcp list`: connected, waiting for approval, needs a login (run /mcp), or not
+// started yet (not applied, or restart claude so it reads its servers).
+export function reportFor(ids, listOutput = '', cat = catalog()) {
 	const entries = parseListing(listOutput);
-	return Object.keys(readProject(file).mcpServers ?? {}).map((id) => {
+	return ids.map((id) => {
 		const e = findServer(id, entries);
 		return { id, state: e ? stateOf(e.rest) : 'not started', login: Boolean(cat[id]?.requires?.some((r) => /oauth/i.test(r))) };
 	});
 }
 
-// One line per server in use, for the doctor: { level: 'ok' | 'warn', text }.
-export function doctorLines(file, listing, cat = catalog(), { lenient = false } = {}) {
+export const connectReport = (file, listOutput = '', cat = catalog()) => reportFor(Object.keys(readProject(file).mcpServers ?? {}), listOutput, cat);
+
+// One line per server in use, for the doctor: { level: 'ok' | 'warn', text }. `want` is desired(): those servers are in use as well as
+// the ones in the legacy .mcp.json.
+export function doctorLines(file, listing, cat = catalog(), { lenient = false, want = [] } = {}) {
 	const entries = parseListing(listing);
 	const lines = [];
-	const mine = Object.keys(readProject(file).mcpServers ?? {});
+	const legacy = Object.keys(readProject(file).mcpServers ?? {});
+	const at = new Map(want.map((w) => [w.id, w.scope]));
+	const mine = [...new Set([...legacy, ...at.keys()])];
+	const report = reportFor(mine, listing, cat);
+	const where = (id) => (legacy.includes(id) ? '.mcp.json' : at.get(id) === 'user' ? 'all projects' : 'this project');
 	// a required server fails the doctor while it is missing or not connected (a warning under --lenient or --ci)
 	const level = lenient ? 'warn' : 'fail';
-	const external = externalServers(file, listing, cat);
+	const external = externalServers(file, listing, cat, [...at.keys()]);
 	for (const [id, s] of Object.entries(cat)) {
 		if (s.required !== true) continue;
-		const own = connectReport(file, listing, cat).find((r) => r.id === id);
+		const own = report.find((r) => r.id === id);
 		const ext = external.find((e) => e.id === id);
 		const state = own?.state ?? ext?.state ?? null;
 		if (state === 'connected') lines.push({ level: 'ok', text: `required MCP ${id} connected` });
@@ -201,19 +201,24 @@ export function doctorLines(file, listing, cat = catalog(), { lenient = false } 
 				text: `required MCP ${id} is ${state}: it must be connected before the factory can work (dev-factory mcp connect, then /mcp if it asks for a login)`,
 			});
 	}
-	for (const r of connectReport(file, listing, cat)) {
+	for (const r of report) {
 		if (cat[r.id]?.required === true) continue; // reported above
-		if (r.state === 'connected') lines.push({ level: 'ok', text: `MCP ${r.id} connected (.mcp.json)` });
+		if (r.state === 'connected') lines.push({ level: 'ok', text: `MCP ${r.id} connected (${where(r.id)})` });
 		else if (r.state === 'pending approval')
 			lines.push({ level: 'warn', text: `MCP ${r.id} is waiting for your approval: run claude in this repository and approve it` });
 		else if (r.state === 'needs login') lines.push({ level: 'warn', text: `MCP ${r.id} needs a login: in claude run /mcp and authenticate it` });
-		else
+		else if (legacy.includes(r.id))
 			lines.push({
 				level: 'warn',
 				text: `MCP ${r.id} is in .mcp.json but ${r.state} (restart claude, or remove it: dev-factory mcp disable ${r.id})`,
 			});
+		else
+			lines.push({
+				level: 'warn',
+				text: `MCP ${r.id} is on (${where(r.id)}) but ${r.state} (run dev-factory mcp sync, then restart claude)`,
+			});
 	}
-	for (const s of externalServers(file, listing, cat)) {
+	for (const s of external) {
 		if (cat[s.id]?.required === true) continue;
 		lines.push({
 			level: s.state === 'connected' ? 'ok' : 'warn',
@@ -228,8 +233,7 @@ export function doctorLines(file, listing, cat = catalog(), { lenient = false } 
 			text: `playwright ("${pw.name}") runs without --isolated, so QA walks share one browser profile and can collide. Fix: claude mcp remove playwright -s user && claude mcp add playwright -s user -- npx -y @playwright/mcp@0.0.82 --isolated --ignore-https-errors`,
 		});
 	}
-	if (!mine.length && !externalServers(file, listing, cat).length)
-		lines.push({ level: 'ok', text: 'no MCP servers in use (all are optional: dev-factory mcp list)' });
+	if (!mine.length && !external.length) lines.push({ level: 'ok', text: 'no MCP servers in use (all are optional: dev-factory mcp list)' });
 	return lines;
 }
 
@@ -242,42 +246,122 @@ export function allowRules(file, external = []) {
 	]);
 }
 
+// ---- the command line ----
+
+const WHERE = { user: 'all projects', project: 'this project' };
+
+function layerHas(layer, id) {
+	return layers().find((l) => l.name === layer)?.data.mcp?.servers?.[id] !== undefined;
+}
+
+// Writes `mcp.servers.<id> = true` in the layer of `scope` and deletes the key from the other layer.
+function turnOn(id, scope, cat) {
+	if (!cat[id]) throw new Error(`unknown MCP server '${id}' (see: mcp.mjs list)`);
+	setIn(scope, `mcp.servers.${id}`, true);
+	const other = scope === 'user' ? 'project' : 'user';
+	if (layerHas(other, id)) setIn(other, `mcp.servers.${id}`, undefined);
+	console.log(`on    ${id.padEnd(20)} (${WHERE[scope]})`);
+}
+
+// Makes Claude's user and local scopes match the settings and prints what it did.
+function runSync({ dry = false } = {}) {
+	const repo = projectRoot();
+	const cat = catalog();
+	const want = desired(layers(), cat);
+	if (!repo && want.some((w) => w.scope === 'project')) throw new Error('the project scope needs a git repository: run this inside one');
+	const listing = claudeListing();
+	const plan = planSync({ want, managed: readManaged(), listing, repo, cat });
+	for (const s of plan.remove) console.log(`remove  ${s.id.padEnd(20)} (${WHERE[s.scope]})`);
+	for (const s of plan.add) console.log(`add     ${s.id.padEnd(20)} (${WHERE[s.scope]})`);
+	for (const s of plan.skip) console.log(`skip    ${s.id.padEnd(20)} ${s.reason}`);
+	if (dry) return;
+	const { failed } = applySync(plan, { repo, env: process.env, cat });
+	for (const f of failed) console.error(`FAILED ${f.action} ${f.id} (${WHERE[f.scope]}): ${f.error}`);
+	if (failed.length) process.exitCode = 1;
+}
+
+function runMigrate(file, cat, apply) {
+	const plan = planLegacyMigration(file, cat);
+	if (!plan.length) return console.log('nothing to migrate: no servers in the legacy .mcp.json');
+	for (const p of plan) console.log(p.action === 'adopt' ? `adopt  ${p.id}` : `keep   ${p.id}  (not the catalog's entry: left in the file)`);
+	if (!apply) return console.log('run again with --apply to move the adopted entries into the settings');
+	const doc = readProject(file);
+	for (const p of plan.filter((x) => x.action === 'adopt')) {
+		setIn('project', `mcp.servers.${p.id}`, true);
+		delete doc.mcpServers[p.id];
+	}
+	if (Object.keys(doc.mcpServers).length === 0 && Object.keys(doc).every((k) => k === 'mcpServers')) fs.rmSync(file);
+	else fs.writeFileSync(file, `${JSON.stringify(doc, null, '\t')}\n`);
+	if (plan.some((p) => p.action === 'adopt')) console.log('done: dev-factory mcp sync turns them on in Claude');
+}
+
 if (isMain(import.meta.url)) {
 	const [cmd, ...rest] = process.argv.slice(2);
-	const force = rest.includes('--force');
 	const ids = rest.filter((a) => !a.startsWith('--'));
+	const flagScope = rest.includes('--user') ? 'user' : rest.includes('--project') ? 'project' : null;
 	const file = path.resolve(process.env.DF_MCP_FILE || '.mcp.json');
 	try {
+		const cat = catalog();
 		if (cmd === 'list') {
-			for (const s of status(file, catalog(), claudeListing()))
+			for (const s of status(file, cat, claudeListing(), desired(layers(), cat)))
 				console.log(
-					`${s.enabled ? 'on ' : s.elsewhere ? 'ext' : 'off'}  ${s.id.padEnd(20)} ${s.purpose}${s.elsewhere ? `\n     already available as "${s.elsewhere}"` : ''}\n     without it: ${s.without}`,
+					`${(s.scope === 'project' ? 'proj' : s.scope).padEnd(5)} ${s.id.padEnd(20)} ${s.purpose}${s.elsewhere ? `\n      already available as "${s.elsewhere}"` : ''}\n      without it: ${s.without}`,
 				);
-		} else if (cmd === 'enable' || cmd === 'connect') {
-			const chosen = cmd === 'connect' ? (rest.includes('--all') ? Object.keys(catalog()) : recommend(load(), catalog(), { file })) : ids;
-			const listing = claudeListing();
-			const plan = planEnable(chosen, file, listing, { force });
-			const added = enable(plan.write, file);
-			if (cmd === 'enable') console.log(JSON.stringify({ added, skipped: plan.skipped }));
-			else {
-				if (added.length) console.log(`enabled: ${added.join(', ')}`);
-				for (const s of plan.skipped)
-					console.log(`skip  ${s.id.padEnd(20)} already available as "${s.name}" (${s.state}); --force adds it to .mcp.json anyway`);
-				const hint = {
-					'needs login': 'in claude run /mcp and log in',
-					failed: 'see: claude mcp list',
-					'pending approval': 'run claude in this repository and approve it',
-					'not started': 'restart claude so it reads .mcp.json',
-				};
-				for (const r of connectReport(file, listing)) {
-					const next = r.state === 'connected' ? '' : `  -> ${hint[r.state]}`;
-					console.log(`${r.state === 'connected' ? 'ok  ' : 'todo'}  ${r.id.padEnd(20)} ${r.state}${next}`);
-				}
+		} else if (cmd === 'enable') {
+			for (const id of ids) turnOn(id, flagScope ?? cat[id]?.defaultScope ?? 'user', cat);
+			runSync();
+		} else if (cmd === 'disable') {
+			const required = requiredServers(load(), cat);
+			for (const id of ids) {
+				if (!cat[id]) throw new Error(`unknown MCP server '${id}' (see: mcp.mjs list)`);
+				if (required.includes(id)) throw new Error(`${id} is required; change its scope with enable --user or --project`);
 			}
-		} else if (cmd === 'disable') console.log(JSON.stringify({ removed: disable(ids, file) }));
-		else if (cmd === 'recommend') console.log(recommend(load(), catalog(), { file }).join(' '));
+			for (const id of ids) {
+				for (const layer of flagScope ? [flagScope] : ['user', 'project'])
+					if (layerHas(layer, id)) setIn(layer, `mcp.servers.${id}`, undefined);
+				if (readProject(file).mcpServers?.[id]) console.log(`note: ${id} is still in the legacy .mcp.json: dev-factory mcp migrate`);
+			}
+			runSync();
+		} else if (cmd === 'sync') runSync({ dry: rest.includes('--dry-run') });
+		else if (cmd === 'write-config') {
+			const root = projectRoot();
+			if (!root) throw new Error('not inside a git repository');
+			const out = writePassConfig({
+				want: desired(layers(), cat),
+				cat,
+				env: process.env,
+				listing: claudeListing(),
+				legacyFile: file,
+				repo: root,
+			});
+			if (out.strict) console.log('--strict-mcp-config');
+			else console.error(`note: ${out.reason}`);
+			console.log('--mcp-config');
+			console.log(out.file);
+		} else if (cmd === 'secrets') {
+			for (const r of secretsReport({ want: desired(layers(), cat), cat, env: process.env }))
+				console.log(`${r.name.padEnd(28)} ${r.state.padEnd(6)} ${r.neededBy.join(', ')}${r.optional ? ' (optional)' : ''}`);
+		} else if (cmd === 'migrate') runMigrate(file, cat, rest.includes('--apply'));
+		else if (cmd === 'connect') {
+			const chosen = rest.includes('--all') ? Object.keys(cat) : recommend(load(), cat, { file, listing: claudeListing() });
+			for (const id of chosen)
+				if (!layerHas('user', id) && !layerHas('project', id)) turnOn(id, cat[id].defaultScope === 'project' ? 'project' : 'user', cat);
+			runSync();
+			const hint = {
+				'needs login': 'in claude run /mcp and log in',
+				failed: 'see: claude mcp list',
+				'pending approval': 'run claude in this repository and approve it',
+				'not started': 'restart claude so it reads its servers',
+			};
+			const listing = claudeListing();
+			const inUse = [...new Set([...desired(layers(), cat).map((w) => w.id), ...Object.keys(readProject(file).mcpServers ?? {})])];
+			for (const r of reportFor(inUse, listing, cat)) {
+				const next = r.state === 'connected' ? '' : `  -> ${hint[r.state]}`;
+				console.log(`${r.state === 'connected' ? 'ok  ' : 'todo'}  ${r.id.padEnd(20)} ${r.state}${next}`);
+			}
+		} else if (cmd === 'recommend') console.log(recommend(load(), cat, { file, listing: claudeListing() }).join(' '));
 		else if (cmd === 'doctor')
-			for (const l of doctorLines(file, claudeListing(), catalog(), { lenient: process.argv.includes('--lenient') }))
+			for (const l of doctorLines(file, claudeListing(), cat, { lenient: process.argv.includes('--lenient'), want: desired(layers(), cat) }))
 				console.log(`${{ ok: 'ok   ', warn: 'warn ', fail: 'FAIL ' }[l.level]} ${l.text}`);
 		else if (cmd === 'allow')
 			console.log(
@@ -289,7 +373,9 @@ if (isMain(import.meta.url)) {
 				),
 			);
 		else {
-			console.error('usage: mcp.mjs list | enable ID... [--force] | disable ID... | recommend | connect [--all] [--force] | doctor | allow');
+			console.error(
+				'usage: mcp.mjs list | enable ID... [--user|--project] | disable ID... [--user|--project] | sync [--dry-run] | write-config | secrets | migrate [--apply] | recommend | connect [--all] | doctor | allow',
+			);
 			process.exit(3);
 		}
 	} catch (e) {

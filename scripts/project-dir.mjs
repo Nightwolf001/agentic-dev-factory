@@ -107,12 +107,18 @@ function main(argv) {
 		return 1;
 	}
 	const moves = planMigration(root);
+	// the MCP servers of a legacy .mcp.json move separately: they belong in the settings, not in a folder
+	const mcpReminder = () => {
+		if (fs.existsSync(path.join(root, '.mcp.json')))
+			console.log("note: .mcp.json is read for one more release: dev-factory mcp migrate moves the factory's own entries into the settings");
+	};
 	if (!argv.includes('--apply')) {
 		for (const m of moves) {
 			if (m.conflict) console.log(`skip  ${m.from}: already exists: ${m.to}`);
 			else console.log(`plan  ${m.from} -> ${m.to}`);
 		}
 		for (const m of moves) if (m.tracked && !m.conflict) console.log(untrackCommand(m.from));
+		mcpReminder();
 		return 0;
 	}
 	const { moved, skipped, untrack } = applyMigration(root, moves);
@@ -120,6 +126,7 @@ function main(argv) {
 	for (const from of moved) console.log(`do  ${from} -> ${to.get(from)}`);
 	for (const s of skipped) console.log(`skip  ${s.from}: ${s.reason}`);
 	for (const cmd of untrack) console.log(cmd);
+	mcpReminder();
 	return 0;
 }
 
