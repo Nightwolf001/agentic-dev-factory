@@ -78,7 +78,7 @@ test('dev-factory path and unknown subcommands behave', () => {
 	assert.equal(run('path').stdout.trim(), ROOT);
 	const bad = run('nonsense');
 	assert.equal(bad.status, 3);
-	assert.match(bad.stderr, /usage: dev-factory doctor\|install\|mcp\|tasks\|config/);
+	assert.match(bad.stderr, /usage: dev-factory doctor\|install\|mcp\|plugins\|tasks\|config/);
 	assert.equal(run('config', 'get', 'tasks.source').stdout.trim(), 'local');
 });
 
@@ -93,9 +93,13 @@ test('install --apply writes a launcher that runs the newest cached copy, an env
 	const git = (...a) => spawnSync('git', a, { cwd: repo, encoding: 'utf8' });
 	git('init', '-q');
 	git('commit', '-q', '--allow-empty', '-m', 'x');
-	// claude and launchctl are not the point: record what would have been asked of them
+	// claude and launchctl are not the point: record what would have been asked of them (claude has no plugin installed)
 	for (const n of ['claude', 'launchctl', 'plutil'])
-		fs.writeFileSync(path.join(bin, n), '#!/bin/sh\necho "$0 $@" >> "$HOME/calls.log"\nexit 0\n', { mode: 0o755 });
+		fs.writeFileSync(
+			path.join(bin, n),
+			'#!/bin/sh\necho "$0 $@" >> "$HOME/calls.log"\ncase "$*" in "plugin list --json"*) echo "[]" ;; esac\nexit 0\n',
+			{ mode: 0o755 },
+		);
 	const env = {
 		...process.env,
 		HOME: home,

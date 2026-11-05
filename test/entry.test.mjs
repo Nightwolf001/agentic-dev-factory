@@ -58,3 +58,10 @@ test('dev-factory jira-mcp resolves to the Jira token server, passing its argume
 	assert.equal(r.args[0], path.join(ROOT, 'scripts/jira-mcp.mjs'));
 	assert.deepEqual(r.args.slice(1), ['--x']);
 });
+
+test('dev-factory plugins resolves to the companion plugin sync, passing its arguments on', () => {
+	const r = resolve(['plugins', 'sync', '--dry-run']);
+	assert.equal(r.cmd, 'node');
+	assert.equal(r.args[0], path.join(ROOT, 'scripts/plugins.mjs'));
+	assert.deepEqual(r.args.slice(1), ['sync', '--dry-run']);
+});

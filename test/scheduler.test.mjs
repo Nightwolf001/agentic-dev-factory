@@ -47,8 +47,13 @@ exit 0
 		{ mode: 0o755 },
 	);
 	// claude and plutil are stubs too: install.sh must not reach the network or touch the real plugin set
+	// (claude lists no plugin as installed: plugins.mjs reads `plugin list --json`)
 	for (const n of ['claude', 'plutil'])
-		fs.writeFileSync(path.join(bin, n), '#!/bin/sh\necho "$0 $@" >> "$HOME/calls.log"\nexit 0\n', { mode: 0o755 });
+		fs.writeFileSync(
+			path.join(bin, n),
+			`#!/bin/sh\necho "$0 $@" >> "$HOME/calls.log"\ncase "$*" in "plugin list --json"*) echo '[]' ;; esac\nexit 0\n`,
+			{ mode: 0o755 },
+		);
 	const env = {
 		...process.env,
 		HOME: home,
@@ -341,7 +346,11 @@ test('install: optional plugins are installed by default, DF_INSTALL_OPTIONAL=0 
 	);
 	// a claude that cannot install
 	const h = fixture();
-	fs.writeFileSync(path.join(h.home, 'bin/claude'), '#!/bin/sh\ncase "$*" in "plugin install"*) exit 1 ;; esac\nexit 0\n', { mode: 0o755 });
+	fs.writeFileSync(
+		path.join(h.home, 'bin/claude'),
+		'#!/bin/sh\ncase "$*" in "plugin install"*) exit 1 ;; "plugin list --json"*) echo "[]" ;; esac\nexit 0\n',
+		{ mode: 0o755 },
+	);
 	r = spawnSync('bash', [path.join(ROOT, 'scripts/install.sh'), '--apply'], { encoding: 'utf8', env: h.env, cwd: h.repo });
 	assert.equal(r.status, 1);
 	assert.match(r.stderr, /FAILED: claude plugin install superpowers@/);
@@ -349,6 +358,49 @@ test('install: optional plugins are installed by default, DF_INSTALL_OPTIONAL=0 
 	// ... and the dry run never installs, so it never fails on it
 	r = spawnSync('bash', [path.join(ROOT, 'scripts/install.sh')], { encoding: 'utf8', env: h.env, cwd: h.repo });
 	assert.equal(r.status, 0, r.stderr);
+});
+
+test('install installs the plugins at user scope by default, and at local scope for one the repository turns on for itself', () => {
+	const f = fixture();
+	fs.mkdirSync(path.join(f.repo, '.devfactory'));
+	fs.writeFileSync(
+		path.join(f.repo, '.devfactory/config.json'),
+		JSON.stringify({ plugins: { enabled: { 'frontend-design@claude-plugins-official': true } } }),
+	);
+	const r = spawnSync('bash', [path.join(ROOT, 'scripts/install.sh'), '--apply'], { encoding: 'utf8', env: f.env, cwd: f.repo });
+	assert.equal(r.status, 0, r.stderr);
+	const installs = f
+		.calls()
+		.split('\n')
+		.filter((l) => /claude plugin install/.test(l));
+	assert.ok(
+		installs.some((l) => /superpowers@\S+ --scope user$/.test(l)),
+		installs.join('\n'),
+	);
+	assert.ok(
+		installs.some((l) => /frontend-design@\S+ --scope local$/.test(l)),
+		installs.join('\n'),
+	);
+});
+
+test('install outside a repository is a machine-only setup: launcher, env file and plugins, no scheduler', () => {
+	const f = fixture();
+	const cwd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'df-install-nogit-')));
+	const env = { ...f.env };
+	delete env.DF_REPO;
+	let r = spawnSync('bash', [path.join(ROOT, 'scripts/install.sh')], { encoding: 'utf8', env, cwd });
+	assert.equal(r.status, 0, r.stderr);
+	assert.match(r.stdout, /no repository here: machine setup only \(launcher, env file, plugins\); run it in a repository to add its scheduler/);
+	assert.match(r.stdout, /install\s+superpowers@claude-plugins-official/);
+	assert.ok(!/\.plist/.test(r.stdout), 'no scheduler job is rendered');
+	assert.equal(fs.existsSync(path.join(f.home, 'state/bin/dev-factory')), false, 'a dry run writes nothing');
+	r = spawnSync('bash', [path.join(ROOT, 'scripts/install.sh'), '--apply'], { encoding: 'utf8', env, cwd });
+	assert.equal(r.status, 0, r.stderr);
+	assert.ok(fs.existsSync(path.join(f.home, 'state/bin/dev-factory')), 'the launcher was written');
+	assert.ok(fs.existsSync(path.join(f.home, 'state/.env.local')), 'the env file was created');
+	assert.ok(/claude plugin install superpowers@\S+ --scope user/.test(f.calls()), f.calls());
+	assert.ok(!/launchctl|\.plist/.test(f.calls()), 'no scheduler step ran');
+	assert.equal(fs.existsSync(path.join(f.home, 'Library/LaunchAgents')), false);
 });
 
 // ---- a pass that could not reach a tool keeps its frontier ----

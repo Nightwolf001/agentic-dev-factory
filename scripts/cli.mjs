@@ -3,6 +3,7 @@
 //   dev-factory doctor [--ci|--wizard]     check this machine and the configuration
 //   dev-factory install [--apply] [--load] launchers, plugins and the scheduler for this repository
 //   dev-factory mcp list|enable|connect... optional MCP servers
+//   dev-factory plugins sync|list          companion plugins, for all projects or this one
 //   dev-factory tasks list|create|init...  tasks in the configured task source
 //   dev-factory config get|validate|...    read the layered configuration; write-from-env fills .devfactory/ from DF_PROJECT_*
 //   dev-factory scheduler on|off|status    switch the scheduled passes of this repository on or off
@@ -26,6 +27,7 @@ export const COMMANDS = {
 	doctor: ['bash', 'scripts/doctor.sh'],
 	install: ['bash', 'scripts/install.sh'],
 	mcp: ['node', 'scripts/mcp.mjs'],
+	plugins: ['node', 'scripts/plugins.mjs'],
 	tasks: ['node', 'scripts/tasks.mjs'],
 	config: ['node', 'scripts/config.mjs'],
 	tick: ['bash', 'scripts/tick.sh'],

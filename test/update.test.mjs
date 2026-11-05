@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { checkCopy, installedCopies, latestOffered, pruneCandidates, update } from '../scripts/update.mjs';
+import { checkCopy, installedCopies, latestOffered, pruneCandidates, syncAfterUpdate, syncRoot, update } from '../scripts/update.mjs';
 
 const OLD = Date.now() - 72 * 3600_000;
 
@@ -200,4 +200,87 @@ test('the CLI is a dev-factory subcommand and exits 1 when nothing is installed'
 	});
 	assert.equal(r.status, 1);
 	assert.match(r.stderr, /cannot read/);
+});
+
+// ---- after an update the servers and companion plugins are synced ----
+
+test('syncAfterUpdate runs mcp sync and plugins sync through the CLI of the newest installed copy', () => {
+	const dir = plugins({
+		installed: {
+			'dev-factory@dev-factory': [
+				{ ...rec('dev-factory', 'dev-factory', '0.9.0'), scope: 'user' },
+				{ ...rec('dev-factory', 'dev-factory', '0.10.0'), scope: 'local' },
+			],
+		},
+		cached: [
+			['dev-factory', 'dev-factory', '0.9.0'],
+			['dev-factory', 'dev-factory', '0.10.0'],
+		],
+	});
+	const newest = path.join(dir, 'cache/dev-factory/dev-factory/0.10.0');
+	assert.equal(syncRoot({ dir, fallback: '/nowhere' }), newest, 'the numerically newest copy, not the alphabetical one');
+	const calls = [];
+	const r = syncAfterUpdate({
+		dir,
+		fallback: '/nowhere',
+		run: (c, a, o) => (calls.push([c, ...a].join(' ') + ` @${o.env.CLAUDE_PLUGIN_ROOT}`), ok()),
+	});
+	assert.deepEqual(calls, [
+		`${process.execPath} ${newest}/scripts/cli.mjs mcp sync @${newest}`,
+		`${process.execPath} ${newest}/scripts/cli.mjs plugins sync @${newest}`,
+	]);
+	assert.deepEqual(
+		r.map((x) => [x.command, x.ok]),
+		[
+			['mcp sync', true],
+			['plugins sync', true],
+		],
+	);
+	// a copy with no CLI, or an unreadable record, falls back to the running plugin
+	assert.equal(syncRoot({ dir: fs.mkdtempSync(path.join(os.tmpdir(), 'df-empty-')), fallback: '/here' }), '/here');
+	const failed = syncAfterUpdate({ dir, run: () => ({ status: 1, stdout: '', stderr: 'no claude\nreally' }) });
+	assert.deepEqual(
+		failed.map((x) => [x.ok, x.output]),
+		[
+			[false, 'really'],
+			[false, 'really'],
+		],
+	);
+});
+
+test('after a successful update the CLI syncs mcp and plugins; --check and a failed update do not', () => {
+	const dir = plugins({
+		installed: { 'dev-factory@dev-factory': [rec('dev-factory', 'dev-factory', '0.9.0')] },
+		cached: [['dev-factory', 'dev-factory', '0.9.0']],
+	});
+	const installed = path.join(dir, 'cache/dev-factory/dev-factory/0.9.0');
+	// a stand-in for the new version's CLI: it logs what it was asked to do
+	fs.mkdirSync(path.join(installed, 'scripts'), { recursive: true });
+	fs.writeFileSync(
+		path.join(installed, 'scripts/cli.mjs'),
+		"import fs from 'node:fs'; fs.appendFileSync(process.env.DF_SYNC_LOG, process.argv.slice(2).join(' ') + '\\n');\n",
+	);
+	const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'df-upd-bin-'));
+	fs.writeFileSync(path.join(bin, 'claude'), '#!/bin/sh\nexit "${DF_FAKE_EXIT:-0}"\n', { mode: 0o755 });
+	const log = path.join(bin, 'sync.log');
+	const run = (args, env = {}) =>
+		spawnSync(process.execPath, [new URL('../scripts/update.mjs', import.meta.url).pathname, ...args], {
+			encoding: 'utf8',
+			env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, DF_PLUGINS_DIR: dir, DF_SYNC_LOG: log, ...env },
+		});
+	const logged = () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n') : []);
+	assert.equal(run(['--check']).status, 0);
+	assert.deepEqual(logged(), [], '--check changes nothing');
+	assert.equal(run(['--check']).status, 0);
+	const r = run([]);
+	assert.equal(r.status, 0, r.stderr);
+	assert.deepEqual(logged(), ['mcp sync', 'plugins sync']);
+	assert.deepEqual(
+		JSON.parse(r.stdout).synced.map((x) => x.command),
+		['mcp sync', 'plugins sync'],
+	);
+	fs.rmSync(log);
+	const bad = run([], { DF_FAKE_EXIT: '1' });
+	assert.equal(bad.status, 1);
+	assert.deepEqual(logged(), [], 'a failed update syncs nothing');
 });

@@ -9,6 +9,9 @@
 //   4. remove cached versions nothing refers to any more, across marketplaces and plugins. A version stays when an install
 //      record points at it, when it is the newest cached version of its plugin, or when it changed in the last
 //      DF_PRUNE_KEEP_HOURS (default 24): a session that started before the update may still be running from it.
+//   5. after an update with no problem, run `mcp sync` and `plugins sync` from the newest installed copy through its
+//      scripts/cli.mjs, so the servers and companion plugins Claude holds follow the settings with the new version's rules.
+//      A failure there is a warning: the update itself stands.
 //
 // A running Claude Code session keeps the version it started with; the update applies to the next one.
 import { spawnSync } from 'node:child_process';
@@ -16,14 +19,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { isMain } from './is-main.mjs';
+import { PLUGIN_ROOT } from './plugin-root.mjs';
 
 export const REQUIRED_FILES = ['.claude-plugin/plugin.json', 'bin/dev-factory', 'scripts/cli.mjs', 'hooks/hooks.json', 'config.json'];
 
 const readJson = (f) => JSON.parse(fs.readFileSync(f, 'utf8'));
 export const pluginsDir = (env = process.env) => env.DF_PLUGINS_DIR || path.join(os.homedir(), '.claude', 'plugins');
 
-export function defaultRun(cmd, args) {
-	const r = spawnSync(cmd, args, { encoding: 'utf8', timeout: 300000 });
+export function defaultRun(cmd, args, opts = {}) {
+	const r = spawnSync(cmd, args, { encoding: 'utf8', timeout: 300000, ...opts });
 	return { status: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
 }
 
@@ -175,10 +179,38 @@ export function update({
 	return report;
 }
 
+// The folder to run the syncs from: the newest installed copy of this plugin that has a CLI, else the running one.
+export function syncRoot({ dir = pluginsDir(), fallback = PLUGIN_ROOT } = {}) {
+	try {
+		const newest = installedCopies(dir)
+			.filter((c) => c.installPath && fs.existsSync(path.join(c.installPath, 'scripts', 'cli.mjs')))
+			.sort((a, b) => compareVersions(b.version ?? '', a.version ?? ''))[0];
+		return newest ? newest.installPath : fallback;
+	} catch {
+		return fallback;
+	}
+}
+
+// Runs `mcp sync` and `plugins sync` through the CLI of the newest copy. -> [{ command, ok, output }]
+export function syncAfterUpdate({ dir = pluginsDir(), run = defaultRun, fallback = PLUGIN_ROOT } = {}) {
+	const root = syncRoot({ dir, fallback });
+	return [
+		['mcp', 'sync'],
+		['plugins', 'sync'],
+	].map((args) => {
+		const r = run(process.execPath, [path.join(root, 'scripts', 'cli.mjs'), ...args], { env: { ...process.env, CLAUDE_PLUGIN_ROOT: root } });
+		return { command: args.join(' '), ok: r.status === 0, output: (r.stderr || r.stdout).trim().split('\n').filter(Boolean).pop() ?? '' };
+	});
+}
+
 if (isMain(import.meta.url)) {
 	const check = process.argv.includes('--check');
 	try {
 		const r = update({ check });
+		if (!check && !r.problems.length) {
+			r.synced = syncAfterUpdate();
+			for (const s of r.synced) if (!s.ok) console.error(`warning: dev-factory ${s.command} failed after the update: ${s.output}`);
+		}
 		console.log(JSON.stringify(r, null, 2));
 		process.exit(r.problems.length ? 1 : 0);
 	} catch (e) {

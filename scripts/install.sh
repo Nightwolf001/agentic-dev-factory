@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
 # Per-machine setup. Dry run by default; --apply writes files; --load also loads the scheduler jobs.
-# Works from any installed copy of the plugin (marketplace cache, a clone loaded with --plugin-dir) and for the repository
-# you run it in. Prefer `dev-factory install`, which finds the plugin for you.
+# Works from any installed copy of the plugin (marketplace cache, a clone loaded with --plugin-dir). Inside a repository it also
+# renders that repository's scheduler jobs; anywhere else it sets up the machine only (launcher, env file, plugins).
+# Prefer `dev-factory install`, which finds the plugin for you.
 #   install.sh [--apply] [--load]
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 . "$DIR/scripts/runtime.sh"
-REPO="$(df_repo)"; [ -n "$REPO" ] || { echo "run this from inside the repository the factory should work on (or set DF_REPO)" >&2; exit 1; }
+REPO="$(df_repo)"
 STATE="$(df_state_dir)"; RUNTIME="$(df_runtime)"
 APPLY=0; LOAD=0
 for a in "$@"; do case "$a" in --apply) APPLY=1 ;; --load) APPLY=1; LOAD=1 ;; *) echo "usage: install.sh [--apply] [--load]" >&2; exit 3 ;; esac; done
 say() { printf '%s %s\n' "$([ $APPLY = 1 ] && echo 'do  ' || echo 'plan')" "$1"; }
 
-echo "plugin: $DIR"; echo "repository: $REPO"; echo "runtime: $RUNTIME"
+echo "plugin: $DIR"; echo "runtime: $RUNTIME"
+if [ -n "$REPO" ]; then echo "repository: $REPO"
+else echo "no repository here: machine setup only (launcher, env file, plugins); run it in a repository to add its scheduler"; fi
 bash "$DIR/scripts/doctor.sh" || echo "doctor reported problems; fix them before loading the scheduler"
 
 # 1. the plugin itself is installed by Claude Code, not by this script
@@ -47,34 +50,33 @@ if [ ! -f "$ENVF" ]; then
   if [ $APPLY = 1 ]; then mkdir -p "$STATE"; cp "$DIR/.env.example" "$ENVF"; chmod 600 "$ENVF"; fi
 else say "$ENVF exists, left alone"; fi
 
-# 4. plugins the factory relies on. Optional ones are installed too unless DF_INSTALL_OPTIONAL=0; a plugin that fails to
-# install fails the run (after the rest were tried), so a half-installed machine is never reported as set up.
+# 4. plugins the factory relies on. The marketplaces are added here; the plugins are installed by plugins.mjs from the settings
+# (plugins.enabled in the user settings for every project, or in this repository's for one; the required one is always on).
+# Optional ones are installed too unless DF_INSTALL_OPTIONAL=0. A marketplace or plugin that fails to install fails the run
+# (after the rest were tried), so a half-installed machine is never reported as set up.
 FAILED=0
-while read -r kind id extra; do
-  if [ "$kind" = marketplace ]; then
-    if claude plugin marketplace list 2>/dev/null | grep -q "$id"; then say "marketplace $id already added"
-    else
-      say "claude plugin marketplace add $extra"
-      if [ $APPLY = 1 ] && ! claude plugin marketplace add "$extra" >/dev/null; then echo "FAILED: claude plugin marketplace add $extra" >&2; FAILED=1; fi
-    fi
+while read -r id source; do
+  if claude plugin marketplace list 2>/dev/null | grep -q "$id"; then say "marketplace $id already added"
   else
-    if claude plugin list 2>/dev/null | grep -q "$id"; then say "plugin $id already installed"
-    elif [ "$extra" = required ] || [ "${DF_INSTALL_OPTIONAL:-1}" != 0 ]; then
-      say "claude plugin install $id --scope local"
-      if [ $APPLY = 1 ] && ! claude plugin install "$id" --scope local >/dev/null; then echo "FAILED: claude plugin install $id" >&2; FAILED=1; fi
-    else say "plugin $id is optional, skipped (DF_INSTALL_OPTIONAL=0)"; fi
+    say "claude plugin marketplace add $source"
+    if [ $APPLY = 1 ] && ! claude plugin marketplace add "$source" >/dev/null; then echo "FAILED: claude plugin marketplace add $source" >&2; FAILED=1; fi
   fi
 done < <(node -e '
   const p=require(process.argv[1]);
-  for(const [n,m] of Object.entries(p.marketplaces)) console.log("marketplace "+n+" "+m.repo);
-  for(const x of p.plugins) console.log("plugin "+x.id+" "+(x.required?"required":"optional"));' "$DIR/plugins.json")
+  for(const [n,m] of Object.entries(p.marketplaces)) console.log(n+" "+m.repo);' "$DIR/plugins.json")
+PLUGIN_FLAGS="--dry-run"; [ $APPLY = 1 ] && PLUGIN_FLAGS=""
+# inside a repository its own settings count too; the sync reads them from the main checkout
+(cd "${REPO:-.}" && node "$DIR/scripts/plugins.mjs" sync $PLUGIN_FLAGS) || FAILED=1
 
-# 5. the scheduler, by runtime.scheduler
+# 5. the scheduler, by runtime.scheduler: it belongs to a repository, so outside one there is none to set up
+SCHED=none
+if [ -n "$REPO" ]; then
 SCHED="$(node "$DIR/scripts/config.mjs" get runtime.scheduler 2>/dev/null || echo auto)"
 if [ "$SCHED" = auto ]; then
   if [ "$(uname)" = Darwin ] && [ "$RUNTIME" = local ]; then SCHED=launchd; else SCHED=none; fi
 fi
 SLUG="$(df_slug "$REPO")"; INTERVAL="$(df_interval_minutes)"
+fi
 case "$SCHED" in
   launchd)
     for job in tick improve; do
@@ -93,7 +95,8 @@ case "$SCHED" in
     done ;;
   github-actions) echo "scheduler: GitHub Actions. Run: dev-factory cloud init --github-actions   (writes .github/workflows/dev-factory-tick.yml)" ;;
   routine) echo "scheduler: a Claude Code routine. Run /schedule in claude and ask for a routine that runs /dev-factory:tick every $INTERVAL minutes in this repository (see README, Cloud and scheduled runs)" ;;
-  *) echo "scheduler: none on this machine (runtime.scheduler is $SCHED). Run 'dev-factory tick' by hand, or see README, Cloud and scheduled runs" ;;
+  *) if [ -z "$REPO" ]; then echo "scheduler: skipped, there is no repository here (run install in one to add its scheduler)"
+     else echo "scheduler: none on this machine (runtime.scheduler is $SCHED). Run 'dev-factory tick' by hand, or see README, Cloud and scheduled runs"; fi ;;
 esac
 
 cat <<TXT

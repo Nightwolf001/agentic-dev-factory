@@ -9,16 +9,19 @@
 		{
 			"id": "superpowers@claude-plugins-official",
 			"required": true,
+			"defaultScope": "user",
 			"why": "test-driven-development, systematic-debugging and verification-before-completion skills the builder follows"
 		},
 		{
 			"id": "frontend-design@claude-plugins-official",
 			"required": false,
+			"defaultScope": "user",
 			"why": "design guidance for UI tickets, used together with the 21st MCP and the repo brand rules"
 		},
 		{
 			"id": "code-simplifier@claude-plugins-official",
 			"required": false,
+			"defaultScope": "user",
 			"why": "optional clean-up pass before QA"
 		}
 	],
