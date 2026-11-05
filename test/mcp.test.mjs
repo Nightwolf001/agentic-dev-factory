@@ -578,11 +578,11 @@ test('the legacy .mcp.json writer starts a jira entry through the absolute launc
 	assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).mcpServers.jira.command, '/state/dir/bin/dev-factory');
 });
 
-test('writePassConfig writes every wanted server with variable references intact, tab-indented, and keeps a legacy file’s entries', () => {
+test('writePassConfig writes every wanted server with variable references intact, tab-indented, and copies nothing from a legacy file', () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'df-pass-'));
 	const file = path.join(dir, 'sub', 'mcp.json');
 	const legacyFile = path.join(dir, '.mcp.json');
-	fs.writeFileSync(legacyFile, JSON.stringify({ mcpServers: { 'my-tool': { command: 'mine' }, context7: { command: 'old' } } }));
+	fs.writeFileSync(legacyFile, JSON.stringify({ mcpServers: { context7: { command: 'old' } } }));
 	const env = { DF_STATE_DIR: '/state/dir' };
 	const want = [
 		{ id: 'context7', scope: 'user', required: false },
@@ -591,14 +591,13 @@ test('writePassConfig writes every wanted server with variable references intact
 	];
 	const out = writePassConfig({ want, cat: catalog(), env, file, legacyFile, listing: '', managed: noManaged() });
 	assert.equal(out.file, file);
-	assert.equal(out.strict, true);
+	assert.equal(out.strict, true, 'a legacy file holding only what the wanted set writes leaves the pass strict');
 	assert.equal(out.reason, '');
 	const text = fs.readFileSync(file, 'utf8');
-	assert.match(text, /^\{\n\t"mcpServers": \{\n\t\t"my-tool"/);
+	assert.match(text, /^\{\n\t"mcpServers": \{\n\t\t"context7"/);
 	const doc = JSON.parse(text);
-	assert.deepEqual(Object.keys(doc.mcpServers).sort(), ['context7', 'github', 'jira', 'my-tool']);
-	assert.deepEqual(doc.mcpServers['my-tool'], { command: 'mine' }, 'the person’s own entry is carried as it is');
-	assert.deepEqual(doc.mcpServers.context7, catalog().context7.config, 'a wanted id wins a name clash');
+	assert.deepEqual(Object.keys(doc.mcpServers).sort(), ['context7', 'github', 'jira']);
+	assert.deepEqual(doc.mcpServers.context7, catalog().context7.config, 'the wanted config wins a name clash');
 	assert.equal(doc.mcpServers.github.headers.Authorization, 'Bearer ${GITHUB_PERSONAL_ACCESS_TOKEN:-}');
 	assert.equal(doc.mcpServers.jira.command, '/state/dir/bin/dev-factory');
 });
@@ -628,7 +627,7 @@ test('writePassConfig is not strict when a wanted server is available only from 
 	assert.equal(again.strict, true);
 });
 
-test('writePassConfig does not copy a legacy entry that holds a literal value, and says which', () => {
+test('writePassConfig never copies a legacy .mcp.json entry; they make the pass non-strict and are named', () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'df-pass-'));
 	const file = path.join(dir, 'mcp.json');
 	const legacyFile = path.join(dir, '.mcp.json');
@@ -637,8 +636,10 @@ test('writePassConfig does not copy a legacy entry that holds a literal value, a
 		JSON.stringify({
 			mcpServers: {
 				'with-token': { command: 'x', env: { API_TOKEN: 'sk-literal-secret' } },
-				'with-header': { type: 'http', url: 'https://x', headers: { Authorization: 'Bearer ghp_literal' } },
-				'by-reference': { command: 'y', env: { API_TOKEN: '${API_TOKEN:-}' }, headers: { Authorization: 'Bearer ${API_TOKEN}' } },
+				'with-default': { command: 'y', env: { API_TOKEN: '${API_TOKEN:-sk-live-default}' } },
+				'in-url': { type: 'http', url: 'https://x.example/mcp?key=url-secret-key' },
+				'in-args': { command: 'z', args: ['--api-key', 'args-secret-key'] },
+				'by-reference': { command: 'w', env: { API_TOKEN: '${API_TOKEN}' } },
 				context7: { command: 'old', env: { CONTEXT7_API_KEY: 'literal-but-replaced' } },
 			},
 		}),
@@ -646,10 +647,23 @@ test('writePassConfig does not copy a legacy entry that holds a literal value, a
 	const want = [{ id: 'context7', scope: 'user', required: false }];
 	const out = writePassConfig({ want, cat: catalog(), env: {}, file, legacyFile, listing: '', managed: noManaged() });
 	const text = fs.readFileSync(file, 'utf8');
-	assert.doesNotMatch(text, /sk-literal-secret|ghp_literal|literal-but-replaced/, 'no literal value reaches the file');
-	assert.deepEqual(Object.keys(JSON.parse(text).mcpServers), ['by-reference', 'context7']);
+	assert.doesNotMatch(
+		text,
+		/sk-literal-secret|sk-live-default|url-secret-key|args-secret-key|literal-but-replaced/,
+		'no legacy value reaches the file',
+	);
+	assert.deepEqual(Object.keys(JSON.parse(text).mcpServers), ['context7']);
 	assert.equal(out.strict, false);
-	assert.equal(out.reason, 'with-token in .mcp.json holds a literal value; not copied; with-header in .mcp.json holds a literal value; not copied');
+	assert.equal(
+		out.reason,
+		'with-token, with-default, in-url, in-args, by-reference come from .mcp.json; Claude loads them itself (run dev-factory mcp migrate)',
+	);
+	// one entry reads in the singular
+	fs.writeFileSync(legacyFile, JSON.stringify({ mcpServers: { 'my-tool': { command: 'mine' } } }));
+	assert.match(
+		writePassConfig({ want, cat: catalog(), env: {}, file, legacyFile, listing: '', managed: noManaged() }).reason,
+		/^my-tool comes from \.mcp\.json;/,
+	);
 });
 
 test('secretsReport names what each wanted server needs without values', () => {
@@ -921,4 +935,31 @@ test('CLI: enable checks every id before it writes anything', () => {
 	assert.equal(fs.existsSync(path.join(stateDirectory, 'config.json')), false, 'context7 was not written');
 	assert.equal(fs.existsSync(path.join(repo, '.devfactory', 'config.json')), false);
 	assert.deepEqual(fake.calls(), []);
+});
+
+test('CLI: from a linked worktree the settings are read from the main checkout, so sync removes nothing it should keep (no DF_CONFIG)', () => {
+	const { repo, fake, env, stateDirectory, read } = sandbox();
+	execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '--allow-empty', '-m', 'init']);
+	const worktree = path.join(fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'df-wt-'))), 'wt');
+	execFileSync('git', ['-C', repo, 'worktree', 'add', '-q', worktree]);
+	assert.equal(fs.existsSync(path.join(worktree, '.devfactory')), false, 'the worktree has no settings of its own');
+	fs.mkdirSync(path.join(repo, '.devfactory'));
+	fs.writeFileSync(path.join(repo, '.devfactory', 'config.json'), JSON.stringify({ mcp: { servers: { sentry: true } } }));
+	fs.writeFileSync(path.join(stateDirectory, 'managed.json'), JSON.stringify({ mcp: { user: ['playwright'], local: { [repo]: ['sentry'] } } }));
+	const fromWorktree = (...args) => spawnSync('node', [MCP, ...args], { cwd: worktree, env, encoding: 'utf8' });
+	const dry = fromWorktree('sync', '--dry-run');
+	assert.equal(dry.status, 0, dry.stderr);
+	assert.doesNotMatch(dry.stdout, /remove/);
+	const r = fromWorktree('sync');
+	assert.equal(r.status, 0, r.stderr);
+	assert.deepEqual(
+		fake.calls().filter((c) => c.args[1] === 'remove'),
+		[],
+		'nothing was removed',
+	);
+	assert.deepEqual(read(path.join(stateDirectory, 'managed.json')).mcp.local[repo], ['sentry']);
+	// the pass config is wanted from the same settings
+	const out = fromWorktree('write-config');
+	assert.equal(out.status, 0, out.stderr);
+	assert.deepEqual(Object.keys(read(path.join(repo, '.devfactory', 'mcp.json')).mcpServers).sort(), ['playwright', 'sentry']);
 });

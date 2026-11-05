@@ -155,10 +155,11 @@ export function mainCheckout(from = process.cwd()) {
 	const root = projectRoot(from);
 	if (!root) return null;
 	try {
-		const common = execFileSync('git', ['-C', root, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
-			encoding: 'utf8',
-			stdio: ['ignore', 'pipe', 'ignore'],
-		}).trim();
+		// no --path-format=absolute (git 2.31): the answer is relative to the folder asked from
+		const common = path.resolve(
+			root,
+			execFileSync('git', ['-C', root, 'rev-parse', '--git-common-dir'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(),
+		);
 		if (path.basename(common) === '.git') return path.dirname(common);
 	} catch {
 		// not a git folder git can read: the folder with .git is the best answer
@@ -273,15 +274,11 @@ export function applySync(plan, { repo, env = process.env, cat = catalog() } = {
 
 // ---- the scheduled pass ----
 
-// A value the pass config may carry: a variable reference, alone or after an authorization scheme ("Bearer ${TOKEN:-}").
-const REFERENCE = /^(?:(?:Bearer|Basic|Token) )?\$\{[^}]+\}$/;
-const holdsLiteral = (config) =>
-	['env', 'headers'].some((k) => isObject(config?.[k]) && Object.values(config[k]).some((v) => typeof v !== 'string' || !REFERENCE.test(v)));
-
-// Writes { mcpServers } for the wanted servers (variable references intact) plus the entries of a legacy .mcp.json as they are,
-// except one that holds a literal value in `env` or `headers`, which could be a secret and is not copied (strict is then false and
-// the reason names it); a wanted id wins a name clash. A wanted server Claude has only from elsewhere (a claude.ai connector, a hand-made user entry:
-// listed, not ours, not in the legacy file) is not written, so it is used as it is; the pass then cannot be strict, or it would lose it.
+// Writes { mcpServers } for the wanted servers, variable references intact. The entries of a legacy .mcp.json are never copied:
+// without --strict-mcp-config Claude loads that file's servers itself, and a copy is a second place for a literal secret to land.
+// So a legacy entry the wanted set does not write makes the pass non-strict, and the reason names it. A wanted server Claude has
+// only from elsewhere (a claude.ai connector, a hand-made user entry: listed, not ours, not in the legacy file) is not written
+// either, so it is used as it is; the pass then cannot be strict, or it would lose it.
 // Returns { file, strict, reason }: strict says whether `--strict-mcp-config` is safe to pass.
 export function writePassConfig({ want, cat = catalog(), env = process.env, file, listing = '', legacyFile, managed = readManaged(env), repo } = {}) {
 	const root = repo ?? projectRoot();
@@ -291,21 +288,19 @@ export function writePassConfig({ want, cat = catalog(), env = process.env, file
 		file = path.join(root, PROJECT_FILES.mcp);
 	}
 	const key = repoKey(root);
-	const legacyAll = legacyFile ? readProject(legacyFile).mcpServers ?? {} : {};
-	const wantedIds = new Set(want.map((w) => w.id));
-	const legacy = Object.fromEntries(Object.entries(legacyAll).filter(([, c]) => !holdsLiteral(c)));
-	const withheld = Object.keys(legacyAll).filter((id) => !(id in legacy) && !wantedIds.has(id));
+	const legacy = Object.keys(legacyFile ? readProject(legacyFile).mcpServers ?? {} : {});
 	const mine = new Set([...managed.mcp.user, ...(key ? managed.mcp.local[key] ?? [] : [])]);
 	const entries = parseListing(listing);
-	const mcpServers = { ...legacy };
+	const mcpServers = {};
 	const external = [];
 	for (const { id } of want) {
-		if (!mine.has(id) && !(id in legacy) && findServer(id, entries)) {
+		if (!mine.has(id) && !legacy.includes(id) && findServer(id, entries)) {
 			external.push(id);
 			continue;
 		}
 		mcpServers[id] = serverConfig(id, cat, env);
 	}
+	const fromLegacy = legacy.filter((id) => !(id in mcpServers));
 	fs.mkdirSync(path.dirname(file), { recursive: true });
 	fs.writeFileSync(file, `${JSON.stringify({ mcpServers }, null, '\t')}\n`);
 	const reasons = [
@@ -314,7 +309,11 @@ export function writePassConfig({ want, cat = catalog(), env = process.env, file
 					`${external.join(', ')} ${external.length > 1 ? 'are' : 'is'} available only from outside the generated file (a user-scope entry or a claude.ai connector), so the pass also loads Claude's other servers`,
 				]
 			: []),
-		...withheld.map((id) => `${id} in .mcp.json holds a literal value; not copied`),
+		...(fromLegacy.length
+			? [
+					`${fromLegacy.join(', ')} ${fromLegacy.length > 1 ? 'come' : 'comes'} from .mcp.json; Claude loads them itself (run dev-factory mcp migrate)`,
+				]
+			: []),
 	];
 	return { file, strict: reasons.length === 0, reason: reasons.join('; ') };
 }

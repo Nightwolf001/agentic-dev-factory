@@ -268,7 +268,7 @@ function turnOn(id, scope, cat) {
 function runSync({ dry = false } = {}) {
 	const repo = mainCheckout();
 	const cat = catalog();
-	const ls = layers();
+	const ls = layers({ from: repo ?? process.cwd() });
 	const want = desired(ls, cat);
 	if (!repo && want.some((w) => w.scope === 'project')) throw new Error('the project scope needs a git repository: run this inside one');
 	const listing = claudeListing();
@@ -330,7 +330,7 @@ if (isMain(import.meta.url)) {
 			const root = mainCheckout();
 			if (!root) throw new Error('not inside a git repository');
 			const out = writePassConfig({
-				want: desired(layers(), cat),
+				want: desired(layers({ from: root }), cat),
 				cat,
 				env: process.env,
 				listing: claudeListing(),
