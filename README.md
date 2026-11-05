@@ -284,11 +284,14 @@ Settings are layered. Later layers win:
 | Order | Layer                      | Where                                                                             | Use it for                                                                                     |
 | ----- | -------------------------- | --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
 | 1     | **Plugin defaults**        | `config.json` inside the plugin                                                   | Nothing: don't edit it. An update replaces it.                                                 |
-| 2     | **Your repository's file** | `dev-factory.config.json` at the repository root                                  | Everything that is true for this project and its team. Commit it.                              |
-| 3     | **A different file**       | the path in `DF_CONFIG`                                                           | A per-machine file, or tests. Replaces layer 2.                                                |
-| 4     | **Environment variable**   | the variables in the table below, in your shell or in `~/.dev-factory/.env.local` | A value that differs on one machine, such as a model, a budget or the tracker token's project. |
+| 2     | **Your own file**          | `config.json` in `~/.dev-factory` (`DF_STATE_DIR`)                                | Your choices for every project: models, effort, which MCP servers and plugins are on.          |
+| 3     | **Your repository's file** | `.devfactory/config.json` at the repository root                                  | Everything that is true for this project. The folder ignores itself; see the note below.       |
+| 4     | **A different file**       | the path in `DF_CONFIG`                                                           | A per-machine file, or tests. Replaces layer 3.                                                |
+| 5     | **Environment variable**   | the variables in the table below, in your shell or in `~/.dev-factory/.env.local` | A value that differs on one machine, such as a model, a budget or the tracker token's project. |
 
-**Merge rules for layer 2.** Objects merge key by key, so `{"git": {"baseBranch": "develop"}}` changes one value and keeps the rest of `git`. Arrays and plain values replace the default whole: `pr.areaLabels` or `environment.setup` in your file is the complete list. `null` is a real value (`git.baseBranch: null` means "the repository's default branch").
+The old `dev-factory.config.json` at the repository root is still read when `.devfactory/config.json` is absent, and `dev-factory config validate` prints a `note:` that points to the migration. When both exist only the new file is used and the note says so. A checkout that has no `.devfactory/` (it is never committed) gets its files from the `DF_PROJECT_CONFIG` and `DF_PROJECT_QA` variables, raw or base64, through `dev-factory config write-from-env [--if-set] [--force]`.
+
+**Merge rules for layers 2 and 3.** Objects merge key by key, so `{"git": {"baseBranch": "develop"}}` changes one value and keeps the rest of `git`. Arrays and plain values replace the default whole: `pr.areaLabels` or `environment.setup` in your file is the complete list. `null` is a real value (`git.baseBranch: null` means "the repository's default branch").
 
 ```bash
 dev-factory config get debug                  # what is in effect now, defaults and your file merged
@@ -626,6 +629,13 @@ The platform is **not** a default setting (a default would always win, and the t
 | Key                  | Default | What it does                                                                                                                                                                                                                       |
 | -------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `guard.trackerHosts` | `[]`    | Host names of the task tracker beyond the built-in ones and `sources.jira.site`, such as a self-hosted Jira. A command inside a run that names one is refused, whatever program it runs; the scheduler alone talks to the tracker. |
+
+#### MCP servers and plugins
+
+| Key               | Default | What it does                                                                                                                                                                                                                        |
+| ----------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mcp.servers`     | `{}`    | Which servers of the catalog are on: `{ "sentry": true }`. In your own file it means every project, in the repository's file this project. `playwright` (and `maestro` once `mobile.appDir` is set) cannot be `false` in any layer. |
+| `plugins.enabled` | `{}`    | The same for the companion plugins of `plugins.json`, by id: `{ "frontend-design@claude-plugins-official": true }`. The required plugin cannot be `false`.                                                                          |
 
 #### Sandbox
 

@@ -1,9 +1,24 @@
+import './isolate-state.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { findRepoConfig, get, load, merge, validate } from '../scripts/config.mjs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import {
+	findRepoConfig,
+	get,
+	isLegacyConfig,
+	layers,
+	load,
+	merge,
+	notices,
+	requiredServers,
+	setIn,
+	sourceOf,
+	userConfigFile,
+	validate,
+} from '../scripts/config.mjs';
 
 test('shipped config is valid', () => assert.deepEqual(validate(load()), []));
 
@@ -328,4 +343,327 @@ test('tasks.ignoreCommentAuthors is a list of author ids or names, empty by defa
 			withSetting('tasks.ignoreCommentAuthors', bad).some((p) => /tasks\.ignoreCommentAuthors must be a list/.test(p)),
 			JSON.stringify(bad),
 		);
+});
+
+// ---- layers: defaults, the user's file, the project's file, DF_CONFIG and the DF_* variables ----
+
+const SCRIPT = new URL('../scripts/config.mjs', import.meta.url).pathname;
+const tmp = (prefix) => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+const put = (root, rel, data) => {
+	fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+	fs.writeFileSync(path.join(root, rel), typeof data === 'string' ? data : JSON.stringify(data));
+};
+// A repository and an empty machine state folder; `opts` is what the functions take.
+function world() {
+	const repo = tmp('df-layers-');
+	execFileSync('git', ['init', '-q', repo]);
+	const state = tmp('df-state-');
+	return { repo, state, opts: { from: repo, env: { DF_STATE_DIR: state } } };
+}
+const childEnv = (state, extra = {}) => {
+	const env = { ...process.env, DF_STATE_DIR: state, ...extra };
+	for (const k of ['DF_CONFIG', 'DF_PROJECT_CONFIG', 'DF_PROJECT_QA']) if (!(k in extra)) delete env[k];
+	return env;
+};
+const quote = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+test('the user layer is read from DF_STATE_DIR, or ~/.dev-factory', () => {
+	assert.equal(userConfigFile({ DF_STATE_DIR: '/x/state' }), path.join('/x/state', 'config.json'));
+	assert.equal(userConfigFile({}), path.join(os.homedir(), '.dev-factory', 'config.json'));
+});
+
+test('the user layer sits between defaults and project', () => {
+	const { repo, state, opts } = world();
+	put(state, 'config.json', { models: { effort: 'low' }, caps: { maxConcurrent: 3 } });
+	put(repo, '.devfactory/config.json', { caps: { maxConcurrent: 1 } });
+	const config = load(undefined, opts);
+	assert.equal(get('models.effort', { config, env: opts.env }), 'low');
+	assert.equal(get('caps.maxConcurrent', { config, env: opts.env }), 1);
+	assert.equal(config.tasks.label, 'dev-factory', 'untouched keys keep their default');
+	assert.equal(sourceOf('models.effort', opts), 'user');
+	assert.equal(sourceOf('caps.maxConcurrent', opts), 'project');
+	assert.equal(sourceOf('tasks.label', opts), 'default');
+	assert.deepEqual(
+		layers(opts).map((l) => l.name),
+		['defaults', 'user', 'project'],
+	);
+});
+
+test('load() with no argument reads the layers of the process: its DF_STATE_DIR and working folder', () => {
+	assert.equal(process.env.DF_STATE_DIR !== undefined, true);
+	const before = load().caps.maxConcurrent;
+	const saved = process.env.DF_STATE_DIR;
+	const { state } = world();
+	put(state, 'config.json', { caps: { maxConcurrent: before + 10 } });
+	try {
+		process.env.DF_STATE_DIR = state;
+		assert.equal(load().caps.maxConcurrent, before + 10);
+	} finally {
+		process.env.DF_STATE_DIR = saved;
+	}
+});
+
+test('layers always has three entries; a missing file is an empty layer with no file', () => {
+	const { opts } = world();
+	const ls = layers(opts);
+	assert.equal(ls.length, 3);
+	assert.deepEqual([ls[1].file, ls[1].data, ls[2].file, ls[2].data], [null, {}, null, {}]);
+	assert.ok(ls[0].file && ls[0].data.tasks, 'the defaults are the plugin config.json');
+});
+
+test('DF_CONFIG replaces the project layer, and sourceOf says file; a DF_* variable wins over every layer', () => {
+	const { repo, state } = world();
+	put(repo, '.devfactory/config.json', { caps: { maxConcurrent: 1 } });
+	put(state, 'config.json', { caps: { maxOpenPrs: 7 } });
+	const other = path.join(tmp('df-file-'), 'c.json');
+	fs.writeFileSync(other, JSON.stringify({ caps: { maxConcurrent: 9 } }));
+	const env = { DF_STATE_DIR: state, DF_CONFIG: other };
+	const config = load(undefined, { from: repo, env });
+	assert.equal(config.caps.maxConcurrent, 9);
+	assert.equal(config.caps.maxOpenPrs, 7, 'the user layer still applies under DF_CONFIG');
+	assert.equal(sourceOf('caps.maxConcurrent', { from: repo, env }), 'file');
+	assert.equal(sourceOf('caps.maxOpenPrs', { from: repo, env }), 'user');
+	assert.equal(sourceOf('caps.maxConcurrent', { from: repo, env: { ...env, DF_MAX_CONCURRENT: '4' } }), 'DF_MAX_CONCURRENT');
+	assert.equal(sourceOf('models.effort', { from: repo, env: { DF_STATE_DIR: state, DF_EFFORT: 'low' } }), 'DF_EFFORT');
+	assert.equal(sourceOf('models.effort', { from: repo, env: { DF_STATE_DIR: state, DF_EFFORT: '' } }), 'default', 'an empty variable is not set');
+});
+
+test('the new project file wins over the legacy one in the same folder, with a notice', () => {
+	const { repo, opts } = world();
+	put(repo, 'dev-factory.config.json', { caps: { maxConcurrent: 5 } });
+	put(repo, '.devfactory/config.json', { caps: { maxOpenPrs: 2 } });
+	assert.equal(findRepoConfig(repo, {}), path.join(repo, '.devfactory/config.json'));
+	const config = load(undefined, opts);
+	assert.equal(config.caps.maxOpenPrs, 2);
+	assert.equal(config.caps.maxConcurrent, load(undefined, world().opts).caps.maxConcurrent, 'the legacy file is not merged');
+	const n = notices(opts);
+	assert.equal(n.length, 1);
+	assert.match(n[0], /is ignored/);
+	assert.equal(n[0], `${repo}/dev-factory.config.json is ignored: ${repo}/.devfactory/config.json is used`);
+});
+
+test('the legacy file alone is still read, with a notice', () => {
+	const { repo, opts } = world();
+	put(repo, 'dev-factory.config.json', { caps: { maxConcurrent: 5 } });
+	assert.equal(findRepoConfig(repo, {}), path.join(repo, 'dev-factory.config.json'));
+	assert.equal(isLegacyConfig(path.join(repo, 'dev-factory.config.json')), true);
+	assert.equal(isLegacyConfig(path.join(repo, '.devfactory/config.json')), false);
+	assert.equal(load(undefined, opts).caps.maxConcurrent, 5);
+	assert.equal(sourceOf('caps.maxConcurrent', opts), 'project');
+	const n = notices(opts);
+	assert.equal(n.length, 1);
+	assert.match(n[0], /run dev-factory migrate/);
+	assert.equal(n[0], `${repo}/dev-factory.config.json is the old location: run dev-factory migrate`);
+});
+
+test('no notice without a project file or under DF_CONFIG; a file found above the working folder counts', () => {
+	const { repo, state, opts } = world();
+	assert.deepEqual(notices(opts), []);
+	put(repo, 'dev-factory.config.json', {});
+	const deep = path.join(repo, 'a', 'b');
+	fs.mkdirSync(deep, { recursive: true });
+	assert.equal(notices({ from: deep, env: opts.env }).length, 1);
+	const other = path.join(repo, 'other.json');
+	fs.writeFileSync(other, '{}');
+	assert.deepEqual(notices({ from: deep, env: { DF_STATE_DIR: state, DF_CONFIG: other } }), []);
+});
+
+test('an unreadable layer names its file', () => {
+	const { state, opts } = world();
+	put(state, 'config.json', '{ nope');
+	assert.throws(
+		() => load(undefined, opts),
+		(e) => e.message.includes(path.join(state, 'config.json')),
+	);
+});
+
+test('load(file) still reads that file as it is, without layers', () => {
+	const file = path.join(tmp('df-asis-'), 'x.json');
+	fs.writeFileSync(file, '{"a":1}');
+	assert.deepEqual(load(file), { a: 1 });
+});
+
+test('setIn project writes .devfactory/config.json and never the legacy file', () => {
+	const { repo, opts } = world();
+	put(repo, 'dev-factory.config.json', { caps: { maxConcurrent: 5 } });
+	const legacyBefore = fs.readFileSync(path.join(repo, 'dev-factory.config.json'), 'utf8');
+	const file = setIn('project', 'mcp.servers.context7', true, opts);
+	assert.equal(file, path.join(repo, '.devfactory/config.json'));
+	assert.equal(fs.readFileSync(path.join(repo, 'dev-factory.config.json'), 'utf8'), legacyBefore);
+	const text = fs.readFileSync(file, 'utf8');
+	assert.ok(text.endsWith('\n') && text.includes('\n\t'), 'tab indent and a trailing newline');
+	assert.equal(JSON.parse(text).mcp.servers.context7, true);
+	assert.equal(JSON.parse(text).caps.maxConcurrent, 5, 'the first write carries the legacy settings over, so they are not lost');
+	assert.ok(fs.existsSync(path.join(repo, '.devfactory/.gitignore')));
+	setIn('project', 'mcp.servers.sentry', true, opts);
+	assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).mcp.servers, { context7: true, sentry: true });
+});
+
+test('setIn user writes the user file in the state folder and creates the folder', () => {
+	const { state } = world();
+	const env = { DF_STATE_DIR: path.join(state, 'sub') };
+	const file = setIn('user', 'models.effort', 'low', { env });
+	assert.equal(file, path.join(state, 'sub', 'config.json'));
+	assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { models: { effort: 'low' } });
+});
+
+test('setIn with undefined prunes empty objects', () => {
+	const { opts } = world();
+	const file = setIn('project', 'mcp.servers.context7', true, opts);
+	assert.equal(setIn('project', 'mcp.servers.context7', undefined, opts), file);
+	assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), {});
+	assert.equal(setIn('project', 'never.set', undefined, opts), file, 'deleting what is not there is not an error');
+});
+
+test('setIn keeps its siblings, replaces a non-object on the way and refuses a prototype key', () => {
+	const { opts } = world();
+	const file = setIn('project', 'a.b', 1, opts);
+	setIn('project', 'a.c', 2, opts);
+	setIn('project', 'a.b.x', 3, opts);
+	assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { a: { b: { x: 3 }, c: 2 } });
+	setIn('project', 'a.b.x', undefined, opts);
+	assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { a: { c: 2 } });
+	assert.throws(() => setIn('project', '__proto__.x', 1, opts), /not a valid setting path/);
+	assert.throws(() => setIn('team', 'a', 1, opts), /layer must be user or project/);
+	assert.equal({}.x, undefined);
+});
+
+test('setIn project outside a git repository says so', () => {
+	const dir = tmp('df-nogit-');
+	assert.throws(() => setIn('project', 'a', 1, { from: dir, env: { DF_STATE_DIR: dir } }), /not inside a git repository/);
+});
+
+test('requiredServers: playwright always, maestro once a mobile app is configured', () => {
+	assert.deepEqual(requiredServers(load()), ['playwright']);
+	assert.deepEqual(requiredServers(merge(load(), { mobile: { appDir: 'apps/mobile' } })), ['playwright', 'maestro']);
+});
+
+test('validate rejects an unknown server, a non-boolean and a required server set to false', () => {
+	const bad = merge(load(), { mcp: { servers: { nope: true, sentry: 'yes', playwright: false } } });
+	const p = validate(bad);
+	assert.ok(p.includes('mcp.servers.nope is not a catalog server'), p.join('\n'));
+	assert.ok(p.includes('mcp.servers.sentry must be true or false'), p.join('\n'));
+	assert.ok(p.includes('mcp.servers.playwright is required and cannot be false'), p.join('\n'));
+	assert.deepEqual(validate(merge(load(), { mcp: { servers: { playwright: true, sentry: true, maestro: false } } })), []);
+	assert.deepEqual(validate(merge(load(), { mcp: { servers: 'all' } })), ['mcp.servers must be an object of server ids to true or false']);
+});
+
+test('maestro cannot be false once a mobile app is configured', () => {
+	const c = merge(load(), { mobile: { appDir: 'apps/mobile' }, mcp: { servers: { maestro: false } } });
+	assert.ok(validate(c).includes('mcp.servers.maestro is required and cannot be false'));
+});
+
+test('validate checks plugins.enabled against plugins.json, and refuses the required plugin set to false', () => {
+	const plugins = JSON.parse(fs.readFileSync(new URL('../plugins.json', import.meta.url), 'utf8')).plugins;
+	const required = plugins.find((p) => p.required).id;
+	const optional = plugins.find((p) => !p.required).id;
+	const p = validate(merge(load(), { plugins: { enabled: { [required]: false, [optional]: 'on', 'ghost@nowhere': true } } }));
+	assert.ok(p.includes(`plugins.enabled.${required} is required and cannot be false`), p.join('\n'));
+	assert.ok(p.includes(`plugins.enabled.${optional} must be true or false`), p.join('\n'));
+	assert.ok(p.includes('plugins.enabled.ghost@nowhere is not a known plugin'), p.join('\n'));
+	assert.deepEqual(validate(merge(load(), { plugins: { enabled: { [required]: true, [optional]: false } } })), []);
+	assert.deepEqual(validate(merge(load(), { plugins: { enabled: [] } })), ['plugins.enabled must be an object of plugin ids to true or false']);
+});
+
+test('a required server set to false in any one layer fails validation, even when a later layer says true', () => {
+	const { repo, state, opts } = world();
+	put(state, 'config.json', { mcp: { servers: { playwright: false } } });
+	put(repo, '.devfactory/config.json', { mcp: { servers: { playwright: true } } });
+	assert.equal(load(undefined, opts).mcp.servers.playwright, true);
+	const r = spawnSync('node', [SCRIPT, 'validate'], { cwd: repo, encoding: 'utf8', env: childEnv(state) });
+	assert.equal(r.status, 1, r.stdout + r.stderr);
+	assert.match(r.stderr, /mcp\.servers\.playwright is required and cannot be false/);
+});
+
+test('the defaults carry an empty mcp.servers and plugins.enabled', () => {
+	const c = JSON.parse(fs.readFileSync(new URL('../config.json', import.meta.url), 'utf8'));
+	assert.deepEqual(c.mcp, { servers: {} });
+	assert.deepEqual(c.plugins, { enabled: {} });
+});
+
+test('config validate prints each notice as a note on stderr and keeps the exit code', () => {
+	const { repo, state } = world();
+	put(repo, 'dev-factory.config.json', {});
+	const ok = spawnSync('node', [SCRIPT, 'validate'], { cwd: repo, encoding: 'utf8', env: childEnv(state) });
+	assert.equal(ok.status, 0, ok.stderr);
+	assert.match(ok.stdout, /config: ok/);
+	assert.match(ok.stderr, new RegExp(`^note: ${quote(repo)}/dev-factory\\.config\\.json is the old location: run dev-factory migrate$`, 'm'));
+	put(repo, '.devfactory/config.json', { caps: { maxResumes: -1 } });
+	const bad = spawnSync('node', [SCRIPT, 'validate'], { cwd: repo, encoding: 'utf8', env: childEnv(state) });
+	assert.equal(bad.status, 1);
+	assert.match(bad.stderr, /caps\.maxResumes/);
+	assert.match(bad.stderr, /^note: .* is ignored: /m);
+});
+
+const b64 = (s) => Buffer.from(s).toString('base64');
+const run = (repo, state, args, extra = {}) =>
+	spawnSync('node', [SCRIPT, 'write-from-env', ...args], { cwd: repo, encoding: 'utf8', env: childEnv(state, extra) });
+
+test('write-from-env writes the project config from base64 and the QA profiles from raw YAML', () => {
+	const { repo, state } = world();
+	const config = JSON.stringify({ tasks: { source: 'github' } });
+	const yaml = 'profiles:\n  web:\n    paths: ["src/**"]\n';
+	const r = run(repo, state, [], { DF_PROJECT_CONFIG: b64(config), DF_PROJECT_QA: yaml });
+	assert.equal(r.status, 0, r.stderr);
+	assert.deepEqual(JSON.parse(fs.readFileSync(path.join(repo, '.devfactory/config.json'), 'utf8')), { tasks: { source: 'github' } });
+	assert.equal(fs.readFileSync(path.join(repo, '.devfactory/qa.yaml'), 'utf8'), yaml);
+	assert.ok(fs.existsSync(path.join(repo, '.devfactory/.gitignore')));
+});
+
+test('write-from-env takes raw JSON and base64 YAML as well', () => {
+	const { repo, state } = world();
+	const yaml = '# comment\nprofiles: {}\n';
+	const r = run(repo, state, [], { DF_PROJECT_CONFIG: '{"caps":{"maxConcurrent":2}}', DF_PROJECT_QA: b64(yaml) });
+	assert.equal(r.status, 0, r.stderr);
+	assert.equal(JSON.parse(fs.readFileSync(path.join(repo, '.devfactory/config.json'), 'utf8')).caps.maxConcurrent, 2);
+	assert.equal(fs.readFileSync(path.join(repo, '.devfactory/qa.yaml'), 'utf8'), yaml);
+});
+
+test('write-from-env --if-set with neither variable set exits 0 and writes nothing; without it an unset variable exits 1', () => {
+	const { repo, state } = world();
+	const quiet = run(repo, state, ['--if-set']);
+	assert.equal(quiet.status, 0);
+	assert.equal(quiet.stderr, '');
+	assert.equal(fs.existsSync(path.join(repo, '.devfactory')), false);
+	const loud = run(repo, state, []);
+	assert.equal(loud.status, 1);
+	assert.match(loud.stderr, /DF_PROJECT_CONFIG/);
+	assert.equal(fs.existsSync(path.join(repo, '.devfactory/config.json')), false);
+});
+
+test('write-from-env --if-set writes only the file whose variable is set', () => {
+	const { repo, state } = world();
+	const r = run(repo, state, ['--if-set'], { DF_PROJECT_QA: 'profiles: {}\n' });
+	assert.equal(r.status, 0, r.stderr);
+	assert.equal(fs.existsSync(path.join(repo, '.devfactory/config.json')), false);
+	assert.equal(fs.readFileSync(path.join(repo, '.devfactory/qa.yaml'), 'utf8'), 'profiles: {}\n');
+});
+
+test('write-from-env refuses invalid JSON and writes nothing', () => {
+	const { repo, state } = world();
+	for (const bad of ['{ nope', b64('not json'), b64('[1,2]')]) {
+		const r = run(repo, state, ['--if-set'], { DF_PROJECT_CONFIG: bad, DF_PROJECT_QA: 'profiles: {}\n' });
+		assert.equal(r.status, 1, bad);
+		assert.match(r.stderr, /DF_PROJECT_CONFIG/);
+	}
+	assert.equal(fs.existsSync(path.join(repo, '.devfactory/qa.yaml')), false, 'nothing is written when one value is invalid');
+});
+
+test('write-from-env keeps an existing file and exits 1, unless --force', () => {
+	const { repo, state } = world();
+	put(repo, '.devfactory/config.json', '{"keep":true}');
+	const kept = run(repo, state, [], { DF_PROJECT_CONFIG: '{"new":true}', DF_PROJECT_QA: 'profiles: {}\n' });
+	assert.equal(kept.status, 1);
+	assert.match(kept.stderr, /exists/);
+	assert.equal(fs.readFileSync(path.join(repo, '.devfactory/config.json'), 'utf8'), '{"keep":true}');
+	const forced = run(repo, state, ['--force'], { DF_PROJECT_CONFIG: '{"new":true}', DF_PROJECT_QA: 'profiles: {}\n' });
+	assert.equal(forced.status, 0, forced.stderr);
+	assert.deepEqual(JSON.parse(fs.readFileSync(path.join(repo, '.devfactory/config.json'), 'utf8')), { new: true });
+});
+
+test('write-from-env outside a git repository says so', () => {
+	const dir = tmp('df-nogit-');
+	const r = run(dir, dir, [], { DF_PROJECT_CONFIG: '{}', DF_PROJECT_QA: 'a: 1\n' });
+	assert.equal(r.status, 1);
+	assert.match(r.stderr, /not inside a git repository/);
 });

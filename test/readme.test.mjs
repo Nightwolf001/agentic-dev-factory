@@ -1,3 +1,4 @@
+import './isolate-state.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { test } from 'node:test';
@@ -14,6 +15,8 @@ const OPEN = [
 	/^models\.efforts$/,
 	/^review\.specialistAxes$/,
 	/^environments$/,
+	/^mcp\.servers$/,
+	/^plugins\.enabled$/,
 	/^sources\.\w+\.(states|properties)$/,
 ];
 function leaves(obj, prefix = '') {

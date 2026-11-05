@@ -4,7 +4,7 @@
 //   dev-factory install [--apply] [--load] launchers, plugins and the scheduler for this repository
 //   dev-factory mcp list|enable|connect... optional MCP servers
 //   dev-factory tasks list|create|init...  tasks in the configured task source
-//   dev-factory config get|validate        read the merged configuration
+//   dev-factory config get|validate|...    read the layered configuration; write-from-env fills .devfactory/ from DF_PROJECT_*
 //   dev-factory scheduler on|off|status    switch the scheduled passes of this repository on or off
 //   dev-factory tick | improve             run one scheduled pass now
 //   dev-factory cloud init [--github-actions]  set the repository up for Claude Code on the web or GitHub Actions

@@ -1,17 +1,28 @@
-// Reads dev-factory/config.json (the defaults, shipped with the plugin) and merges the repository's own
-// dev-factory.config.json over it, so a team's tracker, branches and environments live in its repository and the
-// plugin carries no organisation. Environment variables override scalar settings so one machine can differ without
-// editing a committed file.
-//   config.mjs get <dotted.path>     print one value (JSON for objects and arrays)
-//   config.mjs validate              exit 1 and list problems if required keys are missing
+// Reads the factory's settings in layers, later layers winning (objects merge key by key; arrays and scalars replace):
+//   1. defaults  config.json inside the plugin, shared and free of any organisation
+//   2. user      <DF_STATE_DIR or ~/.dev-factory>/config.json, one person's choices for every project
+//   3. project   <repo>/.devfactory/config.json (the old <repo>/dev-factory.config.json is still read, with a notice,
+//                when the new file is absent), or the file named by DF_CONFIG, which replaces this layer
+//   4. env       the DF_* variables of ENV_OVERRIDES, applied by get()
+// The plugin carries no organisation: a team's tracker, branches and environments live in its repository.
+//   config.mjs get <dotted.path>        print one value (JSON for objects and arrays)
+//   config.mjs agent <role>             print the model and effort a role runs with
+//   config.mjs validate                 exit 1 and list problems; each notice is printed as `note: ...` on stderr
+//   config.mjs write-from-env [--if-set] [--force]
+//                                       write .devfactory/config.json from DF_PROJECT_CONFIG and .devfactory/qa.yaml from
+//                                       DF_PROJECT_QA (raw or base64), for a checkout that has neither; an existing file is
+//                                       kept unless --force, and --if-set skips a variable that is not set
 // A path that starts with `source.` reads from the active task source: `source.states.inProgress` is
 // `sources.<tasks.source>.states.inProgress`.
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isMain } from './is-main.mjs';
+import { PROJECT_FILES, ensureProjectDir, projectRoot } from './project-dir.mjs';
 
-const FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'config.json');
+const PLUGIN_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+const FILE = path.join(PLUGIN_ROOT, 'config.json');
 export const REPO_CONFIG = 'dev-factory.config.json';
 export const SOURCES = ['local', 'github', 'notion', 'jira'];
 export const SCHEDULERS = ['auto', 'launchd', 'github-actions', 'routine', 'none'];
@@ -123,22 +134,56 @@ export function merge(base, over) {
 	return out;
 }
 
-// DF_CONFIG names the file; otherwise the nearest dev-factory.config.json at or above `from`.
+// DF_CONFIG names the file; otherwise the nearest folder at or above `from` that holds .devfactory/config.json or the old
+// dev-factory.config.json, the new one winning when a folder holds both.
 export function findRepoConfig(from = process.cwd(), env = process.env) {
 	if (env.DF_CONFIG) return fs.existsSync(env.DF_CONFIG) ? env.DF_CONFIG : null;
 	for (let dir = path.resolve(from); ; dir = path.dirname(dir)) {
-		const candidate = path.join(dir, REPO_CONFIG);
-		if (fs.existsSync(candidate)) return candidate;
+		for (const candidate of [path.join(dir, PROJECT_FILES.config), path.join(dir, REPO_CONFIG)]) if (fs.existsSync(candidate)) return candidate;
 		if (path.dirname(dir) === dir) return null;
 	}
 }
 
-// An explicit file is read as it is (tests, tools); no argument gives the defaults plus the repository's file.
-export function load(file) {
+export const isLegacyConfig = (file) => path.basename(file) === REPO_CONFIG;
+
+export const userConfigFile = (env = process.env) => path.join(env.DF_STATE_DIR || path.join(os.homedir(), '.dev-factory'), 'config.json');
+
+function readJson(file) {
+	try {
+		return JSON.parse(fs.readFileSync(file, 'utf8'));
+	} catch (e) {
+		throw new Error(`${file}: ${e.message}`);
+	}
+}
+
+// The three file layers, always in this order. A layer whose file is missing has file null and no data.
+export function layers({ from = process.cwd(), env = process.env } = {}) {
+	const user = userConfigFile(env);
+	const project = findRepoConfig(from, env);
+	const read = (file) => (file && fs.existsSync(file) ? { file, data: readJson(file) } : { file: null, data: {} });
+	return [
+		{ name: 'defaults', file: FILE, data: readJson(FILE) },
+		{ name: 'user', ...read(user) },
+		{ name: 'project', ...read(project) },
+	];
+}
+
+// An explicit file is read as it is (tests, tools); no argument gives the defaults, the user's file and the project's.
+export function load(file, opts) {
 	if (file) return JSON.parse(fs.readFileSync(file, 'utf8'));
-	const defaults = JSON.parse(fs.readFileSync(FILE, 'utf8'));
-	const repo = findRepoConfig();
-	return repo ? merge(defaults, JSON.parse(fs.readFileSync(repo, 'utf8'))) : defaults;
+	return layers(opts).reduce((acc, l) => merge(acc, l.data), {});
+}
+
+// What a person should know about the project file in use: the old location, or two files where one is ignored.
+export function notices({ from = process.cwd(), env = process.env } = {}) {
+	if (env.DF_CONFIG) return [];
+	for (let dir = path.resolve(from); ; dir = path.dirname(dir)) {
+		const fresh = path.join(dir, PROJECT_FILES.config);
+		const old = path.join(dir, REPO_CONFIG);
+		if (fs.existsSync(fresh)) return fs.existsSync(old) ? [`${old} is ignored: ${fresh} is used`] : [];
+		if (fs.existsSync(old)) return [`${old} is the old location: run dev-factory migrate`];
+		if (path.dirname(dir) === dir) return [];
+	}
 }
 
 const dig = (obj, dotted) => dotted.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj);
@@ -166,6 +211,61 @@ export function get(dotted, { config = load(), env = process.env } = {}) {
 	return dig(config, dotted);
 }
 
+// Where the value of `dotted` comes from: the DF_* variable that overrides it, else the last layer that sets it
+// ('project', or 'file' when DF_CONFIG replaces the project layer), else 'default'.
+export function sourceOf(dotted, { from = process.cwd(), env = process.env } = {}) {
+	const ls = layers({ from, env });
+	dotted = resolvePath(dotted, merge(ls[0].data, {}), env);
+	const name = ENV_OVERRIDES[dotted];
+	if (name && env[name] !== undefined && env[name] !== '') return name;
+	for (const l of [...ls].reverse()) {
+		if (l.name === 'defaults' || dig(l.data, dotted) === undefined) continue;
+		return l.name === 'project' && env.DF_CONFIG ? 'file' : l.name;
+	}
+	return 'default';
+}
+
+const UNSAFE_KEYS = ['__proto__', 'constructor', 'prototype'];
+
+// Sets (or, for undefined, removes and prunes the objects it leaves empty) one dotted key in the user's file or in the
+// project's .devfactory/config.json, and returns the file. The project layer is never the old dev-factory.config.json;
+// the first write into a repository that only has the old file starts from its content, which the new file then replaces.
+export function setIn(layer, dotted, value, { from = process.cwd(), env = process.env } = {}) {
+	if (layer !== 'user' && layer !== 'project') throw new Error(`layer must be user or project, not ${layer}`);
+	const keys = String(dotted).split('.');
+	if (keys.some((k) => !k || UNSAFE_KEYS.includes(k))) throw new Error(`${dotted} is not a valid setting path`);
+	let file;
+	let seed = null;
+	if (layer === 'user') file = userConfigFile(env);
+	else {
+		const root = projectRoot(from);
+		if (!root) throw new Error('not inside a git repository: the project layer lives in <repository>/.devfactory/config.json');
+		ensureProjectDir(root);
+		file = path.join(root, PROJECT_FILES.config);
+		if (!fs.existsSync(file) && fs.existsSync(path.join(root, REPO_CONFIG))) seed = path.join(root, REPO_CONFIG);
+	}
+	const data = fs.existsSync(file) ? readJson(file) : seed ? readJson(seed) : {};
+	const trail = [data];
+	let at = data;
+	for (const k of keys.slice(0, -1)) {
+		if (!isObject(at[k])) {
+			if (value === undefined) break;
+			at[k] = {};
+		}
+		at = at[k];
+		trail.push(at);
+	}
+	if (trail.length === keys.length) {
+		const last = keys.at(-1);
+		if (value === undefined) delete at[last];
+		else at[last] = value;
+		for (let i = trail.length - 1; i > 0 && value === undefined && Object.keys(trail[i]).length === 0; i--) delete trail[i - 1][keys[i - 1]];
+	}
+	fs.mkdirSync(path.dirname(file), { recursive: true });
+	fs.writeFileSync(file, `${JSON.stringify(data, null, '\t')}\n`);
+	return file;
+}
+
 // The model and effort an agent of `role` runs with: models.<role>, and models.efforts.<role> over models.effort. Commands
 // pass these to every Agent dispatch, so the settings reach the agents; an agent's own frontmatter is only the fallback.
 export function agentSettings(role, { config = load(), env = process.env } = {}) {
@@ -182,11 +282,51 @@ export function requiredFor(config) {
 	return [...REQUIRED, ...SOURCE_NEEDS[source].map((k) => `sources.${source}.${k}`), ...STATE_KEYS.map((k) => `sources.${source}.states.${k}`)];
 }
 
+// The MCP servers a configuration cannot do without: the browser for web QA, and the device runner once a mobile app is set.
+export function requiredServers(config) {
+	return dig(config, 'mobile.appDir') != null ? ['playwright', 'maestro'] : ['playwright'];
+}
+
+const readPluginFile = (rel) => JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, rel), 'utf8'));
+const catalogIds = () => Object.keys(readPluginFile('mcp/catalog.json').servers ?? {});
+const pluginList = () => readPluginFile('plugins.json').plugins ?? [];
+
+// Problems with the on/off maps of one layer's data, read against `config` (the merged settings) for what is required.
+function togglesProblems(data, config) {
+	const problems = [];
+	const check = (key, noun, known, required) => {
+		const map = dig(data, key);
+		if (map === undefined) return;
+		if (!isObject(map)) return problems.push(`${key} must be an object of ${noun} ids to true or false`);
+		for (const [id, v] of Object.entries(map)) {
+			if (!known.includes(id)) problems.push(`${key}.${id} is not ${noun === 'server' ? 'a catalog server' : 'a known plugin'}`);
+			if (typeof v !== 'boolean') problems.push(`${key}.${id} must be true or false`);
+			else if (v === false && required.includes(id)) problems.push(`${key}.${id} is required and cannot be false`);
+		}
+	};
+	check('mcp.servers', 'server', catalogIds(), requiredServers(config));
+	check(
+		'plugins.enabled',
+		'plugin',
+		pluginList().map((p) => p.id),
+		pluginList()
+			.filter((p) => p.required)
+			.map((p) => p.id),
+	);
+	return problems;
+}
+
 const nonEmptyNames = (v) => Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === 'string' && x);
 
-export function validate(config = load()) {
+// With no argument the configuration in effect is checked, and so is each layer on its own: a required server turned off
+// in the user's file is a mistake even where the project's file turns it back on.
+export function validate(config) {
+	const layered = config === undefined;
+	if (layered) config = load();
 	const source = dig(config, 'tasks.source');
 	const problems = [];
+	const offered = layered ? layers().map((l) => l.data) : [config];
+	for (const p of offered.flatMap((data) => togglesProblems(data, config))) if (!problems.includes(p)) problems.push(p);
 	if (!SOURCES.includes(source)) problems.push(`tasks.source must be one of ${SOURCES.join(', ')}`);
 	for (const k of requiredFor(config)) {
 		const v = dig(config, k);
@@ -369,8 +509,65 @@ export function validate(config = load()) {
 	return problems;
 }
 
+// A value from the environment: JSON is raw when it starts with {, and base64 otherwise. YAML is raw when it holds any
+// character a base64 text cannot (a colon, a quote, a dash line, a comment), and base64 otherwise.
+const looksRaw = { config: (s) => s.trimStart().startsWith('{'), qa: (s) => /[^A-Za-z0-9+/=\s]/.test(s) };
+const decode = (kind, value) => (looksRaw[kind](value) ? value : Buffer.from(value.replace(/\s+/g, ''), 'base64').toString('utf8'));
+
+const FROM_ENV = [
+	{ kind: 'config', variable: 'DF_PROJECT_CONFIG', file: PROJECT_FILES.config },
+	{ kind: 'qa', variable: 'DF_PROJECT_QA', file: PROJECT_FILES.qa },
+];
+
+// Writes .devfactory/config.json and .devfactory/qa.yaml from DF_PROJECT_CONFIG and DF_PROJECT_QA, for a checkout that does
+// not have them (they are never committed). Returns { code, messages }: code 1 when a value is invalid, a variable is unset
+// without ifSet, or a file exists without force. Nothing is written when a value is invalid.
+export function writeFromEnv({ from = process.cwd(), env = process.env, ifSet = false, force = false } = {}) {
+	const messages = [];
+	let code = 0;
+	const todo = [];
+	for (const item of FROM_ENV) {
+		const raw = env[item.variable];
+		if (raw === undefined || raw === '') {
+			if (!ifSet) {
+				messages.push(`${item.variable} is not set`);
+				code = 1;
+			}
+			continue;
+		}
+		const text = decode(item.kind, raw);
+		if (item.kind === 'config') {
+			let parsed;
+			try {
+				parsed = JSON.parse(text);
+			} catch (e) {
+				return { code: 1, messages: [`${item.variable} is not valid JSON: ${e.message}`] };
+			}
+			if (!isObject(parsed)) return { code: 1, messages: [`${item.variable} must be a JSON object`] };
+		}
+		todo.push({ ...item, text });
+	}
+	if (todo.length === 0) return { code, messages };
+	const root = projectRoot(from);
+	if (!root) return { code: 1, messages: [...messages, 'not inside a git repository: nowhere to write .devfactory/'] };
+	ensureProjectDir(root);
+	for (const item of todo) {
+		const file = path.join(root, item.file);
+		if (fs.existsSync(file) && !force) {
+			messages.push(`${file} exists: kept (use --force to replace it)`);
+			code = 1;
+			continue;
+		}
+		fs.mkdirSync(path.dirname(file), { recursive: true });
+		fs.writeFileSync(file, item.text);
+		messages.push(`wrote ${file}`);
+	}
+	return { code, messages };
+}
+
 if (isMain(import.meta.url)) {
 	const [cmd, arg] = process.argv.slice(2);
+	const flag = (name) => process.argv.slice(3).includes(name);
 	if (cmd === 'get') {
 		const v = get(arg);
 		if (v === undefined || v === null) {
@@ -386,14 +583,19 @@ if (isMain(import.meta.url)) {
 			process.exit(3);
 		}
 	} else if (cmd === 'validate') {
+		for (const n of notices()) console.error(`note: ${n}`);
 		const problems = validate();
 		if (problems.length) {
 			console.error(problems.join('\n'));
 			process.exit(1);
 		}
 		console.log('config: ok');
+	} else if (cmd === 'write-from-env') {
+		const { code, messages } = writeFromEnv({ ifSet: flag('--if-set'), force: flag('--force') });
+		for (const m of messages) (code ? console.error : console.log)(`config: ${m}`);
+		process.exit(code);
 	} else {
-		console.error('usage: config.mjs get <path> | agent <role> | validate');
+		console.error('usage: config.mjs get <path> | agent <role> | validate | write-from-env [--if-set] [--force]');
 		process.exit(3);
 	}
 }
