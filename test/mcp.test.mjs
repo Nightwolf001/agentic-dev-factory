@@ -1270,3 +1270,19 @@ test('build reads its settings and its servers from one root, not from the check
 	assert.ok(s.sandbox.network.allowedDomains.includes('from-root.example.test'), 'cfg from the root');
 	assert.ok(s.sandbox.network.allowedDomains.includes('mcp.sentry.dev'), 'want from the root');
 });
+
+test('in a pass, a server on in the settings that Claude does not list is started from the generated file, so it is not a warning', () => {
+	const file = tmp();
+	const want = [{ id: 'notion', scope: 'project', required: false }];
+	// an unattended pass lists no claude.ai connectors: write-config then puts notion into .devfactory/mcp.json
+	const pass = doctorLines(file, '', catalog(), { want, pass: true }).filter((l) => /notion/.test(l.text));
+	assert.deepEqual(pass, [{ level: 'ok', text: 'MCP notion is on (this project); the pass starts it from .devfactory/mcp.json' }]);
+	// one Claude lists but cannot use is still a warning in a pass
+	const failed = doctorLines(file, 'notion: https://mcp.notion.com/mcp (HTTP) - ✗ Failed to connect', catalog(), { want, pass: true });
+	assert.equal(failed.find((l) => /notion/.test(l.text)).level, 'warn');
+	// a server only in the legacy .mcp.json is not in the generated file: still a warning
+	const legacy = doctorLines(mcpFile({ notion: {} }), '', catalog(), { pass: true });
+	assert.equal(legacy.find((l) => /MCP notion/.test(l.text)).level, 'warn');
+	const doctor = fs.readFileSync(new URL('../scripts/doctor.sh', import.meta.url), 'utf8');
+	assert.match(doctor, /\[ "\$CI" = 1 \] && MCP_ARGS\+=\(--pass\)/);
+});

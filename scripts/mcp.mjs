@@ -183,8 +183,10 @@ export const connectReport = (file, listOutput = '', cat = catalog()) => reportF
 // One line per server in use, for the doctor: { level: 'ok' | 'warn', text }. `want` is desired(): those servers are in use as well as
 // the ones in the legacy .mcp.json. `config` (the merged settings) says which servers are required (requiredServers: maestro once a
 // mobile app is set) and, with `source` (default: its tasks.source), which tracker server the pass needs; without it only the catalog's
-// `required` flag counts.
-export function doctorLines(file, listing, cat = catalog(), { lenient = false, want = [], config, source } = {}) {
+// `required` flag counts. `pass` is set when the doctor runs before a scheduled pass: a server the settings turn on that Claude does not
+// list there (an unattended Claude lists no claude.ai connectors) is written into the generated .devfactory/mcp.json and started by the
+// pass itself, so it is not a warning then.
+export function doctorLines(file, listing, cat = catalog(), { lenient = false, want = [], config, source, pass = false } = {}) {
 	const required = new Set(config ? requiredServers(config, cat) : Object.keys(cat).filter((id) => cat[id].required === true));
 	source ??= config ? get('tasks.source', { config }) : undefined;
 	const entries = parseListing(listing);
@@ -216,6 +218,8 @@ export function doctorLines(file, listing, cat = catalog(), { lenient = false, w
 		else if (r.state === 'pending approval')
 			lines.push({ level: 'warn', text: `MCP ${r.id} is waiting for your approval: run claude in this repository and approve it` });
 		else if (r.state === 'needs login') lines.push({ level: 'warn', text: `MCP ${r.id} needs a login: in claude run /mcp and authenticate it` });
+		else if (pass && r.state === 'not started' && at.has(r.id) && !legacy.includes(r.id))
+			lines.push({ level: 'ok', text: `MCP ${r.id} is on (${where(r.id)}); the pass starts it from .devfactory/mcp.json` });
 		else if (legacy.includes(r.id))
 			lines.push({
 				level: 'warn',
@@ -448,6 +452,7 @@ if (isMain(import.meta.url)) {
 		else if (cmd === 'doctor')
 			for (const l of doctorLines(file, claudeListing(), cat, {
 				lenient: process.argv.includes('--lenient'),
+				pass: process.argv.includes('--pass'),
 				want: desired(ls(), cat),
 				config: load(undefined, { from: root }),
 			}))
@@ -463,7 +468,7 @@ if (isMain(import.meta.url)) {
 			);
 		else {
 			console.error(
-				'usage: mcp.mjs list | enable ID... [--user|--project] | disable ID... [--user|--project] | sync [--dry-run] | write-config | secrets | migrate [--apply] | recommend | connect [--all] | doctor | allow',
+				'usage: mcp.mjs list | enable ID... [--user|--project] | disable ID... [--user|--project] | sync [--dry-run] | write-config | secrets | migrate [--apply] | recommend | connect [--all] | doctor [--lenient] [--pass] | allow',
 			);
 			process.exit(3);
 		}
