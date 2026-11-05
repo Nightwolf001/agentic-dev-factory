@@ -360,12 +360,14 @@ import {
 	claudeBin,
 	desired,
 	launcherPath,
+	mainCheckout,
 	managedFile,
 	planLegacyMigration,
 	planSync,
 	readManaged,
 	secretsReport,
 	serverConfig,
+	userEnabled,
 	writeManaged,
 	writePassConfig,
 } from '../scripts/mcp.mjs';
@@ -416,7 +418,7 @@ test('claudeBin is DF_CLAUDE_BIN, else claude', () => {
 test('desired: user wins over project, project false drops a user-level server, required servers always present at defaultScope', () => {
 	const w = desired(L(servers({ context7: true, sentry: true }), servers({ sentry: true, '21st': true, context7: false })));
 	assert.deepEqual(brief(w), ['21st@project', 'playwright@user', 'sentry@user']);
-	assert.deepEqual([...w.suppressed], ['context7'], 'a project false is remembered, so a sync leaves the user-scope copy for other projects');
+	assert.equal(w.suppressed, undefined, 'no hidden property: a copy of the array behaves like the array');
 	assert.equal(w.find((x) => x.id === 'playwright').required, true);
 	assert.equal(w.find((x) => x.id === 'sentry').required, false);
 	// a required server is at the layer that names it
@@ -448,7 +450,7 @@ test('planSync adds a wanted server at its scope and moves a scope as remove plu
 	});
 	const managed = noManaged();
 	managed.mcp.user = ['sentry', 'context7'];
-	const moved = planSync({ want, managed, listing: '', repo });
+	const moved = planSync({ want, managed, listing: '', repo, userIds: ['context7'] });
 	assert.deepEqual(moved.add, [{ id: 'sentry', scope: 'project' }]);
 	assert.deepEqual(moved.remove, [{ id: 'sentry', scope: 'user' }]);
 	assert.deepEqual(moved.skip, []);
@@ -456,7 +458,7 @@ test('planSync adds a wanted server at its scope and moves a scope as remove plu
 
 test('planSync never removes a server the factory does not manage, and skips one Claude already has', () => {
 	const listing = 'playwright: npx -y @playwright/mcp@latest - ✔ Connected';
-	const plan = planSync({ want: [], managed: noManaged(), listing, repo: os.tmpdir() });
+	const plan = planSync({ want: [], managed: noManaged(), listing, repo: os.tmpdir(), userIds: [] });
 	assert.deepEqual(plan.remove, []);
 	const wanted = planSync({ want: [{ id: 'playwright', scope: 'user', required: true }], managed: noManaged(), listing, repo: os.tmpdir() });
 	assert.deepEqual(wanted.add, []);
@@ -465,18 +467,35 @@ test('planSync never removes a server the factory does not manage, and skips one
 	const managed = noManaged();
 	managed.mcp.user = ['playwright'];
 	assert.deepEqual(planSync({ want: [{ id: 'playwright', scope: 'user', required: true }], managed, listing, repo: os.tmpdir() }).skip, []);
-	assert.deepEqual(planSync({ want: [], managed, listing, repo: os.tmpdir() }).remove, [{ id: 'playwright', scope: 'user' }]);
+	assert.deepEqual(planSync({ want: [], managed, listing, repo: os.tmpdir(), userIds: [] }).remove, [{ id: 'playwright', scope: 'user' }]);
 });
 
-test('planSync leaves a user-scope server alone when a project turns it off, and touches only this repository’s local scope', () => {
+test('planSync never removes a user-scope server for one project: a project false, a copied or filtered want, or no userIds', () => {
 	const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'df-repo-'));
 	const managed = noManaged();
 	managed.mcp.user = ['context7'];
 	managed.mcp.local[fs.realpathSync(repo)] = ['sentry'];
 	managed.mcp.local['/somewhere/else'] = ['axiom'];
-	const want = desired(L(servers({ context7: true }), servers({ context7: false })));
-	const plan = planSync({ want, managed, listing: '', repo });
-	assert.deepEqual(plan.remove, [{ id: 'sentry', scope: 'project' }], 'context7 stays for other projects; axiom belongs to another repository');
+	const ls = L(servers({ context7: true }), servers({ context7: false }));
+	const want = desired(ls);
+	assert.ok(!want.some((w) => w.id === 'context7'), 'the pass config drops it');
+	const userIds = userEnabled(ls);
+	assert.deepEqual(userIds, ['context7']);
+	const removes = (w, extra = {}) => planSync({ want: w, managed, listing: '', repo, ...extra }).remove;
+	assert.deepEqual(removes(want, { userIds }), [{ id: 'sentry', scope: 'project' }], 'context7 stays; axiom belongs to another repository');
+	for (const copy of [[...want], want.filter(Boolean), structuredClone(want), want.slice(), Array.from(want)])
+		assert.deepEqual(removes(copy, { userIds }), [{ id: 'sentry', scope: 'project' }], 'a copy of the array changes nothing');
+	assert.deepEqual(
+		removes(want).map((r) => r.scope),
+		['project'],
+		'without userIds no user-scope server is removed at all',
+	);
+	// turning it off in the user layer is what removes it
+	const off = L({}, servers({ context7: false }));
+	assert.deepEqual(removes(desired(off), { userIds: userEnabled(off) }), [
+		{ id: 'context7', scope: 'user' },
+		{ id: 'sentry', scope: 'project' },
+	]);
 });
 
 test('applySync records only commands that succeeded, runs local-scope commands in the repository, and writes managed.json atomically', () => {
@@ -609,6 +628,30 @@ test('writePassConfig is not strict when a wanted server is available only from 
 	assert.equal(again.strict, true);
 });
 
+test('writePassConfig does not copy a legacy entry that holds a literal value, and says which', () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'df-pass-'));
+	const file = path.join(dir, 'mcp.json');
+	const legacyFile = path.join(dir, '.mcp.json');
+	fs.writeFileSync(
+		legacyFile,
+		JSON.stringify({
+			mcpServers: {
+				'with-token': { command: 'x', env: { API_TOKEN: 'sk-literal-secret' } },
+				'with-header': { type: 'http', url: 'https://x', headers: { Authorization: 'Bearer ghp_literal' } },
+				'by-reference': { command: 'y', env: { API_TOKEN: '${API_TOKEN:-}' }, headers: { Authorization: 'Bearer ${API_TOKEN}' } },
+				context7: { command: 'old', env: { CONTEXT7_API_KEY: 'literal-but-replaced' } },
+			},
+		}),
+	);
+	const want = [{ id: 'context7', scope: 'user', required: false }];
+	const out = writePassConfig({ want, cat: catalog(), env: {}, file, legacyFile, listing: '', managed: noManaged() });
+	const text = fs.readFileSync(file, 'utf8');
+	assert.doesNotMatch(text, /sk-literal-secret|ghp_literal|literal-but-replaced/, 'no literal value reaches the file');
+	assert.deepEqual(Object.keys(JSON.parse(text).mcpServers), ['by-reference', 'context7']);
+	assert.equal(out.strict, false);
+	assert.equal(out.reason, 'with-token in .mcp.json holds a literal value; not copied; with-header in .mcp.json holds a literal value; not copied');
+});
+
 test('secretsReport names what each wanted server needs without values', () => {
 	const stateDirectory = state();
 	fs.writeFileSync(path.join(stateDirectory, '.env.local'), 'JIRA_EMAIL=a@example.com\n');
@@ -658,11 +701,23 @@ test('planLegacyMigration adopts an entry equal to the catalog’s (ignoring a v
 	]);
 });
 
-test('managed.json is read tolerantly and written whole', () => {
+test('managed.json is read tolerantly and written whole; a corrupt one is warned about and kept as managed.json.bad', () => {
 	const env = { DF_STATE_DIR: state() };
 	assert.deepEqual(readManaged(env), noManaged());
+	assert.equal(fs.existsSync(`${managedFile(env)}.bad`), false, 'a missing file is not a corrupt one');
 	fs.writeFileSync(managedFile(env), '{ not json');
-	assert.deepEqual(readManaged(env), noManaged());
+	const write = process.stderr.write;
+	let warned = '';
+	process.stderr.write = (chunk) => ((warned += chunk), true);
+	try {
+		assert.deepEqual(readManaged(env), noManaged());
+	} finally {
+		process.stderr.write = write;
+	}
+	assert.match(warned, /managed\.json is not valid JSON.*managed\.json\.bad/);
+	assert.equal(fs.readFileSync(`${managedFile(env)}.bad`, 'utf8'), '{ not json');
+	writeManaged(env, noManaged());
+	assert.equal(fs.readFileSync(`${managedFile(env)}.bad`, 'utf8'), '{ not json', 'the next write leaves the copy alone');
 	writeManaged(env, { ...noManaged(), plugins: { user: ['a'], local: { '/r': ['b'] } } });
 	assert.deepEqual(readManaged(env).plugins, { user: ['a'], local: { '/r': ['b'] } });
 });
@@ -683,6 +738,27 @@ test('the doctor counts servers the settings turn on like those in .mcp.json', (
 	assert.doesNotMatch(text, /no MCP servers in use/);
 	const missing = doctorLines(file, '', catalog(), { want: [{ id: 'sentry', scope: 'project', required: false }] });
 	assert.match(missing.find((l) => /sentry/.test(l.text)).text, /on \(this project\) but not started \(run dev-factory mcp sync/);
+});
+
+test('planLegacyMigration adopts the factory’s own jira entry: the one the legacy enable wrote and the one jira-mcp-config wrote', async () => {
+	const { entry } = await import('../scripts/jira-mcp-config.mjs');
+	const env = { DF_STATE_DIR: '/state/dir' };
+	const written = tmp();
+	enable(['jira'], written, catalog(), env);
+	assert.deepEqual(planLegacyMigration(written, catalog(), env), [{ id: 'jira', action: 'adopt' }]);
+	assert.deepEqual(
+		planLegacyMigration(written, catalog(), { DF_STATE_DIR: '/another' }),
+		[{ id: 'jira', action: 'keep' }],
+		'another launcher path is not this one',
+	);
+	for (const site of [undefined, 'example.atlassian.net']) {
+		const old = tmp();
+		fs.writeFileSync(old, JSON.stringify({ mcpServers: { jira: entry({ site }) } }));
+		assert.deepEqual(planLegacyMigration(old, catalog(), env), [{ id: 'jira', action: 'adopt' }], String(site));
+	}
+	const own = tmp();
+	fs.writeFileSync(own, JSON.stringify({ mcpServers: { jira: { ...entry(), env: { JIRA_API_TOKEN: 'abc' } } } }));
+	assert.deepEqual(planLegacyMigration(own, catalog(), env), [{ id: 'jira', action: 'keep' }], 'a token in it makes it the person’s own');
 });
 
 // ---- the command line ----
@@ -812,4 +888,37 @@ test('CLI: migrate adopts a legacy .mcp.json entry that matches the catalog and 
 	run('migrate', '--apply');
 	assert.equal(fs.existsSync(legacy), false);
 	assert.equal(read(path.join(repo, '.devfactory', 'config.json')).mcp.servers.axiom, true);
+});
+
+test('CLI: from a linked worktree the local scope is the main checkout’s', () => {
+	const { repo, run, fake, env, stateDirectory, read } = sandbox();
+	execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '--allow-empty', '-m', 'init']);
+	const worktree = path.join(fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'df-wt-'))), 'wt');
+	execFileSync('git', ['-C', repo, 'worktree', 'add', '-q', worktree]);
+	assert.equal(fs.realpathSync(mainCheckout(worktree)), repo);
+	assert.equal(fs.realpathSync(mainCheckout(repo)), repo);
+	assert.equal(mainCheckout(os.tmpdir()), null);
+	fs.mkdirSync(path.join(repo, '.devfactory'));
+	fs.writeFileSync(path.join(repo, '.devfactory', 'config.json'), JSON.stringify({ mcp: { servers: { sentry: true } } }));
+	const r = spawnSync('node', [MCP, 'sync'], {
+		cwd: worktree,
+		env: { ...env, DF_CONFIG: path.join(repo, '.devfactory', 'config.json') },
+		encoding: 'utf8',
+	});
+	assert.equal(r.status, 0, r.stderr);
+	const local = fake.calls().find((c) => c.args.join(' ').startsWith('mcp add-json -s local sentry'));
+	assert.ok(local, 'sentry was added at local scope');
+	assert.equal(fs.realpathSync(local.cwd), repo, 'claude ran in the main checkout');
+	assert.deepEqual(read(path.join(stateDirectory, 'managed.json')).mcp.local[repo], ['sentry']);
+	assert.equal(run('sync', '--dry-run').status, 0);
+});
+
+test('CLI: enable checks every id before it writes anything', () => {
+	const { run, repo, stateDirectory, fake } = sandbox();
+	const r = run('enable', 'context7', 'nope');
+	assert.equal(r.status, 1);
+	assert.match(r.stderr, /unknown MCP server 'nope'/);
+	assert.equal(fs.existsSync(path.join(stateDirectory, 'config.json')), false, 'context7 was not written');
+	assert.equal(fs.existsSync(path.join(repo, '.devfactory', 'config.json')), false);
+	assert.deepEqual(fake.calls(), []);
 });

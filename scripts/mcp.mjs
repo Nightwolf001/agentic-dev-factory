@@ -33,6 +33,7 @@ import {
 	claudeBin,
 	desired,
 	findServer,
+	mainCheckout,
 	parseListing,
 	planLegacyMigration,
 	planSync,
@@ -41,9 +42,9 @@ import {
 	secretsReport,
 	serverConfig,
 	stateOf,
+	userEnabled,
 	writePassConfig,
 } from './mcp-scope.mjs';
-import { projectRoot } from './project-dir.mjs';
 import { loadTrackerEnv } from './state-env.mjs';
 
 // What callers have always imported from here, and the planning they now also get from here.
@@ -265,12 +266,13 @@ function turnOn(id, scope, cat) {
 
 // Makes Claude's user and local scopes match the settings and prints what it did.
 function runSync({ dry = false } = {}) {
-	const repo = projectRoot();
+	const repo = mainCheckout();
 	const cat = catalog();
-	const want = desired(layers(), cat);
+	const ls = layers();
+	const want = desired(ls, cat);
 	if (!repo && want.some((w) => w.scope === 'project')) throw new Error('the project scope needs a git repository: run this inside one');
 	const listing = claudeListing();
-	const plan = planSync({ want, managed: readManaged(), listing, repo, cat });
+	const plan = planSync({ want, managed: readManaged(), listing, repo, userIds: userEnabled(ls) });
 	for (const s of plan.remove) console.log(`remove  ${s.id.padEnd(20)} (${WHERE[s.scope]})`);
 	for (const s of plan.add) console.log(`add     ${s.id.padEnd(20)} (${WHERE[s.scope]})`);
 	for (const s of plan.skip) console.log(`skip    ${s.id.padEnd(20)} ${s.reason}`);
@@ -308,7 +310,8 @@ if (isMain(import.meta.url)) {
 					`${(s.scope === 'project' ? 'proj' : s.scope).padEnd(5)} ${s.id.padEnd(20)} ${s.purpose}${s.elsewhere ? `\n      already available as "${s.elsewhere}"` : ''}\n      without it: ${s.without}`,
 				);
 		} else if (cmd === 'enable') {
-			for (const id of ids) turnOn(id, flagScope ?? cat[id]?.defaultScope ?? 'user', cat);
+			for (const id of ids) if (!cat[id]) throw new Error(`unknown MCP server '${id}' (see: mcp.mjs list)`);
+			for (const id of ids) turnOn(id, flagScope ?? cat[id].defaultScope ?? 'user', cat);
 			runSync();
 		} else if (cmd === 'disable') {
 			const required = requiredServers(load(), cat);
@@ -324,7 +327,7 @@ if (isMain(import.meta.url)) {
 			runSync();
 		} else if (cmd === 'sync') runSync({ dry: rest.includes('--dry-run') });
 		else if (cmd === 'write-config') {
-			const root = projectRoot();
+			const root = mainCheckout();
 			if (!root) throw new Error('not inside a git repository');
 			const out = writePassConfig({
 				want: desired(layers(), cat),

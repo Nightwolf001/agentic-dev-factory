@@ -17,6 +17,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { layers, merge, requiredServers } from './config.mjs';
+import { entry as legacyJiraEntry } from './jira-mcp-config.mjs';
 import { ensureProjectDir, PROJECT_FILES, projectRoot } from './project-dir.mjs';
 import { parseEnvText, stateDir } from './state-env.mjs';
 
@@ -73,8 +74,7 @@ const toggles = (layer) => (isObject(layer?.data?.mcp?.servers) ? layer.data.mcp
 
 // The servers to have on. A user-layer `true` is every project, else a project-layer `true` is this one. A project-layer `false`
 // takes a user-level server out of this result, which the generated pass config honours; Claude's own scopes cannot (a user-scope
-// server is there for every project), so the dropped ids are kept in a non-enumerable `suppressed` list that planSync reads to
-// leave them where they are. A required server (requiredServers(config): playwright, and maestro once a mobile app is set) is
+// server is there for every project), which is why planSync is also told which ids the user layer has on. A required server (requiredServers(config): playwright, and maestro once a mobile app is set) is
 // always present, at the layer that names it, else at its defaultScope.
 export function desired(ls = layers(), cat = catalog()) {
 	const user = toggles(ls.find((l) => l.name === 'user'));
@@ -84,20 +84,20 @@ export function desired(ls = layers(), cat = catalog()) {
 		cat,
 	);
 	const out = [];
-	const suppressed = [];
 	for (const [id, s] of Object.entries(cat)) {
 		const must = required.includes(id);
 		let scope = user[id] === true ? 'user' : project[id] === true ? 'project' : null;
-		if (project[id] === false && scope === 'user' && !must) {
-			suppressed.push(id);
-			continue;
-		}
 		if (project[id] === false && !must) continue;
 		if (!scope && must) scope = s.defaultScope === 'project' ? 'project' : 'user';
 		if (scope) out.push({ id, scope, required: must });
 	}
-	Object.defineProperty(out, 'suppressed', { value: suppressed, enumerable: false });
 	return out;
+}
+
+// The ids the user layer turns on: what stays in Claude's user scope whatever one project says.
+export function userEnabled(ls = layers()) {
+	const user = toggles(ls.find((l) => l.name === 'user'));
+	return Object.keys(user).filter((id) => user[id] === true);
 }
 
 // ---- what the factory added to Claude, kept in <state>/managed.json ----
@@ -106,12 +106,30 @@ export const managedFile = (env = process.env) => path.join(stateDir(env), 'mana
 
 const names = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []);
 
+// A missing file claims nothing. One that is not JSON claims nothing either, but it is kept as managed.json.bad and said so,
+// because the next write would replace the record of what the factory added.
 export function readManaged(env = process.env) {
+	const file = managedFile(env);
 	let raw = {};
+	let text = null;
 	try {
-		raw = JSON.parse(fs.readFileSync(managedFile(env), 'utf8'));
+		text = fs.readFileSync(file, 'utf8');
 	} catch {
-		// no file, or one that is not JSON: nothing is claimed as ours
+		// no file yet
+	}
+	if (text !== null) {
+		try {
+			raw = JSON.parse(text);
+		} catch {
+			try {
+				fs.copyFileSync(file, `${file}.bad`);
+			} catch {
+				// the warning below still says it
+			}
+			process.stderr.write(
+				`warning: ${file} is not valid JSON, so no server in it is treated as added by dev-factory; a copy is kept as ${file}.bad\n`,
+			);
+		}
 	}
 	const out = {};
 	for (const kind of ['mcp', 'plugins']) {
@@ -131,6 +149,23 @@ export function writeManaged(env, data) {
 	fs.renameSync(tmp, file);
 }
 
+// The checkout the git folder belongs to: from a linked worktree, the main checkout. Claude's local scope is keyed by a path, and
+// every session starts in the main checkout, so that is the path to use. Falls back to the folder that holds .git.
+export function mainCheckout(from = process.cwd()) {
+	const root = projectRoot(from);
+	if (!root) return null;
+	try {
+		const common = execFileSync('git', ['-C', root, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
+			encoding: 'utf8',
+			stdio: ['ignore', 'pipe', 'ignore'],
+		}).trim();
+		if (path.basename(common) === '.git') return path.dirname(common);
+	} catch {
+		// not a git folder git can read: the folder with .git is the best answer
+	}
+	return root;
+}
+
 // The local scope is keyed by the repository's real path.
 export function repoKey(repo) {
 	if (!repo) return null;
@@ -143,14 +178,16 @@ export function repoKey(repo) {
 
 // What to do to Claude's user and local scopes so they match `want`. `scope: 'project'` here is Claude's `local`.
 //   add     wanted, and not recorded as ours at that scope (a scope change is one remove plus one add)
-//   remove  recorded as ours at a scope where it is no longer wanted
+//   remove  recorded as ours at a scope where it is no longer wanted. A user-scope server is there for every project, so it is
+//           removed only when `userIds` (userEnabled(layers)) is given and no longer holds it: a project's `false` never removes it,
+//           and without `userIds` no user-scope server is removed at all
 //   skip    wanted, not ours, and Claude has it from somewhere else: it is used as it is
-export function planSync({ want, managed = readManaged(), listing = '', repo }) {
+export function planSync({ want, managed = readManaged(), listing = '', repo, userIds }) {
 	const key = repoKey(repo);
 	const ours = { user: new Set(managed.mcp.user), project: new Set(key ? managed.mcp.local[key] ?? [] : []) };
 	const wanted = { user: new Set(), project: new Set() };
 	for (const w of want) wanted[w.scope].add(w.id);
-	const kept = new Set(want.suppressed ?? []);
+	const userOn = userIds ? new Set(userIds) : null;
 	const entries = parseListing(listing);
 	const plan = { add: [], remove: [], skip: [] };
 	for (const { id, scope } of want) {
@@ -160,7 +197,11 @@ export function planSync({ want, managed = readManaged(), listing = '', repo }) 
 		else plan.add.push({ id, scope });
 	}
 	for (const scope of ['user', 'project'])
-		for (const id of ours[scope]) if (!wanted[scope].has(id) && !(scope === 'user' && kept.has(id))) plan.remove.push({ id, scope });
+		for (const id of ours[scope]) {
+			if (wanted[scope].has(id)) continue;
+			if (scope === 'user' && (!userOn || userOn.has(id))) continue;
+			plan.remove.push({ id, scope });
+		}
 	return plan;
 }
 
@@ -232,8 +273,14 @@ export function applySync(plan, { repo, env = process.env, cat = catalog() } = {
 
 // ---- the scheduled pass ----
 
-// Writes { mcpServers } for the wanted servers (variable references intact) plus the entries of a legacy .mcp.json as they are;
-// a wanted id wins a name clash. A wanted server Claude has only from elsewhere (a claude.ai connector, a hand-made user entry:
+// A value the pass config may carry: a variable reference, alone or after an authorization scheme ("Bearer ${TOKEN:-}").
+const REFERENCE = /^(?:(?:Bearer|Basic|Token) )?\$\{[^}]+\}$/;
+const holdsLiteral = (config) =>
+	['env', 'headers'].some((k) => isObject(config?.[k]) && Object.values(config[k]).some((v) => typeof v !== 'string' || !REFERENCE.test(v)));
+
+// Writes { mcpServers } for the wanted servers (variable references intact) plus the entries of a legacy .mcp.json as they are,
+// except one that holds a literal value in `env` or `headers`, which could be a secret and is not copied (strict is then false and
+// the reason names it); a wanted id wins a name clash. A wanted server Claude has only from elsewhere (a claude.ai connector, a hand-made user entry:
 // listed, not ours, not in the legacy file) is not written, so it is used as it is; the pass then cannot be strict, or it would lose it.
 // Returns { file, strict, reason }: strict says whether `--strict-mcp-config` is safe to pass.
 export function writePassConfig({ want, cat = catalog(), env = process.env, file, listing = '', legacyFile, managed = readManaged(env), repo } = {}) {
@@ -244,7 +291,10 @@ export function writePassConfig({ want, cat = catalog(), env = process.env, file
 		file = path.join(root, PROJECT_FILES.mcp);
 	}
 	const key = repoKey(root);
-	const legacy = legacyFile ? readProject(legacyFile).mcpServers ?? {} : {};
+	const legacyAll = legacyFile ? readProject(legacyFile).mcpServers ?? {} : {};
+	const wantedIds = new Set(want.map((w) => w.id));
+	const legacy = Object.fromEntries(Object.entries(legacyAll).filter(([, c]) => !holdsLiteral(c)));
+	const withheld = Object.keys(legacyAll).filter((id) => !(id in legacy) && !wantedIds.has(id));
 	const mine = new Set([...managed.mcp.user, ...(key ? managed.mcp.local[key] ?? [] : [])]);
 	const entries = parseListing(listing);
 	const mcpServers = { ...legacy };
@@ -258,10 +308,15 @@ export function writePassConfig({ want, cat = catalog(), env = process.env, file
 	}
 	fs.mkdirSync(path.dirname(file), { recursive: true });
 	fs.writeFileSync(file, `${JSON.stringify({ mcpServers }, null, '\t')}\n`);
-	const reason = external.length
-		? `${external.join(', ')} ${external.length > 1 ? 'are' : 'is'} available only from outside the generated file (a user-scope entry or a claude.ai connector), so the pass also loads Claude's other servers`
-		: '';
-	return { file, strict: external.length === 0, reason };
+	const reasons = [
+		...(external.length
+			? [
+					`${external.join(', ')} ${external.length > 1 ? 'are' : 'is'} available only from outside the generated file (a user-scope entry or a claude.ai connector), so the pass also loads Claude's other servers`,
+				]
+			: []),
+		...withheld.map((id) => `${id} in .mcp.json holds a literal value; not copied`),
+	];
+	return { file, strict: reasons.length === 0, reason: reasons.join('; ') };
 }
 
 // Every variable the wanted servers read, plus the one an unattended run needs. A variable counts as set when the environment
@@ -297,10 +352,24 @@ const normalise = (v) =>
 				? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, normalise(x)]))
 				: v;
 
-// An entry equal to the catalog's is one the factory wrote (`adopt`: it moves to the settings); anything else is the person's own (`keep`).
-export function planLegacyMigration(file, cat = catalog()) {
+// The entry scripts/jira-mcp-config.mjs wrote: a shell that runs the server, with at most the Jira host in its environment.
+const isLegacyJiraEntry = (id, config) =>
+	id === 'jira' &&
+	config?.command === 'bash' &&
+	isDeepStrictEqual(config.args, legacyJiraEntry().args) &&
+	Object.keys(config.env ?? {}).every((k) => k === 'JIRA_SITE');
+
+// An entry the factory wrote moves to the settings (`adopt`): one equal to the catalog's (ignoring a variable's default), to what
+// serverConfig writes (the jira server with its absolute launcher path), or jira-mcp-config.mjs's own. Anything else is the person's own (`keep`).
+export function planLegacyMigration(file, cat = catalog(), env = process.env) {
 	return Object.entries(readProject(file).mcpServers ?? {}).map(([id, config]) => ({
 		id,
-		action: cat[id] && isDeepStrictEqual(normalise(config), normalise(cat[id].config)) ? 'adopt' : 'keep',
+		action:
+			cat[id] &&
+			(isDeepStrictEqual(normalise(config), normalise(cat[id].config)) ||
+				isDeepStrictEqual(config, serverConfig(id, cat, env)) ||
+				isLegacyJiraEntry(id, config))
+				? 'adopt'
+				: 'keep',
 	}));
 }
