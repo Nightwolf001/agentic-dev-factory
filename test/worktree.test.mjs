@@ -1,3 +1,4 @@
+import './isolate-state.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -146,6 +147,56 @@ test('a first pass creates the worktree and copies the repository’s own settin
 	assert.deepEqual(r.copied.sort(), ['dev-factory.config.json', 'dev-factory.qa.yaml']);
 	assert.equal(fs.readFileSync(path.join(t.dest, 'dev-factory.config.json'), 'utf8'), '{"tasks":{"source":"local"}}\n');
 	assert.equal(g(t.dest, 'status', '--porcelain'), '', 'untracked and ignored: a ticket cannot commit them');
+});
+
+test('carrySettings copies .devfactory/config.json and qa.yaml into a new worktree and git status stays clean', () => {
+	const t = ticket();
+	fs.mkdirSync(path.join(t.clone, '.devfactory'));
+	fs.writeFileSync(path.join(t.clone, '.devfactory', 'config.json'), '{"tasks":{"source":"local"}}\n');
+	fs.writeFileSync(path.join(t.clone, '.devfactory', 'qa.yaml'), 'profiles: {}\n');
+	fs.writeFileSync(path.join(t.clone, '.devfactory', 'mcp.json'), '{}\n');
+	const r = t.add();
+	assert.deepEqual(r.copied.sort(), ['.devfactory/config.json', '.devfactory/qa.yaml']);
+	assert.equal(fs.readFileSync(path.join(t.dest, '.devfactory', 'config.json'), 'utf8'), '{"tasks":{"source":"local"}}\n');
+	assert.equal(fs.readFileSync(path.join(t.dest, '.devfactory', 'qa.yaml'), 'utf8'), 'profiles: {}\n');
+	assert.match(fs.readFileSync(path.join(t.dest, '.devfactory', '.gitignore'), 'utf8'), /^\*$/m, 'the folder ignores itself');
+	assert.equal(g(t.dest, 'status', '--porcelain'), '', 'nothing of it can be committed');
+	const exclude = fs.readFileSync(path.resolve(t.dest, g(t.dest, 'rev-parse', '--git-path', 'info/exclude')), 'utf8');
+	assert.doesNotMatch(exclude, /\.devfactory/, 'the folder needs no info/exclude line');
+});
+
+test('a worktree of a checkout with no settings files still gets a .devfactory that ignores itself, so scratch QA cases cannot be committed', () => {
+	const t = ticket();
+	assert.deepEqual(t.add().copied, []);
+	assert.match(fs.readFileSync(path.join(t.dest, '.devfactory', '.gitignore'), 'utf8'), /^\*$/m);
+	const cases = path.join(t.dest, '.devfactory', 'qa', 'cases', 'APP-1');
+	fs.mkdirSync(cases, { recursive: true });
+	fs.writeFileSync(path.join(cases, 'login.yaml'), 'appId: x\n');
+	assert.equal(g(t.dest, 'status', '--porcelain'), '', 'a case written there is not seen by git');
+	g(t.dest, 'add', '-A');
+	assert.equal(g(t.dest, 'status', '--porcelain'), '', 'and git add -A does not stage it');
+});
+
+test('attach, on a fresh checkout of the branch and on an existing worktree, also makes .devfactory ignore itself', () => {
+	const t = ticket();
+	t.add();
+	t.commit();
+	g(t.dest, 'push', '-q', '-u', 'origin', t.branch);
+	fs.rmSync(path.join(t.dest, '.devfactory'), { recursive: true, force: true });
+	attachWorktree({ repo: t.clone, branch: t.branch, dest: t.dest });
+	assert.ok(fs.existsSync(path.join(t.dest, '.devfactory', '.gitignore')), 'existing worktree');
+	fs.rmSync(t.dest, { recursive: true, force: true });
+	attachWorktree({ repo: t.clone, branch: t.branch, dest: t.dest });
+	assert.ok(fs.existsSync(path.join(t.dest, '.devfactory', '.gitignore')), 'new worktree');
+});
+
+test('an old-place file and a .devfactory file are both carried, so a repository that has not migrated yet still runs on its settings', () => {
+	const t = ticket();
+	fs.mkdirSync(path.join(t.clone, '.devfactory'));
+	fs.writeFileSync(path.join(t.clone, '.devfactory', 'config.json'), '{"new":true}\n');
+	fs.writeFileSync(path.join(t.clone, 'dev-factory.qa.yaml'), 'profiles: {}\n');
+	assert.deepEqual(t.add().copied.sort(), ['.devfactory/config.json', 'dev-factory.qa.yaml']);
+	assert.equal(g(t.dest, 'status', '--porcelain'), '');
 });
 
 test('a file the branch tracks is left alone, and nothing is copied when the checkout has none', () => {

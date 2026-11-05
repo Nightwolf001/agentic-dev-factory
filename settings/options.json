@@ -1,0 +1,793 @@
+{
+	"groups": [
+		"MCP servers",
+		"Plugins",
+		"Secrets",
+		"Tasks",
+		"Sources",
+		"Models",
+		"Caps and budgets",
+		"Git and pull requests",
+		"Environment",
+		"Mobile lane",
+		"Telemetry",
+		"Review and QA",
+		"Self-improvement",
+		"Sandbox",
+		"Runtime"
+	],
+	"options": {
+		"tasks.source": {
+			"group": "Tasks",
+			"title": "Task source",
+			"type": "string",
+			"scopeHint": "project",
+			"env": "DF_TASK_SOURCE"
+		},
+		"tasks.label": {
+			"group": "Tasks",
+			"title": "Factory label",
+			"type": "string",
+			"scopeHint": "project",
+			"env": "DF_TASK_LABEL"
+		},
+		"tasks.blockedLabel": {
+			"group": "Tasks",
+			"title": "Blocked label",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"tasks.questionLabel": {
+			"group": "Tasks",
+			"title": "Question label",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"tasks.fixComment": {
+			"group": "Tasks",
+			"title": "Fix-pass comment",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"tasks.ignoreCommentAuthors": {
+			"group": "Tasks",
+			"title": "Comment authors to ignore",
+			"type": "list",
+			"scopeHint": "project"
+		},
+		"tasks.placeholderKey": {
+			"group": "Tasks",
+			"title": "Key for a change with no task",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"tasks.bugTypes": {
+			"group": "Tasks",
+			"title": "Task types that count as bugs",
+			"type": "list",
+			"scopeHint": "project"
+		},
+		"tasks.unblockOnPr": {
+			"group": "Tasks",
+			"title": "Build on a blocker's branch once it has a PR",
+			"type": "boolean",
+			"scopeHint": "project"
+		},
+		"blocked.agentDecides": {
+			"group": "Tasks",
+			"title": "Let an agent settle a blocking question",
+			"type": "boolean",
+			"scopeHint": "project",
+			"env": "DF_AGENT_DECIDES"
+		},
+		"sources.local.dir": {
+			"group": "Sources",
+			"title": "Local tasks folder",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"sources.local.keyPrefix": {
+			"group": "Sources",
+			"title": "Local task key prefix",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"sources.local.states": {
+			"group": "Sources",
+			"title": "Local task status words",
+			"type": "map",
+			"scopeHint": "project"
+		},
+		"sources.github.repo": {
+			"group": "Sources",
+			"title": "GitHub issues repository",
+			"type": "string",
+			"scopeHint": "project",
+			"env": "DF_GITHUB_REPO"
+		},
+		"sources.github.assignee": {
+			"group": "Sources",
+			"title": "GitHub assignee filter",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"sources.github.keyPrefix": {
+			"group": "Sources",
+			"title": "GitHub task key prefix",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"sources.github.states": {
+			"group": "Sources",
+			"title": "GitHub state labels",
+			"type": "map",
+			"scopeHint": "project"
+		},
+		"sources.notion.databaseId": {
+			"group": "Sources",
+			"title": "Notion task database",
+			"type": "string",
+			"scopeHint": "project",
+			"env": "DF_NOTION_DATABASE_ID"
+		},
+		"sources.notion.project": {
+			"group": "Sources",
+			"title": "Notion project filter",
+			"type": "string",
+			"scopeHint": "project",
+			"env": "DF_NOTION_PROJECT"
+		},
+		"sources.notion.properties": {
+			"group": "Sources",
+			"title": "Notion property names",
+			"type": "map",
+			"scopeHint": "project"
+		},
+		"sources.notion.states": {
+			"group": "Sources",
+			"title": "Notion status names",
+			"type": "map",
+			"scopeHint": "project"
+		},
+		"sources.jira.site": {
+			"group": "Sources",
+			"title": "Jira site",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"sources.jira.cloudId": {
+			"group": "Sources",
+			"title": "Atlassian cloud id",
+			"type": "string",
+			"scopeHint": "project",
+			"env": "DF_JIRA_CLOUD_ID"
+		},
+		"sources.jira.projects": {
+			"group": "Sources",
+			"title": "Jira projects to watch",
+			"type": "list",
+			"scopeHint": "project",
+			"env": "DF_JIRA_PROJECTS"
+		},
+		"sources.jira.requireSprint": {
+			"group": "Sources",
+			"title": "Only issues in an open sprint",
+			"type": "boolean",
+			"scopeHint": "project"
+		},
+		"sources.jira.states": {
+			"group": "Sources",
+			"title": "Jira status names",
+			"type": "map",
+			"scopeHint": "project"
+		},
+		"models.orchestrator": {
+			"group": "Models",
+			"title": "Scheduled pass model",
+			"type": "string",
+			"scopeHint": "user",
+			"env": "DF_MODEL"
+		},
+		"models.builder": {
+			"group": "Models",
+			"title": "Builder model",
+			"type": "string",
+			"scopeHint": "user",
+			"env": "DF_BUILDER_MODEL"
+		},
+		"models.reviewer": {
+			"group": "Models",
+			"title": "Reviewer model",
+			"type": "string",
+			"scopeHint": "user",
+			"env": "DF_REVIEWER_MODEL"
+		},
+		"models.debugger": {
+			"group": "Models",
+			"title": "Debugger model",
+			"type": "string",
+			"scopeHint": "user",
+			"env": "DF_DEBUGGER_MODEL"
+		},
+		"models.researcher": {
+			"group": "Models",
+			"title": "Researcher model",
+			"type": "string",
+			"scopeHint": "user"
+		},
+		"models.improver": {
+			"group": "Models",
+			"title": "Improver model",
+			"type": "string",
+			"scopeHint": "user"
+		},
+		"models.promoter": {
+			"group": "Models",
+			"title": "Promoter model",
+			"type": "string",
+			"scopeHint": "user"
+		},
+		"models.effort": {
+			"group": "Models",
+			"title": "Default effort level",
+			"type": "string",
+			"scopeHint": "user",
+			"env": "DF_EFFORT"
+		},
+		"models.efforts": {
+			"group": "Models",
+			"title": "Effort per role",
+			"type": "map",
+			"scopeHint": "user"
+		},
+		"caps.maxOpenPrs": {
+			"group": "Caps and budgets",
+			"title": "Open factory PRs at once",
+			"type": "number",
+			"scopeHint": "project",
+			"env": "DF_MAX_OPEN_PRS"
+		},
+		"caps.maxConcurrent": {
+			"group": "Caps and budgets",
+			"title": "Tasks built per pass",
+			"type": "number",
+			"scopeHint": "project",
+			"env": "DF_MAX_CONCURRENT"
+		},
+		"caps.breakerThreshold": {
+			"group": "Caps and budgets",
+			"title": "Blocked tasks that trip the breaker",
+			"type": "number",
+			"scopeHint": "project"
+		},
+		"caps.breakerWindowHours": {
+			"group": "Caps and budgets",
+			"title": "Breaker window (hours)",
+			"type": "number",
+			"scopeHint": "project"
+		},
+		"caps.stallMinutes": {
+			"group": "Caps and budgets",
+			"title": "Stall time before a resume (minutes)",
+			"type": "number",
+			"scopeHint": "project"
+		},
+		"caps.maxFixRounds": {
+			"group": "Caps and budgets",
+			"title": "Review fix rounds",
+			"type": "number",
+			"scopeHint": "project"
+		},
+		"caps.maxBugbotRounds": {
+			"group": "Caps and budgets",
+			"title": "Bugbot fix rounds",
+			"type": "number",
+			"scopeHint": "project"
+		},
+		"caps.maxQaFixAttempts": {
+			"group": "Caps and budgets",
+			"title": "Fix attempts after failed QA",
+			"type": "number",
+			"scopeHint": "project"
+		},
+		"caps.maxBudgetUsd": {
+			"group": "Caps and budgets",
+			"title": "Spend cap per session (USD)",
+			"type": "number",
+			"scopeHint": "project",
+			"env": "DF_MAX_BUDGET_USD"
+		},
+		"caps.maxResumes": {
+			"group": "Caps and budgets",
+			"title": "Resumes of an orphaned task",
+			"type": "number",
+			"scopeHint": "project",
+			"env": "DF_MAX_RESUMES"
+		},
+		"caps.maxDecisions": {
+			"group": "Caps and budgets",
+			"title": "Agent decisions per task",
+			"type": "number",
+			"scopeHint": "project"
+		},
+		"caps.frontierRepeatHours": {
+			"group": "Caps and budgets",
+			"title": "Hours before an unchanged queue is re-read",
+			"type": "number",
+			"scopeHint": "project",
+			"env": "DF_FRONTIER_REPEAT_HOURS"
+		},
+		"caps.maxStackDepth": {
+			"group": "Caps and budgets",
+			"title": "Largest stack of PRs",
+			"type": "number",
+			"scopeHint": "project"
+		},
+		"git.baseBranch": {
+			"group": "Git and pull requests",
+			"title": "Base branch",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"git.agentAttribution": {
+			"group": "Git and pull requests",
+			"title": "Attribute commits and PRs to the agent",
+			"type": "boolean",
+			"scopeHint": "project"
+		},
+		"git.branchTypes": {
+			"group": "Git and pull requests",
+			"title": "Branch prefix per task type",
+			"type": "map",
+			"scopeHint": "project"
+		},
+		"git.worktreeRoot": {
+			"group": "Git and pull requests",
+			"title": "Worktree folder",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"git.skipCommitHooks": {
+			"group": "Git and pull requests",
+			"title": "Skip commit hooks",
+			"type": "boolean",
+			"scopeHint": "project"
+		},
+		"pr.reviewedOnMergeInto": {
+			"group": "Git and pull requests",
+			"title": "Branch whose merge marks a task reviewed",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"pr.doneOnMergeInto": {
+			"group": "Git and pull requests",
+			"title": "Branch whose merge marks a task done",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"pr.sizeLabels": {
+			"group": "Git and pull requests",
+			"title": "PR size labels",
+			"type": "map",
+			"scopeHint": "project"
+		},
+		"pr.areaLabels": {
+			"group": "Git and pull requests",
+			"title": "PR area labels",
+			"type": "list",
+			"scopeHint": "project"
+		},
+		"pr.categoryByBranchType": {
+			"group": "Git and pull requests",
+			"title": "PR category per branch prefix",
+			"type": "map",
+			"scopeHint": "project"
+		},
+		"environment.type": {
+			"group": "Environment",
+			"title": "Environment type",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"environment.composeFile": {
+			"group": "Environment",
+			"title": "Compose file",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"environment.service": {
+			"group": "Environment",
+			"title": "Compose service",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"environment.user": {
+			"group": "Environment",
+			"title": "User inside the service",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"environment.setup": {
+			"group": "Environment",
+			"title": "Setup commands",
+			"type": "list",
+			"scopeHint": "project"
+		},
+		"environment.processCheck": {
+			"group": "Environment",
+			"title": "Health check command",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"environment.readyTimeout": {
+			"group": "Environment",
+			"title": "Ready timeout (seconds)",
+			"type": "number",
+			"scopeHint": "project"
+		},
+		"environment.pingUrl": {
+			"group": "Environment",
+			"title": "Ping URL",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"environment.webBaseUrl": {
+			"group": "Environment",
+			"title": "Web base URL",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"environment.submodules": {
+			"group": "Environment",
+			"title": "Submodules to populate",
+			"type": "list",
+			"scopeHint": "project"
+		},
+		"environment.buildFiles": {
+			"group": "Environment",
+			"title": "Files the environment rewrites",
+			"type": "list",
+			"scopeHint": "project"
+		},
+		"environment.preCommit": {
+			"group": "Environment",
+			"title": "Pre-commit command",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"environments": {
+			"group": "Environment",
+			"title": "Telemetry environments",
+			"type": "map",
+			"scopeHint": "project"
+		},
+		"mobile.appDir": {
+			"group": "Mobile lane",
+			"title": "Mobile app folder",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"mobile.hints": {
+			"group": "Mobile lane",
+			"title": "Words that mark a mobile task",
+			"type": "list",
+			"scopeHint": "project"
+		},
+		"mobile.metroPort": {
+			"group": "Mobile lane",
+			"title": "Dev server port",
+			"type": "number",
+			"scopeHint": "project",
+			"env": "DF_METRO_PORT"
+		},
+		"mobile.prepare": {
+			"group": "Mobile lane",
+			"title": "Prepare command",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"mobile.install": {
+			"group": "Mobile lane",
+			"title": "Dependency install command",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"mobile.pods": {
+			"group": "Mobile lane",
+			"title": "Pods install command",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"mobile.start": {
+			"group": "Mobile lane",
+			"title": "Dev server command",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"mobile.build": {
+			"group": "Mobile lane",
+			"title": "iOS build command",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"mobile.nativeInputs": {
+			"group": "Mobile lane",
+			"title": "iOS native rebuild globs",
+			"type": "list",
+			"scopeHint": "project"
+		},
+		"mobile.appId": {
+			"group": "Mobile lane",
+			"title": "App id",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"mobile.clientLogs": {
+			"group": "Mobile lane",
+			"title": "Metro client logs",
+			"type": "boolean",
+			"scopeHint": "project"
+		},
+		"mobile.iosAutofillOff": {
+			"group": "Mobile lane",
+			"title": "Turn off iOS password AutoFill",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"mobile.androidAvd": {
+			"group": "Mobile lane",
+			"title": "Android virtual device",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"mobile.androidBuild": {
+			"group": "Mobile lane",
+			"title": "Android build command",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"mobile.androidNativeInputs": {
+			"group": "Mobile lane",
+			"title": "Android native rebuild globs",
+			"type": "list",
+			"scopeHint": "project"
+		},
+		"mobile.androidReversePorts": {
+			"group": "Mobile lane",
+			"title": "Ports reached through adb reverse",
+			"type": "list",
+			"scopeHint": "project"
+		},
+		"mobile.login.userField": {
+			"group": "Mobile lane",
+			"title": "Login user field id",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"mobile.login.passwordField": {
+			"group": "Mobile lane",
+			"title": "Login password field id",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"mobile.login.submit": {
+			"group": "Mobile lane",
+			"title": "Login submit button id",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"mobile.login.success": {
+			"group": "Mobile lane",
+			"title": "Login success element id",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"telemetry.maxRows": {
+			"group": "Telemetry",
+			"title": "Largest telemetry result (rows)",
+			"type": "number",
+			"scopeHint": "project"
+		},
+		"telemetry.maxWindowDays": {
+			"group": "Telemetry",
+			"title": "Longest telemetry window (days)",
+			"type": "number",
+			"scopeHint": "project"
+		},
+		"telemetry.allowedRoles": {
+			"group": "Telemetry",
+			"title": "Roles that may read telemetry",
+			"type": "list",
+			"scopeHint": "project"
+		},
+		"telemetry.scrubPatterns": {
+			"group": "Telemetry",
+			"title": "Extra scrub patterns",
+			"type": "list",
+			"scopeHint": "project"
+		},
+		"evidence.maxAttachmentMb": {
+			"group": "Review and QA",
+			"title": "Largest evidence attachment (MB)",
+			"type": "number",
+			"scopeHint": "project"
+		},
+		"coverage.command": {
+			"group": "Review and QA",
+			"title": "Coverage command",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"coverage.lcovPath": {
+			"group": "Review and QA",
+			"title": "Coverage lcov file",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"coverage.unitGlobs": {
+			"group": "Review and QA",
+			"title": "Unit test globs",
+			"type": "list",
+			"scopeHint": "project"
+		},
+		"coverage.functionalGlobs": {
+			"group": "Review and QA",
+			"title": "Functional test globs",
+			"type": "list",
+			"scopeHint": "project"
+		},
+		"debug.maxDebugRounds": {
+			"group": "Review and QA",
+			"title": "Debugger rounds per task",
+			"type": "number",
+			"scopeHint": "project"
+		},
+		"debug.debugMinutes": {
+			"group": "Review and QA",
+			"title": "Debug command time limit (minutes)",
+			"type": "number",
+			"scopeHint": "project"
+		},
+		"validation.minHoursAfterMerge": {
+			"group": "Review and QA",
+			"title": "Hours to wait before post-merge validation",
+			"type": "number",
+			"scopeHint": "project"
+		},
+		"repoSkills": {
+			"group": "Review and QA",
+			"title": "Repository skills per phase",
+			"type": "map",
+			"scopeHint": "project"
+		},
+		"review.readFirst": {
+			"group": "Review and QA",
+			"title": "Files every reviewer reads first",
+			"type": "list",
+			"scopeHint": "project"
+		},
+		"review.bugbot": {
+			"group": "Review and QA",
+			"title": "Bugbot review",
+			"type": "boolean",
+			"scopeHint": "project"
+		},
+		"review.bugbotComment": {
+			"group": "Review and QA",
+			"title": "Bugbot trigger comment",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"review.bugbotAuthor": {
+			"group": "Review and QA",
+			"title": "Bugbot login",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"review.specialistAxes": {
+			"group": "Review and QA",
+			"title": "Globs that trigger specialist review",
+			"type": "map",
+			"scopeHint": "project"
+		},
+		"improvement.project": {
+			"group": "Self-improvement",
+			"title": "Improvement tasks project",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"improvement.factoryRepo": {
+			"group": "Self-improvement",
+			"title": "Factory checkout",
+			"type": "string",
+			"scopeHint": "project",
+			"env": "DF_FACTORY_REPO"
+		},
+		"improvement.label": {
+			"group": "Self-improvement",
+			"title": "Improvement label",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"improvement.maxTicketsPerScan": {
+			"group": "Self-improvement",
+			"title": "Improvement tasks per scan",
+			"type": "number",
+			"scopeHint": "project"
+		},
+		"improvement.maxPrsPerScan": {
+			"group": "Self-improvement",
+			"title": "Improvement PRs per scan",
+			"type": "number",
+			"scopeHint": "project"
+		},
+		"improvement.minEvidence": {
+			"group": "Self-improvement",
+			"title": "Occurrences before a finding counts",
+			"type": "number",
+			"scopeHint": "project"
+		},
+		"improvement.maxPromotionsPerScan": {
+			"group": "Self-improvement",
+			"title": "Promotions per scan",
+			"type": "number",
+			"scopeHint": "project"
+		},
+		"improvement.agentsRuleCap": {
+			"group": "Self-improvement",
+			"title": "Learned rules per AGENTS.md section",
+			"type": "number",
+			"scopeHint": "project"
+		},
+		"sandbox.enabled": {
+			"group": "Sandbox",
+			"title": "Sandbox override",
+			"type": "boolean",
+			"scopeHint": "project"
+		},
+		"sandbox.extraDomains": {
+			"group": "Sandbox",
+			"title": "Extra sandbox domains",
+			"type": "list",
+			"scopeHint": "project"
+		},
+		"runtime.mode": {
+			"group": "Runtime",
+			"title": "Runtime mode",
+			"type": "string",
+			"scopeHint": "user"
+		},
+		"runtime.scheduler": {
+			"group": "Runtime",
+			"title": "Scheduler",
+			"type": "string",
+			"scopeHint": "user",
+			"env": "DF_SCHEDULER"
+		},
+		"scheduler.intervalMinutes": {
+			"group": "Runtime",
+			"title": "Minutes between ticks",
+			"type": "number",
+			"scopeHint": "project",
+			"env": "DF_SCHEDULER_INTERVAL_MINUTES"
+		},
+		"alerts.notify": {
+			"group": "Runtime",
+			"title": "Notify when a pass cannot start",
+			"type": "boolean",
+			"scopeHint": "user"
+		},
+		"guard.trackerHosts": {
+			"group": "Runtime",
+			"title": "Extra tracker hosts to guard",
+			"type": "list",
+			"scopeHint": "project"
+		},
+		"cleanup.ports": {
+			"group": "Runtime",
+			"title": "Extra ports a takeover frees",
+			"type": "list",
+			"scopeHint": "project"
+		}
+	}
+}

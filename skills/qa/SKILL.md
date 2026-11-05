@@ -7,7 +7,7 @@ description: Author QA cases for a ticket and walk them through Playwright or Ma
 
 Repository skills: `node "${CLAUDE_PLUGIN_ROOT}/scripts/config.mjs" get repoSkills.qa` prints the skills this repository adds to this phase (an error or `[]` means none). Invoke each one with the Skill tool before you start; they are the repository's own rules for qa, and they add to the steps below, never replace them.
 
-Everything is committed before you start. `qa.mjs start` refuses a dirty tree and binds the run to HEAD; a later commit invalidates it.
+Your code is committed before you start. `qa.mjs start` refuses a dirty tree and binds the run to HEAD; a later commit invalidates it. The cases are the exception: they are scratch work in the git-ignored `.devfactory/qa/cases/<KEY>/`, never committed, and the run is bound to their content instead (below).
 
 ## 1. Decide
 
@@ -15,7 +15,7 @@ Run `node "${CLAUDE_PLUGIN_ROOT}/bin/qa.mjs" mark-na --key KEY --profile web|mob
 
 ## 2. Author cases
 
-For each acceptance criterion write one case under `.factory/qa/cases/<KEY>/`. The file name says what kind of case it is:
+For each acceptance criterion write one case under `.devfactory/qa/cases/<KEY>/`. The file name says what kind of case it is:
 
 -   web: `<slug>.spec.ts` (Playwright steps with the assertion each step checks)
 -   mobile: `<slug>.yaml` (Maestro flow; use the repository's own testID conventions, and add stable testIDs to the screens you touch)
@@ -24,7 +24,7 @@ For each acceptance criterion write one case under `.factory/qa/cases/<KEY>/`. T
 
 One run covers every case of the ticket, so a change with a screen and an endpoint lists both kinds; use `--profile service` when there is no screen.
 
-Each case names its assertions up front (a testID, a text, an element). The walk checks those, not an impression. Commit the cases, then start.
+Each case names its assertions up front (a testID, a text, an element). The walk checks those, not an impression. Never `git add` or commit a case: the folder keeps itself out of git. `start` records a sha256 of every case file, and `done` and `verify` compute them again, so a case you change, add or remove after `start` fails the run with `cases_changed`: write all the cases first, then start.
 
 ## 3. Walk
 
@@ -40,6 +40,6 @@ Each case names its assertions up front (a testID, a text, an element). The walk
 ## 4. Failures
 
 -   App bug: fix the code, commit, start a new run.
--   Case bug (wrong selector, stale assertion): fix the case, commit, start a new run.
+-   Case bug (wrong selector, stale assertion): fix the case (no commit), start a new run.
 -   Environment (device or browser unreachable, expired login, stale build): `bash "${CLAUDE_PLUGIN_ROOT}/scripts/e2e-env.sh" verify --worktree <worktree>`; one restart of the MCP server or service is allowed; then block.
 -   Five fix attempts per ticket at most, then `.dev-factory/blocked.json` naming the case, step and evidence.

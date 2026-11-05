@@ -58,3 +58,66 @@ test('plan sizes the work from a quick change to an initiative and keeps blocker
 test('every run that starts an environment ends with the clean-up script, whatever the outcome', () => {
 	for (const f of ['tick.md', 'build.md', 'quick.md']) assert.match(read(f), /scripts\/cleanup\.mjs" --worktree <worktree>/, f);
 });
+
+// Settings live in layers the factory writes through the settings page; a command that wrote the files itself would skip the checks
+// (a required server cannot be off, a secret goes to .env.local only) and the sync that makes Claude match.
+test('setup.md names settings set, mcp sync and plugins sync and never .mcp.json as something to write', () => {
+	const setup = read('setup.md');
+	for (const needle of [
+		'scripts/settings.mjs" set',
+		'set secret:',
+		'scripts/mcp.mjs" sync',
+		'scripts/plugins.mjs" sync',
+		'scripts/project-dir.mjs" migrate',
+		'defaultScope',
+		'claude plugin install dev-factory@dev-factory --scope user',
+		'all projects',
+		'this project',
+	])
+		assert.ok(setup.includes(needle), needle);
+	for (const line of setup.split('\n').filter((l) => l.includes('.mcp.json')))
+		assert.match(line, /never|legacy|do not|not copied|not a/i, `${line}: .mcp.json is something to read, not to write`);
+	assert.doesNotMatch(setup, /mcp\.mjs" (enable|connect)/, 'servers are chosen through the settings page, one scope each');
+});
+
+test('a secret reaches .env.local through standard input and never through the conversation or the command line', () => {
+	const setup = read('setup.md');
+	assert.match(setup, /standard input/);
+	assert.match(setup, /never (echo|print|write)[^.]*\b(value|secret)/i);
+	assert.match(setup, /`!`/, 'a value the person would otherwise type into the conversation is run by them with !');
+});
+
+test('setup.md tells a routine what it cannot have, and every settings command in it is a whole command', () => {
+	const setup = read('setup.md');
+	assert.match(setup, /carries only the project layer/);
+	assert.match(setup, /`jira` server[^.]*launcher[^.]*routine/);
+	assert.match(setup, /claude\.ai Atlassian connector/);
+	assert.match(setup, /used by the routine/);
+	for (const span of spans(setup).filter((s) => /settings\.mjs/.test(s)))
+		assert.match(
+			span,
+			/^(node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/settings\.mjs"|! pbpaste \| node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/settings\.mjs")/,
+			span,
+		);
+});
+
+test('the Jira server choice is asked only for a Jira task source, and the two servers are named', () => {
+	const setup = read('setup.md');
+	assert.match(setup, /tasks\.source[^.\n]*jira[^\n]*`jira`[^\n]*`atlassian`/i);
+});
+
+// A repository's settings moved to .devfactory/config.json; the old file is read for one release, so a line may name it only to say so.
+test('no command, skill or agent points at the old settings files except to call them legacy', () => {
+	const files = ['commands', 'skills', 'agents'].flatMap((d) =>
+		fs
+			.readdirSync(new URL(`../${d}/`, import.meta.url), { recursive: true, withFileTypes: true })
+			.filter((e) => e.isFile() && e.name.endsWith('.md'))
+			.map((e) => path.join(e.parentPath ?? e.path, e.name)),
+	);
+	for (const f of files)
+		for (const line of fs
+			.readFileSync(f, 'utf8')
+			.split('\n')
+			.filter((l) => /dev-factory\.(config\.json|qa\.yaml)/.test(l)))
+			assert.match(line, /legacy|old location|migrate/i, `${f}: ${line.slice(0, 120)}`);
+});

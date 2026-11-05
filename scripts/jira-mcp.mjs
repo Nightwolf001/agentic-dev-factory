@@ -3,8 +3,9 @@
 // and offers the same tool names the task-source skill uses, so the skill needs no change.
 //
 //   JIRA_SITE         the Jira host (example.atlassian.net); else sources.jira.site from the settings
-//   JIRA_EMAIL, JIRA_API_TOKEN   read from the environment of the pass; never written to a file (scripts/jira-mcp-config.mjs
-//                                writes a server entry that holds neither)
+//   JIRA_EMAIL, JIRA_API_TOKEN   read from the environment, else from the state folder's .env.local; never written to a file
+//                                (the catalog entry and scripts/jira-mcp-config.mjs write a server entry that holds neither value)
+// Started as `dev-factory jira-mcp` (the launcher in the state folder), so an update never leaves a stale path behind.
 //
 // Tools: getJiraIssue, searchJiraIssuesUsingJql, getTransitionsForJiraIssue, transitionJiraIssue, addCommentToJiraIssue,
 // editJiraIssue, createJiraIssue, addRemoteLinkToJiraIssue, lookupJiraAccountId, uploadAttachmentToJiraIssue. Comments and
@@ -19,6 +20,7 @@ import readline from 'node:readline';
 import { adfToText, textToAdf } from './adf.mjs';
 import { get, load } from './config.mjs';
 import { isMain } from './is-main.mjs';
+import { loadTrackerEnv } from './state-env.mjs';
 
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 const KEY = /^[A-Za-z][A-Za-z0-9_]*-\d+$/;
@@ -272,7 +274,11 @@ export async function handle(msg, tools) {
 	}
 }
 
+// JIRA_EMAIL, JIRA_API_TOKEN and JIRA_SITE that the environment leaves empty are taken from the state folder's .env.local
+// (scripts/state-env.mjs reads it as text); a variable that is set is never overridden. The server is started by Claude, not by
+// the scheduled pass, so nothing else would have loaded that file.
 export function configFromEnv(env = process.env) {
+	loadTrackerEnv({ env });
 	let site = env.JIRA_SITE;
 	if (!site) {
 		try {

@@ -1,3 +1,4 @@
+import './isolate-state.mjs';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -5,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { resolve } from '../scripts/cli.mjs';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -48,4 +50,33 @@ test('importing a CLI module does not run its main()', async () => {
 	});
 	assert.equal(r.stdout.trim(), 'imported');
 	assert.equal(r.stderr, '');
+});
+
+test('dev-factory jira-mcp resolves to the Jira token server, passing its arguments on', () => {
+	const r = resolve(['jira-mcp', '--x']);
+	assert.equal(r.cmd, 'node');
+	assert.equal(r.args[0], path.join(ROOT, 'scripts/jira-mcp.mjs'));
+	assert.deepEqual(r.args.slice(1), ['--x']);
+});
+
+test('dev-factory plugins resolves to the companion plugin sync, passing its arguments on', () => {
+	const r = resolve(['plugins', 'sync', '--dry-run']);
+	assert.equal(r.cmd, 'node');
+	assert.equal(r.args[0], path.join(ROOT, 'scripts/plugins.mjs'));
+	assert.deepEqual(r.args.slice(1), ['sync', '--dry-run']);
+});
+
+test('dev-factory settings resolves to the settings page, passing its arguments on', () => {
+	const r = resolve(['settings', 'set', 'sentry', 'on']);
+	assert.equal(r.cmd, 'node');
+	assert.equal(r.args[0], path.join(ROOT, 'scripts/settings.mjs'));
+	assert.deepEqual(r.args.slice(1), ['set', 'sentry', 'on']);
+});
+
+test('dev-factory migrate resolves to the project-folder migration, with its fixed argument first', () => {
+	const r = resolve(['migrate', '--apply']);
+	assert.equal(r.cmd, 'node');
+	assert.equal(r.args[0], path.join(ROOT, 'scripts/project-dir.mjs'));
+	assert.deepEqual(r.args.slice(1), ['migrate', '--apply']);
+	assert.deepEqual(resolve(['migrate']).args.slice(1), ['migrate']);
 });

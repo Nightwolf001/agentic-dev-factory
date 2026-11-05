@@ -53,11 +53,12 @@ alert clear >> "$LOG" 2>&1 || true
 
 # the settings this pass runs with: the base file plus the domains and MCP servers this repository enabled
 node "$DIR/scripts/factory-settings.mjs" "$STATE/settings.json" || { echo "$(date -u +%FT%TZ) could not build settings" >> "$LOG"; exit 1; }
-MCP_ARGS=(); [ -f "$REPO/.mcp.json" ] && MCP_ARGS=(--mcp-config "$REPO/.mcp.json")
+# the MCP servers this pass starts from: the generated .devfactory/mcp.json, with the flags write-config chose
+df_mcp_args "$REPO" "$LOG"
 
 claude -p "/dev-factory:tick" \
   --plugin-dir "$DIR" \
-  ${MCP_ARGS[@]+"${MCP_ARGS[@]}"} \
+  ${DF_MCP_ARGS[@]+"${DF_MCP_ARGS[@]}"} \
   --settings "$STATE/settings.json" \
   --permission-prompts none \
   --model "$(node "$DIR/scripts/config.mjs" get models.orchestrator)" \

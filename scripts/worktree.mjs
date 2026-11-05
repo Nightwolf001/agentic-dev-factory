@@ -8,7 +8,8 @@
 //                                                                            done/blocked markers cleared), an empty one is made again (its diff is backed up
 //                                                                            under <state>/backups first), real unpushed work is refused with exit 3.
 //                                                                            The prints include settled: new|adopted|recreated. The repository's
-//                                                                            dev-factory.config.json and dev-factory.qa.yaml are copied in, kept out of git.
+//                                                                            settings (.devfactory/config.json and qa.yaml, or the old
+//                                                                            dev-factory.config.json and dev-factory.qa.yaml) are copied in, kept out of git.
 //   worktree.mjs attach --branch EXISTING --path DIR [--repo DIR]            worktree on an existing remote branch (fix passes)
 //   worktree.mjs root [--repo DIR]                                           print the folder worktrees are created in (git.worktreeRoot)
 //   worktree.mjs default-branch [--repo DIR]                                 print the branch a run builds on when no base is named
@@ -19,6 +20,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { get } from './config.mjs';
 import { isMain } from './is-main.mjs';
+import { LEGACY_FILES, PROJECT_DIR, PROJECT_FILES, ensureProjectDir } from './project-dir.mjs';
 
 export class BaseError extends Error {
 	constructor(message, code = 3) {
@@ -99,17 +101,24 @@ function exclude(worktree, names = ['.dev-factory/']) {
 
 // The repository's own settings are not in git on a branch (the owner keeps them beside the checkout), so a fresh worktree
 // would run on the defaults. They are copied in and kept out of git: a ticket must never commit them. A file the branch
-// tracks is already there and is left alone.
-export const LOCAL_FILES = ['dev-factory.config.json', 'dev-factory.qa.yaml'];
-function copyLocalFiles(repo, dest) {
+// tracks is already there and is left alone. The ones in .devfactory/ need no info/exclude line: that folder ignores itself.
+// The old places stay in the list for the release in which a repository moves its files.
+export const LOCAL_SETTINGS = [PROJECT_FILES.config, PROJECT_FILES.qa, LEGACY_FILES.config, LEGACY_FILES.qa];
+// Whether or not anything is carried, the worktree gets its `.devfactory/` with the .gitignore that keeps it out of git: a
+// builder's scratch QA cases are written there, and the edit guard does not let it make that file itself.
+function carrySettings(repo, dest) {
+	ensureProjectDir(dest);
 	const copied = [];
-	for (const f of LOCAL_FILES) {
+	const excluded = [];
+	for (const f of LOCAL_SETTINGS) {
 		const from = path.join(repo, f);
 		if (!fs.existsSync(from) || !fs.statSync(from).isFile() || gitOk(dest, 'ls-files', '--error-unmatch', f)) continue;
+		const inFolder = f.startsWith(`${PROJECT_DIR}/`);
 		fs.copyFileSync(from, path.join(dest, f));
 		copied.push(f);
+		if (!inFolder) excluded.push(f);
 	}
-	if (copied.length) exclude(dest, copied);
+	if (excluded.length) exclude(dest, excluded);
 	return copied;
 }
 
@@ -248,7 +257,7 @@ export function addWorktree({ repo, branch, name, defaultBase, dest, fetch = tru
 	const r = resolveBase({ repo, name, defaultBase, fetch });
 	const s = settle({ repo, branch, dest, baseRef: r.ref });
 	if (s.existing) {
-		const copied = copyLocalFiles(repo, dest);
+		const copied = carrySettings(repo, dest);
 		exclude(dest);
 		return {
 			worktree: path.resolve(dest),
@@ -265,7 +274,7 @@ export function addWorktree({ repo, branch, name, defaultBase, dest, fetch = tru
 	if (s.attach) git(repo, 'worktree', 'add', '-q', '-B', branch, dest, `origin/${branch}`);
 	else git(repo, 'worktree', 'add', '-q', '-b', branch, dest, r.ref);
 	exclude(dest);
-	const copied = copyLocalFiles(repo, dest);
+	const copied = carrySettings(repo, dest);
 	return {
 		worktree: path.resolve(dest),
 		branch,
@@ -288,14 +297,14 @@ export function attachWorktree({ repo, branch, dest }) {
 		if (wt.branch !== branch)
 			throw new BaseError(`${dest} is a worktree of ${wt.branch ?? 'a detached head'}, not ${branch}; nothing was changed`, 3);
 		exclude(abs);
-		return { worktree: abs, branch, copied: copyLocalFiles(repo, abs), cleared: clearMarkers(abs), existing: true };
+		return { worktree: abs, branch, copied: carrySettings(repo, abs), cleared: clearMarkers(abs), existing: true };
 	}
 	if (fs.existsSync(abs) && fs.readdirSync(abs).length)
 		throw new BaseError(`${dest} exists and is not a worktree of this repository; move it away, nothing was changed`, 3);
 	git(repo, 'fetch', '--quiet', 'origin', branch);
 	git(repo, 'worktree', 'add', '-q', '-B', branch, dest, `origin/${branch}`);
 	exclude(dest);
-	return { worktree: abs, branch, copied: copyLocalFiles(repo, dest) };
+	return { worktree: abs, branch, copied: carrySettings(repo, dest) };
 }
 
 function args(argv) {

@@ -1,3 +1,4 @@
+import './isolate-state.mjs';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -46,6 +47,36 @@ test('hooks reach their scripts through CLAUDE_PLUGIN_ROOT, and the shipped exec
 		assert.ok(fs.statSync(path.join(ROOT, 'scripts', f)).mode & 0o111, f);
 });
 
+// A checkout of a cloud session or a routine has no .devfactory/ (it is never committed): the session start writes it from the
+// variables, and must never fail the session, whether the variables are set, unset or the files already there.
+test('the SessionStart hook writes the project files from the environment and never fails a session', () => {
+	const start = json('hooks/hooks.json').hooks.SessionStart;
+	assert.equal(start.length, 1);
+	assert.equal(start[0].matcher, 'startup|resume');
+	assert.equal(start[0].hooks.length, 1);
+	const { command, timeout, type } = start[0].hooks[0];
+	assert.equal(type, 'command');
+	assert.equal(timeout, 15);
+	assert.equal(command, 'node "${CLAUDE_PLUGIN_ROOT}/scripts/config.mjs" write-from-env --if-set');
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'df-session-'));
+	spawnSync('git', ['init', '-q'], { cwd: dir });
+	const run = (env) =>
+		spawnSync('sh', ['-c', command], {
+			cwd: dir,
+			encoding: 'utf8',
+			env: { ...process.env, CLAUDE_PLUGIN_ROOT: ROOT, DF_PROJECT_CONFIG: '', DF_PROJECT_QA: '', ...env },
+		});
+	assert.equal(run({}).status, 0, 'nothing set');
+	assert.equal(fs.existsSync(path.join(dir, '.devfactory/config.json')), false);
+	const set = { DF_PROJECT_CONFIG: JSON.stringify({ tasks: { source: 'github' } }), DF_PROJECT_QA: 'profiles:\n  web: {}\n' };
+	assert.equal(run(set).status, 0);
+	assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, '.devfactory/config.json'), 'utf8')), { tasks: { source: 'github' } });
+	assert.match(fs.readFileSync(path.join(dir, '.devfactory/qa.yaml'), 'utf8'), /profiles:/);
+	const again = run({ ...set, DF_PROJECT_CONFIG: JSON.stringify({ tasks: { source: 'local' } }) });
+	assert.equal(again.status, 0, 'a file that is there is kept, not a failure');
+	assert.equal(JSON.parse(fs.readFileSync(path.join(dir, '.devfactory/config.json'), 'utf8')).tasks.source, 'github');
+});
+
 // ---- no path that only exists when the plugin is copied into a repository ----
 
 test('commands, skills and agents run the plugin through CLAUDE_PLUGIN_ROOT, never through a dev-factory/ folder of the repository', () => {
@@ -60,10 +91,13 @@ test('commands, skills and agents run the plugin through CLAUDE_PLUGIN_ROOT, nev
 	assert.ok(withScripts.length >= 10, 'the prompts do reference the plugin root');
 });
 
-test('QA cases are committed in the repository under .factory, and the plugin is never asked to hold them', () => {
+test('QA cases are scratch work in the repository under .devfactory, and the plugin is never asked to hold them', () => {
 	for (const f of ['skills/qa/SKILL.md', 'commands/quick.md', 'commands/plan.md', 'agents/factory-builder.md']) {
 		const t = read(f);
-		if (/qa\/cases/.test(t)) assert.match(t, /\.factory\/qa\/cases/, f);
+		if (/qa\/cases/.test(t)) {
+			assert.match(t, /\.devfactory\/qa\/cases/, f);
+			assert.doesNotMatch(t, /\.factory\/qa\/cases/, `${f}: names the old committed folder`);
+		}
 	}
 });
 
@@ -74,7 +108,7 @@ test('dev-factory path and unknown subcommands behave', () => {
 	assert.equal(run('path').stdout.trim(), ROOT);
 	const bad = run('nonsense');
 	assert.equal(bad.status, 3);
-	assert.match(bad.stderr, /usage: dev-factory doctor\|install\|mcp\|tasks\|config/);
+	assert.match(bad.stderr, /usage: dev-factory doctor\|install\|mcp\|plugins\|tasks\|config/);
 	assert.equal(run('config', 'get', 'tasks.source').stdout.trim(), 'local');
 });
 
@@ -89,9 +123,13 @@ test('install --apply writes a launcher that runs the newest cached copy, an env
 	const git = (...a) => spawnSync('git', a, { cwd: repo, encoding: 'utf8' });
 	git('init', '-q');
 	git('commit', '-q', '--allow-empty', '-m', 'x');
-	// claude and launchctl are not the point: record what would have been asked of them
+	// claude and launchctl are not the point: record what would have been asked of them (claude has no plugin installed)
 	for (const n of ['claude', 'launchctl', 'plutil'])
-		fs.writeFileSync(path.join(bin, n), '#!/bin/sh\necho "$0 $@" >> "$HOME/calls.log"\nexit 0\n', { mode: 0o755 });
+		fs.writeFileSync(
+			path.join(bin, n),
+			'#!/bin/sh\necho "$0 $@" >> "$HOME/calls.log"\ncase "$*" in "plugin list --json"*) echo "[]" ;; esac\nexit 0\n',
+			{ mode: 0o755 },
+		);
 	const env = {
 		...process.env,
 		HOME: home,

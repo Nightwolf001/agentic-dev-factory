@@ -1,3 +1,4 @@
+import './isolate-state.mjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -268,9 +269,11 @@ test('the MCP handshake, the tool list and a call, as a client sends them', asyn
 
 test('the server runs over stdio and refuses to start without its credentials', async () => {
 	const script = path.resolve(import.meta.dirname, '../scripts/jira-mcp.mjs');
+	// an empty state folder: the server reads <DF_STATE_DIR>/.env.local, never the developer's own
+	const state = fs.mkdtempSync(path.join(os.tmpdir(), 'df-jira-spawn-'));
 	const run = (env, lines) =>
 		new Promise((resolve) => {
-			const c = spawn(process.execPath, [script], { env: { PATH: process.env.PATH, ...env }, cwd: os.tmpdir() });
+			const c = spawn(process.execPath, [script], { env: { PATH: process.env.PATH, DF_STATE_DIR: state, ...env }, cwd: os.tmpdir() });
 			let out = '';
 			let err = '';
 			c.stdout.on('data', (d) => (out += d));
@@ -293,7 +296,26 @@ test('the server runs over stdio and refuses to start without its credentials', 
 	const bad = await run({}, []);
 	assert.equal(bad.code, 1);
 	assert.match(bad.err, /JIRA_EMAIL, JIRA_API_TOKEN/);
-	assert.deepEqual(configFromEnv({ JIRA_SITE: 's', JIRA_EMAIL: 'e', JIRA_API_TOKEN: 't' }), { site: 's', email: 'e', token: 't' });
+	const none = fs.mkdtempSync(path.join(os.tmpdir(), 'df-jira-none-'));
+	assert.deepEqual(configFromEnv({ DF_STATE_DIR: none, JIRA_SITE: 's', JIRA_EMAIL: 'e', JIRA_API_TOKEN: 't' }), {
+		site: 's',
+		email: 'e',
+		token: 't',
+	});
+});
+
+test('configFromEnv fills only empty variables from the state folder’s .env.local and never overrides a set one', () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'df-jira-env-'));
+	fs.writeFileSync(
+		path.join(dir, '.env.local'),
+		'JIRA_EMAIL=file@example.com\nJIRA_API_TOKEN=file-token\nJIRA_SITE=from-file.example.atlassian.net\n',
+	);
+	const env = { DF_STATE_DIR: dir, JIRA_EMAIL: 'set@example.com', JIRA_API_TOKEN: '' };
+	assert.deepEqual(configFromEnv(env), { site: 'from-file.example.atlassian.net', email: 'set@example.com', token: 'file-token' });
+	assert.equal(env.JIRA_EMAIL, 'set@example.com');
+	// with no file the variables stay as they are, and JIRA_SITE falls back to sources.jira.site (null by default: no site)
+	const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'df-jira-env-'));
+	assert.deepEqual(configFromEnv({ DF_STATE_DIR: empty, JIRA_EMAIL: 'e', JIRA_API_TOKEN: 't' }), { site: null, email: 'e', token: 't' });
 });
 
 test('the server entry holds no secret, only the host, and starts the newest installed copy through the launcher', () => {

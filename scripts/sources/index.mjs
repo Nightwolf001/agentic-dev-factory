@@ -11,8 +11,9 @@ export { STATES, isBuildable, fingerprintOf } from './common.mjs';
 // Why the source cannot be read from a script right now, or null when it can.
 export function missingCredentials(cfg, env = process.env) {
 	const source = get('tasks.source', { config: cfg, env });
-	if (source === 'jira' && (!env.JIRA_API_TOKEN || !env.JIRA_EMAIL)) return 'no Jira API token (set JIRA_API_TOKEN and JIRA_EMAIL)';
-	if (source === 'notion' && !env.NOTION_TOKEN) return 'no Notion token (set NOTION_TOKEN)';
+	if (source === 'jira' && (!env.JIRA_API_TOKEN || !env.JIRA_EMAIL))
+		return 'no Jira API token (set JIRA_API_TOKEN and JIRA_EMAIL: dev-factory settings set secret:NAME)';
+	if (source === 'notion' && !env.NOTION_TOKEN) return 'no Notion token (set NOTION_TOKEN: dev-factory settings set secret:NOTION_TOKEN)';
 	return null;
 }
 

@@ -2,7 +2,10 @@
 # Needs repository secrets: CLAUDE_CODE_OAUTH_TOKEN (claude setup-token) or ANTHROPIC_API_KEY, and DF_GH_TOKEN, a token
 # of the person the commits and PRs should belong to (the default GITHUB_TOKEN cannot trigger other workflows).
 # Optional: NOTION_TOKEN, JIRA_EMAIL, JIRA_API_TOKEN for those task sources. Repository variables DF_GIT_NAME and
-# DF_GIT_EMAIL set the commit identity.
+# DF_GIT_EMAIL set the commit identity. The project's settings and QA profiles are not committed (.devfactory/ stays out of
+# git), so set the repository variables DF_PROJECT_CONFIG (the contents of .devfactory/config.json) and DF_PROJECT_QA (the
+# contents of .devfactory/qa.yaml, if you keep one): a step writes both before the pass. The pass then generates its own
+# MCP config from those settings, so the repository commits no MCP file.
 name: dev-factory tick
 on:
   schedule:
@@ -55,6 +58,13 @@ jobs:
           claude plugin install dev-factory@dev-factory
           claude plugin marketplace add anthropics/claude-plugins-official
           claude plugin install superpowers@claude-plugins-official
+      - name: Write the project settings
+        env:
+          DF_PROJECT_CONFIG: ${{ vars.DF_PROJECT_CONFIG }}
+          DF_PROJECT_QA: ${{ vars.DF_PROJECT_QA }}
+        run: |
+          DIR="$(ls -d "$HOME"/.claude/plugins/cache/*/dev-factory/*/ | sed 's#/$##' | sort -V | tail -1)"
+          "$DIR/bin/dev-factory" config write-from-env --if-set
       - name: Run one pass
         run: |
           DIR="$(ls -d "$HOME"/.claude/plugins/cache/*/dev-factory/*/ | sed 's#/$##' | sort -V | tail -1)"

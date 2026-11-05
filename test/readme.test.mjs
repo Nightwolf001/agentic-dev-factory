@@ -1,20 +1,21 @@
+import './isolate-state.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { test } from 'node:test';
 import { ENV_OVERRIDES } from '../scripts/config.mjs';
+import { optionCatalog } from '../scripts/settings-lib.mjs';
 
 const read = (f) => fs.readFileSync(new URL(`../${f}`, import.meta.url), 'utf8');
 const config = JSON.parse(read('config.json'));
 
-// maps whose entries are the user's own (task types, status names, globs): documented as one setting
+// maps whose entries are the user's own (task types, status names, globs) are documented as one setting; the option
+// catalogue says which keys are maps. The two catalog-built sections are not options but are open as well.
 const OPEN = [
-	/^git\.branchTypes$/,
-	/^pr\.sizeLabels$/,
-	/^pr\.categoryByBranchType$/,
-	/^models\.efforts$/,
-	/^review\.specialistAxes$/,
-	/^environments$/,
-	/^sources\.\w+\.(states|properties)$/,
+	...Object.entries(optionCatalog().options)
+		.filter(([, o]) => o.type === 'map')
+		.map(([k]) => new RegExp(`^${k.replace(/\./g, '\\.')}$`)),
+	/^mcp\.servers$/,
+	/^plugins\.enabled$/,
 ];
 function leaves(obj, prefix = '') {
 	return Object.entries(obj).flatMap(([k, v]) => {
@@ -54,4 +55,42 @@ test('the README examples of settings are valid settings', async () => {
 	const example = JSON.parse(block);
 	for (const k of Object.keys(example)) assert.ok(k in config, `${k} is a real section`);
 	assert.deepEqual(validate(merge(config, example)), []);
+});
+
+test('the README has a Settings page section and a Moving to .devfactory section that name their commands', () => {
+	const readme = read('README.md');
+	const section = (title) => {
+		const start = readme.indexOf(`\n## ${title}\n`);
+		assert.ok(start >= 0, `## ${title}`);
+		const next = readme.indexOf('\n## ', start + 1);
+		return readme.slice(start, next < 0 ? undefined : next);
+	};
+	const page = section('Settings page');
+	for (const needle of ['dev-factory settings list', 'dev-factory settings set', 'secret:', 'DF_CONFIG', '--json', 'exit'])
+		assert.ok(page.includes(needle), `Settings page: ${needle}`);
+	for (const group of optionCatalog().groups) assert.ok(page.includes(group), `Settings page names the group ${group}`);
+	const moving = section('Moving to .devfactory');
+	for (const needle of ['dev-factory migrate', 'git rm', 'dev-factory mcp migrate', '--apply'])
+		assert.ok(moving.includes(needle), `Moving to .devfactory: ${needle}`);
+});
+
+test('the README explains the three state folders in one place and the cloud variables', () => {
+	const readme = read('README.md');
+	for (const needle of [
+		'`.devfactory/`',
+		'`.factory/`',
+		'`.dev-factory/`',
+		'DF_PROJECT_CONFIG',
+		'DF_PROJECT_QA',
+		'enabledMcpjsonServers',
+		'managed.json',
+	])
+		assert.ok(readme.includes(needle), needle);
+	assert.match(readme, /claude plugin install dev-factory@dev-factory --scope user/);
+	// what a routine and a cloud session cannot have
+	assert.match(readme, /`DF_PROJECT_CONFIG` stands in for the project layer only/);
+	assert.match(readme, /The `jira` server is left out and not approved/);
+	assert.match(readme, /used by the routine: enabledMcpjsonServers/);
+	assert.match(readme, /nothing new is written to them, with one exception: `dev-factory cloud init --routine`/);
+	assert.match(readme, /strictly unless a wanted server is available only from elsewhere/);
 });

@@ -36,6 +36,7 @@ import * as debugLib from '../scripts/debug-lib.mjs';
 import { load as loadConfig } from '../scripts/config.mjs';
 import { globToRegExp, readSealed, stillSealed } from '../scripts/env-build-files.mjs';
 import { isMain } from '../scripts/is-main.mjs';
+import { LEGACY_FILES, PROJECT_FILES, ensureProjectDir } from '../scripts/project-dir.mjs';
 import { ProbeError, probe as sendProbe } from '../scripts/probe-lib.mjs';
 import { redactText } from '../scripts/scrub-lib.mjs';
 import { learningRequired, lintLearnings, parseLearnings } from '../scripts/learnings-lib.mjs';
@@ -120,8 +121,9 @@ const writeJson = (file, data) => {
 	fs.writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
 };
 
-// Untracked and modified files count, except the factory's own run state and the build files the environment step rewrote
-// (sealed by content hash: a ticket's own edit to one still counts).
+// Untracked and modified files count, except the factory's own run state, the per-repository `.devfactory/` folder (a builder's
+// scratch QA cases are never uncommitted work; the legacy `.factory/qa/cases/` is committed, so it is not exempt) and the build
+// files the environment step rewrote (sealed by content hash: a ticket's own edit to one still counts).
 export function dirtyFiles(root) {
 	// not trimmed: the first line of a porcelain listing starts with a space when the file is modified and unstaged
 	const out = execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], {
@@ -134,7 +136,7 @@ export function dirtyFiles(root) {
 		.split('\n')
 		.filter(Boolean)
 		.map((l) => l.slice(3))
-		.filter((f) => !f.startsWith('.dev-factory/') && !stillSealed(root, f, sealed));
+		.filter((f) => !f.startsWith('.dev-factory/') && !f.startsWith('.devfactory/') && !stillSealed(root, f, sealed));
 }
 
 function nextRun(root) {
@@ -154,8 +156,11 @@ function loadRun(root, run) {
 	return readJson(file);
 }
 
-// QA cases are committed with the change they verify, in the repository under test, not in the plugin.
-export const CASES_DIR = path.join('.factory', 'qa', 'cases');
+// QA cases are scratch work in the repository under test, not in the plugin and not in git: a run is bound to their content by
+// sha256 digests (see caseDigests), not by a commit. A repository that still keeps them committed under `.factory/qa/cases/` is
+// read as before.
+export const CASES_DIR = path.normalize(PROJECT_FILES.cases);
+export const LEGACY_CASES_DIR = path.normalize(LEGACY_FILES.cases);
 
 // What kind of case a file is: a screen walked in a browser or on a device (ui), a request and its answer (api), or a job and
 // what it did (worker). A pass needs evidence of its own kind: an image, a probe or the worker's output.
@@ -166,17 +171,63 @@ const CASE_FILE = [
 	['ui', /\.(ya?ml|spec\.ts)$/],
 ];
 
-export function listCaseFiles(root, key) {
-	const dir = path.join(root, CASES_DIR, key);
-	if (!fs.existsSync(dir)) return [];
-	return fs
-		.readdirSync(dir)
-		.map((f) => {
+// The case files directly inside one folder: [{ file, slug, kind }], sorted by slug.
+function caseFilesIn(dir) {
+	let names;
+	try {
+		names = fs.readdirSync(dir, { withFileTypes: true });
+	} catch {
+		return [];
+	}
+	return names
+		.filter((d) => d.isFile())
+		.map((d) => {
+			const f = d.name;
 			const hit = CASE_FILE.find(([, re]) => re.test(f));
-			return hit ? { slug: f.replace(hit[0] === 'ui' ? /\.(ya?ml|spec\.ts)$/ : /\.md$/, ''), kind: hit[0] } : null;
+			return hit ? { file: f, slug: f.replace(hit[0] === 'ui' ? /\.(ya?ml|spec\.ts)$/ : /\.md$/, ''), kind: hit[0] } : null;
 		})
 		.filter(Boolean)
 		.sort((x, y) => x.slug.localeCompare(y.slug));
+}
+
+// Where the cases of a ticket are, relative to the root: the new folder when it holds any case file for the key, else the legacy
+// folder when that does, else the new folder (where the builder is about to write them).
+export function casesDirFor(root, key) {
+	if (caseFilesIn(path.join(root, CASES_DIR, key)).length) return CASES_DIR;
+	if (caseFilesIn(path.join(root, LEGACY_CASES_DIR, key)).length) return LEGACY_CASES_DIR;
+	return CASES_DIR;
+}
+
+export function listCaseFiles(root, key) {
+	return caseFilesIn(path.join(root, casesDirFor(root, key), key)).map(({ slug, kind }) => ({ slug, kind }));
+}
+
+// sha256 of every case file of the key in one folder: { "<path relative to the root, with />": "<hex>" }
+export function caseDigests(root, key, casesDir = casesDirFor(root, key)) {
+	const out = {};
+	for (const { file } of caseFilesIn(path.join(root, casesDir, key))) {
+		const rel = path.join(casesDir, key, file);
+		out[rel.split(path.sep).join('/')] = sha256(path.join(root, rel));
+	}
+	return out;
+}
+
+// The paths whose content differs between the digests a run recorded and the folder now: changed, added or missing.
+function casesChanged(root, key, recorded, casesDir) {
+	const now = caseDigests(root, key, casesDir);
+	return [...new Set([...Object.keys(recorded), ...Object.keys(now)])].filter((p) => recorded[p] !== now[p]).sort();
+}
+
+// A run cannot outlive its cases. A manifest written before digests were recorded has none and is accepted as it always was.
+// One with digests but no folder name was made when the cases were still committed under the legacy folder; judging it against
+// whatever folder holds cases now could switch it to another set.
+function checkCases(root, m) {
+	if (!m.caseDigests) return;
+	const changed = casesChanged(root, m.key, m.caseDigests, m.casesDir ?? LEGACY_CASES_DIR);
+	if (changed.length)
+		throw new QaError(
+			`cases_changed: ${changed.slice(0, 5).join(', ')}${changed.length > 5 ? `, and ${changed.length - 5} more` : ''} (the cases are not what this run walked; start a new run)`,
+		);
 }
 
 export const listCases = (root, key) => listCaseFiles(root, key).map((c) => c.slug);
@@ -197,8 +248,10 @@ export function start({ root, key, profile }) {
 	if (!key || !profile) throw new QaError('start needs --key and --profile');
 	const dirty = dirtyFiles(root);
 	if (dirty.length) throw new QaError(`working tree is not clean (commit first): ${dirty.slice(0, 5).join(', ')}`);
+	ensureProjectDir(root); // the folder the cases are written in keeps itself out of git, whoever made it
+	const casesDir = casesDirFor(root, key);
 	const cases = listCaseFiles(root, key);
-	if (!cases.length) throw new QaError(`needs_own_case: no case authored under ${CASES_DIR}/${key}/`, 2);
+	if (!cases.length) throw new QaError(`needs_own_case: no case authored under ${PROJECT_FILES.cases}/${key}/`, 2);
 	const run = nextRun(root);
 	const envFile = path.join(root, '.dev-factory', 'env.json');
 	const manifest = {
@@ -210,6 +263,8 @@ export function start({ root, key, profile }) {
 		startedAt: new Date().toISOString(),
 		env: fs.existsSync(envFile) ? readJson(envFile) : null,
 		cases: cases.map(({ slug, kind }) => ({ slug, kind, status: null })),
+		casesDir: casesDir.split(path.sep).join('/'),
+		caseDigests: caseDigests(root, key, casesDir),
 		evidence: [],
 		verdict: null,
 	};
@@ -486,6 +541,7 @@ export function done({ root, run }) {
 	if (git(root, 'rev-parse', 'HEAD') !== m.head) throw new QaError('HEAD moved since the run started; the run closes as stale, start a new one');
 	const dirty = dirtyFiles(root);
 	if (dirty.length) throw new QaError(`working tree changed during the walk: ${dirty.slice(0, 5).join(', ')}`);
+	checkCases(root, m);
 	m.verdict = m.cases.every((c) => c.status === 'pass') ? 'pass' : 'fail';
 	m.caseSummary = caseSummary(m.cases);
 	m.finishedAt = new Date().toISOString();
@@ -494,10 +550,10 @@ export function done({ root, run }) {
 }
 
 // Minimal reader for a glob list (uiGlobs, nonUiGlobs) in profiles.yaml (no YAML dependency).
-// A repository's own dev-factory.qa.yaml, when it has one, replaces the plugin's default profiles.
+// A repository's own QA profiles replace the plugin's default ones: `.devfactory/qa.yaml`, else the legacy `dev-factory.qa.yaml`.
 function profilesFile(root) {
-	const own = root ? path.join(root, 'dev-factory.qa.yaml') : null;
-	return own && fs.existsSync(own) ? own : fileURLToPath(new URL('../qa/profiles.yaml', import.meta.url));
+	const own = root ? [PROJECT_FILES.qa, LEGACY_FILES.qa].map((f) => path.join(root, f)).find((f) => fs.existsSync(f)) : null;
+	return own ?? fileURLToPath(new URL('../qa/profiles.yaml', import.meta.url));
 }
 
 function globListFor(profile, key, root) {
@@ -773,6 +829,12 @@ export function verify({ root, head, run, key, requireReview = false, specialist
 		if (!carriedFrom) problems.push(`manifest head ${manifest.head.slice(0, 9)} is not the PR head ${head.slice(0, 9)}`);
 	}
 	if (manifest.verdict !== 'pass' && manifest.verdict !== 'not_applicable') problems.push(`verdict is ${manifest.verdict ?? 'open'}`);
+	try {
+		checkCases(root, manifest);
+	} catch (e) {
+		if (!(e instanceof QaError)) throw e;
+		problems.push(e.message);
+	}
 	for (const e of manifest.evidence ?? []) {
 		const f = path.join(root, e.file);
 		if (!fs.existsSync(f)) problems.push(`evidence missing: ${e.file}`);

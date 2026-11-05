@@ -308,7 +308,9 @@ const HOME_PLACES = [
 export function protectedPaths(ctx = {}) {
 	const { home, stateDir } = envOf(ctx);
 	const h = comps(home);
-	return [['state', comps(stateDir)], ...HOME_PLACES.map(([place, rel]) => [place, [...h, ...rel]])];
+	// The machine folder holds the secrets and every repository's state folder. A repository may keep its run state in a folder of its own
+	// under it (`install --isolate`, DF_STATE_DIR), and that must not leave the folder above it open to a run.
+	return [['state', comps(stateDir)], ['state', [...h, '.dev-factory']], ...HOME_PLACES.map(([place, rel]) => [place, [...h, ...rel]])];
 }
 
 // -> a short name for what an absolute path is, or null. The path may hold globs (`~/.dev-fac*`), and is compared in lower case.
@@ -359,6 +361,8 @@ const RUN_STATE = [
 	['.factory', 'tasks'],
 	['dev-factory'],
 	['dev-factory.config.json'],
+	// the owner's settings (config, QA profiles, MCP servers), at any depth; a builder's own scratch cases are the one exception
+	['.devfactory'],
 	['.claude'],
 	['.github', 'workflows'],
 	['.husky'],
@@ -368,17 +372,21 @@ const RUN_STATE = [
 // takes everything in it. (Writing a hand-off file inside .dev-factory is fine; deleting .dev-factory is not.)
 export function runStateRoot(abs) {
 	const last = comps(abs).at(-1);
-	return !!last && ['.dev-factory', '.factory', 'dev-factory', '.claude', '.husky'].some((n) => compEq(last, n));
+	return !!last && ['.dev-factory', '.devfactory', '.factory', 'dev-factory', '.claude', '.husky'].some((n) => compEq(last, n));
 }
 
-// Whether an absolute path (globs allowed) is run state or a factory file, wherever the worktree is.
-export function runStatePlace(abs) {
+// Whether an absolute path (globs allowed) is run state or a factory file, wherever the worktree is. `key` is the ticket the
+// caller runs for: the one folder of QA cases inside .devfactory/ that is its own (with no key, none is, as for the edit tools).
+export function runStatePlace(abs, key = null) {
 	const cs = comps(abs);
 	for (let i = 0; i < cs.length; i++) {
 		for (const ps of RUN_STATE) {
 			if (!ps.every((p, j) => cs[i + j] !== undefined && compEq(cs[i + j], p))) continue;
 			// a ticket's own QA cases live under the vendored folder
 			if (ps.length === 1 && ps[0] === 'dev-factory' && cs[i + 1] === 'qa' && cs[i + 2] === 'cases') continue;
+			if (ps.length === 1 && ps[0] === '.devfactory' && cs[i + 1] === 'qa' && cs[i + 2] === 'cases' && cs[i + 3] !== undefined) {
+				if (key && cs[i + 3] === key.toLowerCase()) continue;
+			}
 			return true;
 		}
 	}
@@ -386,19 +394,32 @@ export function runStatePlace(abs) {
 }
 
 // The folder of a path that exists, resolved through symlinks, with the rest of the path kept: a file that is not there yet is
-// judged by where it would be created.
-export function realPath(abs) {
+// judged by where it would be created. A link whose target is not there yet is followed too (writing through it creates the
+// target), for as many hops as a system allows before it gives up and takes the path as it is.
+export function realPath(abs, hops = 0) {
 	let rest = '';
 	let dir = abs;
 	for (let i = 0; i < 64; i++) {
+		let base = null;
 		try {
-			return path.join(fs.realpathSync(dir), rest);
+			base = fs.realpathSync(dir);
 		} catch {
 			const up = path.dirname(dir);
 			if (up === dir) break;
 			rest = path.join(path.basename(dir), rest);
 			dir = up;
 		}
+		if (base === null) continue;
+		if (rest && hops < 40) {
+			const [first, ...others] = rest.split('/');
+			try {
+				const at = path.join(base, first);
+				if (fs.lstatSync(at).isSymbolicLink()) return realPath(path.join(path.resolve(base, fs.readlinkSync(at)), ...others), hops + 1);
+			} catch {
+				/* not a link: the path is where it would be created */
+			}
+		}
+		return path.join(base, rest);
 	}
 	return abs;
 }

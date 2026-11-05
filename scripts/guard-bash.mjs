@@ -44,6 +44,7 @@ process.stdin
 			cwd,
 			trackerHosts,
 			branch: run?.branch,
+			key: run?.key,
 			role: run?.role,
 			containerOnly,
 			service: environment.service,

@@ -1,3 +1,4 @@
+import './isolate-state.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -1220,4 +1221,227 @@ test('probe reads its body from a file and says when the file is missing', async
 	assert.equal(ok.ok, true);
 	assert.equal(sent, '{"sku":7}');
 	await assert.rejects(probe({ ...base, step: 2, bodyFile: path.join(root, 'nope.json'), fetchImpl: answer(201) }), /body file not found/);
+});
+
+// ---- cases are scratch work in .devfactory/qa/cases, bound to a run by digests ----
+import { casesDirFor } from '../bin/qa.mjs';
+
+// a repository whose only cases for APP-3 sit uncommitted under .devfactory (the repository does not ignore the folder here:
+// the exemption in dirtyFiles is what lets the run start)
+function scratchRepo() {
+	const root = makeRepo();
+	const dir = path.join(root, '.devfactory/qa/cases/APP-3');
+	fs.mkdirSync(dir, { recursive: true });
+	fs.writeFileSync(path.join(dir, 'login.yaml'), 'appId: x\n');
+	fs.writeFileSync(path.join(dir, 'arm.yaml'), 'appId: y\n');
+	return { root, dir };
+}
+const walkBoth = (root, m, seed = 11) => {
+	record({
+		root,
+		run: m.run,
+		caseSlug: 'login',
+		status: 'pass',
+		assertion: 'login screen shows the arm button',
+		screenshot: png(root, `sa${seed}`, seed),
+	});
+	record({
+		root,
+		run: m.run,
+		caseSlug: 'arm',
+		status: 'pass',
+		assertion: 'armed banner visible after tap',
+		screenshot: png(root, `sb${seed}`, seed + 1),
+	});
+};
+
+test('start accepts uncommitted cases under .devfactory and records their digests', () => {
+	const { root } = scratchRepo();
+	const m = start({ root, key: 'APP-3', profile: 'web' });
+	assert.deepEqual(Object.keys(m.caseDigests).sort(), ['.devfactory/qa/cases/APP-3/arm.yaml', '.devfactory/qa/cases/APP-3/login.yaml']);
+	for (const v of Object.values(m.caseDigests)) assert.match(v, /^[0-9a-f]{64}$/);
+	assert.deepEqual(
+		m.cases.map((c) => c.slug),
+		['arm', 'login'],
+	);
+});
+
+test('done fails with cases_changed when a case changed after start', () => {
+	const { root, dir } = scratchRepo();
+	const m = start({ root, key: 'APP-3', profile: 'web' });
+	walkBoth(root, m);
+	fs.writeFileSync(path.join(dir, 'login.yaml'), 'appId: z\n');
+	refused(() => done({ root, run: m.run }), /^cases_changed: .*APP-3\/login\.yaml/);
+	fs.writeFileSync(path.join(dir, 'login.yaml'), 'appId: x\n');
+	assert.equal(done({ root, run: m.run }).verdict, 'pass', 'put back, the run closes');
+});
+
+test('done fails with cases_changed when a case was added', () => {
+	const { root, dir } = scratchRepo();
+	const m = start({ root, key: 'APP-3', profile: 'web' });
+	walkBoth(root, m);
+	fs.writeFileSync(path.join(dir, 'extra.yaml'), 'appId: x\n');
+	refused(() => done({ root, run: m.run }), /^cases_changed: .*APP-3\/extra\.yaml/);
+});
+
+test('done fails with cases_changed when a case was removed', () => {
+	const { root, dir } = scratchRepo();
+	const m = start({ root, key: 'APP-3', profile: 'web' });
+	walkBoth(root, m);
+	fs.rmSync(path.join(dir, 'arm.yaml'));
+	refused(() => done({ root, run: m.run }), /^cases_changed: .*APP-3\/arm\.yaml/);
+});
+
+test('a file that is not a case does not bind the run', () => {
+	const { root, dir } = scratchRepo();
+	const m = start({ root, key: 'APP-3', profile: 'web' });
+	walkBoth(root, m);
+	fs.writeFileSync(path.join(dir, 'notes.md'), 'scratch\n');
+	assert.equal(done({ root, run: m.run }).verdict, 'pass');
+});
+
+test('verify fails with cases_changed when a case changed after done', () => {
+	const { root, dir } = scratchRepo();
+	const m = start({ root, key: 'APP-3', profile: 'web' });
+	walkBoth(root, m);
+	done({ root, run: m.run });
+	const head = g(root, 'rev-parse', 'HEAD');
+	assert.equal(verify({ root, head, run: m.run }).ok, true);
+	fs.appendFileSync(path.join(dir, 'login.yaml'), '# edited\n');
+	refused(() => verify({ root, head, run: m.run }), /cases_changed: .*APP-3\/login\.yaml/);
+	refused(() => verify({ root, head, key: 'APP-3' }), /cases_changed/);
+});
+
+test('a manifest without caseDigests still verifies', () => {
+	const root = makeRepo();
+	const m = start({ root, key: 'APP-1', profile: 'web' });
+	walkBoth(root, m, 21);
+	done({ root, run: m.run });
+	const file = path.join(root, '.dev-factory/qa', `run-${m.run}.json`);
+	const body = JSON.parse(fs.readFileSync(file, 'utf8'));
+	assert.ok(body.caseDigests, 'a new run carries them');
+	delete body.caseDigests;
+	fs.writeFileSync(file, JSON.stringify(body));
+	assert.equal(verify({ root, head: g(root, 'rev-parse', 'HEAD'), run: m.run }).ok, true);
+});
+
+test('legacy .factory/qa/cases is read when the new folder has nothing for the key', () => {
+	const root = makeRepo();
+	assert.equal(casesDirFor(root, 'APP-1'), path.join('.factory', 'qa', 'cases'));
+	assert.deepEqual(
+		listCaseFiles(root, 'APP-1').map((c) => c.slug),
+		['arm', 'login'],
+	);
+	const m = start({ root, key: 'APP-1', profile: 'web' });
+	assert.deepEqual(Object.keys(m.caseDigests).sort(), ['.factory/qa/cases/APP-1/arm.yaml', '.factory/qa/cases/APP-1/login.yaml']);
+	assert.equal(casesDirFor(root, 'APP-9'), path.join('.devfactory', 'qa', 'cases'), 'neither has it: the new folder');
+	fs.mkdirSync(path.join(root, '.devfactory/qa/cases/APP-1'), { recursive: true });
+	assert.equal(casesDirFor(root, 'APP-1'), path.join('.factory', 'qa', 'cases'), 'an empty folder for the key is nothing');
+	fs.writeFileSync(path.join(root, '.devfactory/qa/cases/APP-1/new.yaml'), 'appId: n\n');
+	assert.equal(casesDirFor(root, 'APP-1'), path.join('.devfactory', 'qa', 'cases'));
+	assert.deepEqual(
+		listCaseFiles(root, 'APP-1').map((c) => c.slug),
+		['new'],
+	);
+});
+
+test('legacy cases stay committed work: a run does not start over uncommitted ones', () => {
+	const root = makeRepo();
+	fs.writeFileSync(path.join(root, '.factory/qa/cases/APP-1/late.yaml'), 'appId: x\n');
+	refused(() => start({ root, key: 'APP-1', profile: 'web' }), /not clean.*\.factory\/qa\/cases\/APP-1\/late\.yaml/);
+});
+
+test('the needs_own_case message names the folder under .devfactory', () => {
+	const root = makeRepo();
+	assert.throws(
+		() => start({ root, key: 'APP-9', profile: 'web' }),
+		(e) => e.code === 2 && /\.devfactory\/qa\/cases\/APP-9\//.test(e.message),
+	);
+});
+
+test('dirtyFiles ignores .devfactory/ but not .factory/qa/cases/', () => {
+	const root = makeRepo();
+	fs.mkdirSync(path.join(root, '.devfactory/qa/cases/APP-5'), { recursive: true });
+	fs.writeFileSync(path.join(root, '.devfactory/qa/cases/APP-5/a.yaml'), 'appId: x\n');
+	fs.writeFileSync(path.join(root, '.devfactory/config.json'), '{}\n');
+	assert.deepEqual(dirtyFiles(root), []);
+	fs.writeFileSync(path.join(root, '.factory/qa/cases/APP-1/legacy-new.yaml'), 'appId: x\n');
+	assert.deepEqual(dirtyFiles(root), ['.factory/qa/cases/APP-1/legacy-new.yaml']);
+});
+
+test('profiles come from .devfactory/qa.yaml before dev-factory.qa.yaml', () => {
+	const root = makeRepo();
+	const yaml = (glob) => `web:\n  uiGlobs:\n    - "${glob}"\n  nonUiGlobs:\n    - "**/*.md"\n`;
+	assert.ok(uiGlobsFor(root, 'web').includes('**/*.vue'), 'the plugin defaults');
+	fs.writeFileSync(path.join(root, 'dev-factory.qa.yaml'), yaml('**/*.legacy'));
+	assert.deepEqual(uiGlobsFor(root, 'web'), ['**/*.legacy']);
+	fs.mkdirSync(path.join(root, '.devfactory'), { recursive: true });
+	fs.writeFileSync(path.join(root, '.devfactory/qa.yaml'), yaml('**/*.fresh'));
+	assert.deepEqual(uiGlobsFor(root, 'web'), ['**/*.fresh']);
+	fs.rmSync(path.join(root, 'dev-factory.qa.yaml'));
+	assert.deepEqual(uiGlobsFor(root, 'web'), ['**/*.fresh']);
+});
+
+test('a run made before a merge of the base still verifies with its cases untouched', () => {
+	const { root } = scratchRepo();
+	g(root, 'update-ref', 'refs/remotes/origin/develop', 'HEAD');
+	g(root, 'checkout', '-qb', 'task/APP-3-x');
+	fs.writeFileSync(path.join(root, 'app.js'), 'a\n');
+	g(root, 'add', 'app.js');
+	g(root, 'commit', '-qm', 'work');
+	const m = start({ root, key: 'APP-3', profile: 'web' });
+	walkBoth(root, m);
+	done({ root, run: m.run });
+	g(root, 'checkout', '-q', 'develop');
+	fs.writeFileSync(path.join(root, 'other.js'), 'x\n');
+	g(root, 'add', 'other.js');
+	g(root, 'commit', '-qm', 'base moves');
+	g(root, 'update-ref', 'refs/remotes/origin/develop', 'HEAD');
+	g(root, 'checkout', '-q', 'task/APP-3-x');
+	g(root, 'merge', '-q', '--no-edit', 'develop');
+	const head = g(root, 'rev-parse', 'HEAD');
+	const res = verify({ root, head, key: 'APP-3', base: 'origin/develop' });
+	assert.equal(res.ok, true);
+	assert.ok(res.carriedFrom, 'carried over the merge');
+});
+
+test('start makes .devfactory ignore itself, so cases written there stay out of git', () => {
+	const { root } = scratchRepo();
+	assert.equal(fs.existsSync(path.join(root, '.devfactory/.gitignore')), false);
+	start({ root, key: 'APP-3', profile: 'web' });
+	assert.match(fs.readFileSync(path.join(root, '.devfactory/.gitignore'), 'utf8'), /^\*$/m);
+	assert.equal(g(root, 'status', '--porcelain'), '');
+});
+
+test('only regular files are cases: a link to a folder or a dangling link is skipped, not a crash', () => {
+	const { root, dir } = scratchRepo();
+	fs.mkdirSync(path.join(root, 'elsewhere'));
+	fs.symlinkSync(path.join(root, 'elsewhere'), path.join(dir, 'folder.yaml'));
+	fs.symlinkSync(path.join(root, 'missing'), path.join(dir, 'dangling.api.md'));
+	fs.mkdirSync(path.join(dir, 'sub.yaml'));
+	assert.deepEqual(
+		listCaseFiles(root, 'APP-3').map((c) => c.slug),
+		['arm', 'login'],
+	);
+	const m = start({ root, key: 'APP-3', profile: 'web' });
+	assert.deepEqual(Object.keys(m.caseDigests).sort(), ['.devfactory/qa/cases/APP-3/arm.yaml', '.devfactory/qa/cases/APP-3/login.yaml']);
+});
+
+test('a manifest with caseDigests but no casesDir is judged against the legacy folder, whatever the new one holds now', () => {
+	const root = makeRepo();
+	const m = start({ root, key: 'APP-1', profile: 'web' });
+	walkBoth(root, m, 31);
+	const file = path.join(root, '.dev-factory/qa', `run-${m.run}.json`);
+	const body = JSON.parse(fs.readFileSync(file, 'utf8'));
+	assert.equal(body.casesDir, '.factory/qa/cases');
+	delete body.casesDir;
+	fs.writeFileSync(file, JSON.stringify(body));
+	// a case of the same key appears in the new folder: the old run must not switch to it
+	fs.mkdirSync(path.join(root, '.devfactory/qa/cases/APP-1'), { recursive: true });
+	fs.writeFileSync(path.join(root, '.devfactory/qa/cases/APP-1/other.yaml'), 'appId: n\n');
+	assert.equal(done({ root, run: m.run }).verdict, 'pass');
+	const head = g(root, 'rev-parse', 'HEAD');
+	assert.equal(verify({ root, head, run: m.run }).ok, true);
+	fs.appendFileSync(path.join(root, '.factory/qa/cases/APP-1/login.yaml'), '# x\n');
+	refused(() => verify({ root, head, run: m.run }), /cases_changed: .*\.factory\/qa\/cases\/APP-1\/login\.yaml/);
 });

@@ -3,6 +3,7 @@
 // and against ordinary bypasses (wrappers, global options, substitutions, inline interpreters), not a
 // sandbox: an agent that writes and runs its own program is stopped by the real separation, which is that
 // the builder has no task-tracker or GitHub tools, the scheduler holds the credentials, and a person merges.
+import fs from 'node:fs';
 import path from 'node:path';
 import {
 	LIMITS,
@@ -21,6 +22,7 @@ import {
 	triesTakeover,
 } from './guard-paths.mjs';
 import { PLUGIN_ROOT } from './plugin-root.mjs';
+import { PROJECT_DIR, PROJECT_FILES } from './project-dir.mjs';
 
 // `node <plugin>/bin/qa.mjs <rest>`: the real script of this plugin (its own directory, quoted or not), or one vendored at
 // dev-factory/ in the working directory (`dev-factory/bin/qa.mjs`, with or without `./`). A file called qa.mjs that an agent wrote
@@ -616,6 +618,8 @@ function denyMachinePaths(seg, inv, ctx, st) {
 	let runState = false;
 	let runStateDir = false;
 	let ancestor = false;
+	// a link made in, into or from the owner's settings folder (hard or symbolic): a write through it lands outside the cases
+	let underProjectDir = cmd === 'ln' && hasProjectDir(st.cwd);
 	const writer = FILE_WRITERS.has(cmd);
 	// the message of a commit or of PR text is prose, not a path
 	const words = writesText(cmd, args) ? stripMessages(cmd, tokens) : tokens;
@@ -628,13 +632,15 @@ function denyMachinePaths(seg, inv, ctx, st) {
 			if (!(c.includes('/') || c.startsWith('.') || c.startsWith('~') || bareOk || /[*?[]/.test(c) || /dev-factory/i.test(c))) continue;
 			const abs = resolveWord(c, st.cwd);
 			if (!abs) continue;
-			if (runStatePlace(abs)) runState = true;
+			if (runStatePlace(abs, ctx.key)) runState = true;
 			if (runStateRoot(abs)) runStateDir = true;
+			if (cmd === 'ln' && hasProjectDir(abs)) underProjectDir = true;
 			let place = protectedPlace(abs, ctx);
 			if (!place && abs.startsWith('/') && !/[*?[]/.test(abs)) {
 				const real = realPath(abs);
 				place = protectedPlace(real, ctx);
-				if (!place && runStatePlace(real)) runState = true;
+				if (!place && runStatePlace(real, ctx.key)) runState = true;
+				if (cmd === 'ln' && hasProjectDir(real)) underProjectDir = true;
 			}
 			// the scheduler's own passes keep their state; only a factory agent is kept out of it
 			if (place === 'state' && !FACTORY_ROLES.has(ctx.role)) continue;
@@ -651,7 +657,10 @@ function denyMachinePaths(seg, inv, ctx, st) {
 	// run state and factory files: changed only through qa.mjs and the scheduler (reading them is fine)
 	if (runState && WRITE_LIKE.test(seg) && !qaBin('').test(seg) && !readsOnly(seg, cmd, args))
 		return 'factory files and run state are changed only through qa.mjs and the scheduler';
-	if (cmd === 'ln' && (hits.length || ancestor || runState || tokens.some((t) => /(^|\/)\.?(dev-factory|factory|claude|git)(\/|$)/i.test(t))))
+	if (
+		cmd === 'ln' &&
+		(hits.length || ancestor || runState || underProjectDir || tokens.some((t) => /(^|\/)\.?(dev-factory|factory|claude|git)(\/|$)/i.test(t)))
+	)
 		return 'a symlink into run state, a repository’s git folder or a machine folder is not made from a run';
 	if (!hits.length && !ancestor) return null;
 	if (readsOnly(seg, cmd, args)) return null;
@@ -738,11 +747,106 @@ export function hitsTrackerHost(inv, ctx = {}, vars = {}) {
 	return false;
 }
 
+// A run reads the person's settings; it does not change them. The factory's own commands that write the configuration
+// (`write-from-env` fills the owner's settings folder from DF_PROJECT_*), the user settings and secrets, the person's Claude servers
+// and plugins, or the repository's cloud setup run under a factory role only in a form written out as a read:
+// `node <plugin>/scripts/<script>`, `node <plugin>/scripts/cli.mjs <command>` or `dev-factory <command>` (the launcher, by any path,
+// also through bash), each with the subcommand the shell hands over after quotes are removed. A word built at run time ($cmd,
+// $(...), a brace list) is not a read. `mcp write-config` writes the pass's server file, which is the scheduler's step.
+const CONFIG_READS = new Set(['get', 'agent', 'validate']);
+const FACTORY_WRITERS = {
+	'config.mjs': {
+		cli: 'config',
+		reads: (a) => CONFIG_READS.has(a[0]),
+		what: `config writes (write-from-env) fill ${PROJECT_DIR}/ from the owner's environment; a factory run reads the configuration only (get, agent, validate)`,
+	},
+	'settings.mjs': {
+		cli: 'settings',
+		reads: (a) => a[0] === 'list',
+		what: "the person's settings and secrets are changed by the person: a factory run only lists them (settings list)",
+	},
+	'project-dir.mjs': {
+		cli: 'migrate',
+		prefix: ['migrate'],
+		reads: (a) => a[0] === 'migrate' && a.length === 1,
+		what: "moving a repository's settings into its project folder is the person's step: a factory run only shows the plan (migrate without --apply)",
+	},
+	'mcp.mjs': {
+		cli: 'mcp',
+		reads: (a) => ['list', 'recommend', 'doctor', 'secrets', 'allow'].includes(a[0]),
+		what: "the person's MCP servers are changed by the person or the scheduler: a factory run only reads them (mcp list, recommend, doctor, secrets, allow)",
+	},
+	'plugins.mjs': {
+		cli: 'plugins',
+		reads: (a) => a[0] === 'list',
+		what: "the person's plugins are changed by the person: a factory run only lists them (plugins list)",
+	},
+	'cloud.mjs': { cli: 'cloud', reads: () => false, what: "the repository's cloud setup is the person's: a factory run does not run cloud init" },
+	'install.sh': {
+		cli: 'install',
+		reads: (a) => a.every((w) => w !== '--apply' && !/[$`{]/.test(w)),
+		what: "installing changes the person's launchers, servers, plugins and scheduler: a factory run only shows the plan (install without --apply)",
+	},
+};
+const BY_CLI = new Map(Object.entries(FACTORY_WRITERS).map(([script, w]) => [w.cli, script]));
+const RUNTIMES = new Set(['node', 'nodejs', 'bash', 'sh', 'zsh', 'dash', 'ksh']);
+
+// Whether a script named like one of the factory's is the factory's: in the plugin's own folder, or in a folder named `scripts` of a
+// root that holds bin/qa.mjs or a plugin manifest (a vendored or copied plugin). A repository's own config.mjs, in a scripts folder
+// of a root that is neither, or in any other folder, is not. A path that cannot be resolved, or a root that is not on disk, cannot be
+// told apart from the plugin, so it counts as the plugin's.
+function factoryScript(word, st) {
+	const resolved = candidates(word, st.vars)[0] ?? word;
+	if (/[$`]/.test(resolved)) return true;
+	const abs = path.posix.resolve(st.cwd, resolved);
+	if (abs.toLowerCase().startsWith(`${PLUGIN_ROOT.toLowerCase()}/`)) return true;
+	const dir = path.posix.dirname(abs);
+	if (path.posix.basename(dir).toLowerCase() !== 'scripts') return false;
+	const root = path.posix.dirname(dir);
+	if (!fs.existsSync(root)) return true;
+	return fs.existsSync(path.join(root, 'bin', 'qa.mjs')) || fs.existsSync(path.join(root, '.claude-plugin', 'plugin.json'));
+}
+
+function denyFactoryWrite(inv, st) {
+	const { cmd, args } = inv;
+	let script;
+	let rest;
+	let built = false;
+	const viaCli = (words) => {
+		// a command word built at run time ($x, "$X", $(...), a backtick, a brace list) could be any of them
+		if (/[$`{]/.test(words[0] ?? '')) built = true;
+		const s = BY_CLI.get(words[0]);
+		if (!s) return;
+		script = s;
+		rest = [...(FACTORY_WRITERS[s].prefix ?? []), ...words.slice(1)];
+	};
+	if (cmd.toLowerCase() === 'dev-factory') viaCli(args);
+	else if (RUNTIMES.has(cmd)) {
+		const i = args.findIndex((a) => {
+			const n = base(a).toLowerCase();
+			return n === 'dev-factory' || n === 'cli.mjs' || Object.hasOwn(FACTORY_WRITERS, n);
+		});
+		if (i < 0) return null;
+		const name = base(args[i]).toLowerCase();
+		if (name === 'dev-factory') viaCli(args.slice(i + 1));
+		else if (!factoryScript(args[i], st)) return null;
+		else if (name === 'cli.mjs') viaCli(args.slice(i + 1));
+		else {
+			script = name;
+			rest = args.slice(i + 1);
+		}
+	}
+	if (built)
+		return "the factory's command word is built at run time, so it cannot be told from a settings, servers or plugins writer; write it out";
+	if (!script || FACTORY_WRITERS[script].reads(rest)) return null;
+	return FACTORY_WRITERS[script].what;
+}
+
 const TAKEOVER_REFUSAL =
 	'dev-factory guard: takeover is switched on by the machine owner (DF_TAKEOVER in the environment the scheduler starts with), not by an agent';
 const UNJUDGEABLE = (why) => ({ deny: true, reason: `dev-factory guard: this command cannot be judged (${why}); split it into smaller commands` });
 
-// ctx: branch, role, containerOnly, service, noAttribution, takeover, plus for the path rules cwd (the directory the command
+// ctx: branch, key (the ticket, which names the one folder of scratch QA cases in .devfactory/ the run may write), role, containerOnly, service, noAttribution, takeover, plus for the path rules cwd (the directory the command
 // starts in), home, stateDir and env (default: the process's), and trackerHosts (hosts beyond the built-in ones).
 export function evaluate(command, ctx = {}) {
 	try {
@@ -790,6 +894,10 @@ function judge(command, ctx) {
 			ctx.role,
 		);
 		if (common) return deny(common);
+		if (FACTORY_ROLES.has(ctx.role)) {
+			const config = denyFactoryWrite(inv, st);
+			if (config) return deny(config);
+		}
 		const machine = denyMachinePaths(seg, inv, ctx, st);
 		if (machine) return deny(machine);
 		if (cmd === 'cd' || cmd === 'pushd') {
@@ -857,6 +965,10 @@ const normalize = (p, root) => {
 	return abs.startsWith(`${root}/`) ? abs.slice(root.length + 1) : abs;
 };
 
+const hasProjectDir = (rel) => rel.toLowerCase().split('/').includes(PROJECT_DIR);
+// A builder's scratch QA cases for its own ticket, in the folder at the top of the worktree.
+const inOwnProjectCases = (rel, key) => !!key && !rel.split('/').includes('..') && rel.startsWith(`${PROJECT_FILES.cases}/${key}/`);
+
 // Edit, Write and MultiEdit. Vocabulary applies to everyone editing dev-factory/; path protection only inside a factory run.
 // ctx (home, stateDir, env) overrides where the machine's own folders are, for tests.
 export function evaluateEdit({ filePath, text = '', root, active = false, run = null, ...ctx }) {
@@ -895,6 +1007,13 @@ export function evaluateEdit({ filePath, text = '', root, active = false, run = 
 			deny: true,
 			reason: `dev-factory guard: ${rel} sets what the factory allows a run to do; the owner changes it, a run does not`,
 		};
+	// The owner's settings folder, wherever it is and however its name is cased, on the path as written and as it resolves. The one
+	// way in is a builder's scratch cases for its own ticket, and then only when the resolved path is that folder too.
+	if (hasProjectDir(rel) || hasProjectDir(relReal)) {
+		const builds = run?.role === 'builder';
+		if (!(builds && inOwnProjectCases(rel, run?.key) && (relReal === rel || inOwnProjectCases(relReal, run?.key))))
+			return { deny: true, reason: `dev-factory guard: ${PROJECT_DIR}/ holds the owner's settings; a factory run does not edit it (${rel})` };
+	}
 	if (SENTINEL.test(rel) && relReal === rel) return { deny: false };
 	if (run?.role === 'reviewer' || run?.role === 'debugger') return { deny: true, reason: `dev-factory guard: ${run.role}s do not edit files` };
 	if (run?.role === 'promoter') {

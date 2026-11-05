@@ -1,3 +1,4 @@
+import './isolate-state.mjs';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import fs from 'node:fs';
@@ -146,6 +147,47 @@ test('the hook entry sees connector tools, and the setting is validated', async 
 	assert.deepEqual(load().telemetry.allowedRoles, []);
 	assert.deepEqual(validate(merge(load(), { telemetry: { allowedRoles: ['debugger'] } })), []);
 	assert.match(validate(merge(load(), { telemetry: { allowedRoles: ['wizard'] } })).join('\n'), /telemetry\.allowedRoles/);
+});
+
+test('GitHub is read-only inside a run, whichever server carries it, and free outside one', () => {
+	const gh = (toolName, inRun = true) => evaluateMcp({ toolName, toolInput: {}, config, inRun });
+	for (const t of [
+		'mcp__github__merge_pull_request',
+		'mcp__github__create_or_update_file',
+		'mcp__claude_ai_GitHub__push_files',
+		'mcp__plugin_dev-factory_github__create_issue',
+		'mcp__github__add_issue_comment',
+		'mcp__github__get_or_create_branch',
+		'mcp__github__search_and_replace_file',
+		'mcp__github__list_and_delete_branches',
+		'mcp__github__getOrCreateBranch',
+	]) {
+		const v = gh(t);
+		assert.equal(v.deny, true, t);
+		assert.match(v.reason, /a run reaches GitHub through the guarded gh CLI; the GitHub MCP server is read-only here/, t);
+	}
+	for (const t of [
+		'mcp__github__get_file_contents',
+		'mcp__github__list_pull_requests',
+		'mcp__github__search_code',
+		'mcp__github__pull_request_read',
+		'mcp__claude_ai_GitHub__get_me',
+		'mcp__github__list_workflow_runs',
+		'mcp__github__get_job_logs',
+		'mcp__github__get_pull_request_diff',
+	])
+		assert.equal(gh(t).deny, false, t);
+	assert.equal(gh('mcp__github__merge_pull_request', false).deny, false, 'outside a run the server is the person’s');
+	assert.equal(gh('mcp__github__merge_pull_request', null).deny, false, 'no run known');
+	assert.equal(gh('mcp__githubx__merge_pull_request').deny, false, 'another server');
+});
+
+test('the hook matcher also sees GitHub tools', async () => {
+	const { default: hooks } = await import('../hooks/hooks.json', { with: { type: 'json' } });
+	const matcher = new RegExp(`^(?:${hooks.hooks.PreToolUse.find((h) => /mcp-guard/.test(h.hooks[0].command)).matcher})$`);
+	for (const n of ['mcp__github__merge_pull_request', 'mcp__claude_ai_GitHub__push_files', 'mcp__plugin_dev-factory_github__x'])
+		assert.ok(matcher.test(n), n);
+	assert.ok(!matcher.test('mcp__githubx__merge_pull_request'));
 });
 
 // ---- redaction ----

@@ -1,3 +1,4 @@
+import './isolate-state.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -7,11 +8,12 @@ import { COMMANDS } from '../scripts/cli.mjs';
 import { anchors } from './patterns.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
+// Design and plan documents describe commands before they exist, so they are not held to the real command list.
 const docs = () =>
 	execFileSync('git', ['-C', ROOT, 'ls-files', '-z', '*.md'], { encoding: 'utf8' })
 		.split('\0')
 		.filter(Boolean)
-		.filter((f) => f !== 'docs/fork-improvements-to-port.md' && fs.existsSync(path.join(ROOT, f)));
+		.filter((f) => f !== 'docs/fork-improvements-to-port.md' && !f.startsWith('docs/superpowers/') && fs.existsSync(path.join(ROOT, f)));
 const text = (f) => fs.readFileSync(path.join(ROOT, f), 'utf8');
 // markdown without fenced code, so a shell example is not read as prose
 const noFences = (t) => t.replace(/^```[\s\S]*?^```/gm, '');

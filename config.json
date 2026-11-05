@@ -250,6 +250,12 @@
 			"security": ["**/auth*/**", "**/*secret*", "**/*token*"]
 		}
 	},
+	"mcp": {
+		"servers": {}
+	},
+	"plugins": {
+		"enabled": {}
+	},
 	"sandbox": {
 		"enabled": null,
 		"extraDomains": []

@@ -1,3 +1,4 @@
+import './isolate-state.mjs';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -46,8 +47,13 @@ exit 0
 		{ mode: 0o755 },
 	);
 	// claude and plutil are stubs too: install.sh must not reach the network or touch the real plugin set
+	// (claude lists no plugin as installed: plugins.mjs reads `plugin list --json`)
 	for (const n of ['claude', 'plutil'])
-		fs.writeFileSync(path.join(bin, n), '#!/bin/sh\necho "$0 $@" >> "$HOME/calls.log"\nexit 0\n', { mode: 0o755 });
+		fs.writeFileSync(
+			path.join(bin, n),
+			`#!/bin/sh\necho "$0 $@" >> "$HOME/calls.log"\ncase "$*" in "plugin list --json"*) echo '[]' ;; esac\nexit 0\n`,
+			{ mode: 0o755 },
+		);
 	const env = {
 		...process.env,
 		HOME: home,
@@ -340,7 +346,11 @@ test('install: optional plugins are installed by default, DF_INSTALL_OPTIONAL=0 
 	);
 	// a claude that cannot install
 	const h = fixture();
-	fs.writeFileSync(path.join(h.home, 'bin/claude'), '#!/bin/sh\ncase "$*" in "plugin install"*) exit 1 ;; esac\nexit 0\n', { mode: 0o755 });
+	fs.writeFileSync(
+		path.join(h.home, 'bin/claude'),
+		'#!/bin/sh\ncase "$*" in "plugin install"*) exit 1 ;; "plugin list --json"*) echo "[]" ;; esac\nexit 0\n',
+		{ mode: 0o755 },
+	);
 	r = spawnSync('bash', [path.join(ROOT, 'scripts/install.sh'), '--apply'], { encoding: 'utf8', env: h.env, cwd: h.repo });
 	assert.equal(r.status, 1);
 	assert.match(r.stderr, /FAILED: claude plugin install superpowers@/);
@@ -348,6 +358,70 @@ test('install: optional plugins are installed by default, DF_INSTALL_OPTIONAL=0 
 	// ... and the dry run never installs, so it never fails on it
 	r = spawnSync('bash', [path.join(ROOT, 'scripts/install.sh')], { encoding: 'utf8', env: h.env, cwd: h.repo });
 	assert.equal(r.status, 0, r.stderr);
+});
+
+test('install installs the plugins at user scope by default, and at local scope for one the repository turns on for itself', () => {
+	const f = fixture();
+	fs.mkdirSync(path.join(f.repo, '.devfactory'));
+	fs.writeFileSync(
+		path.join(f.repo, '.devfactory/config.json'),
+		JSON.stringify({ plugins: { enabled: { 'frontend-design@claude-plugins-official': true } } }),
+	);
+	const r = spawnSync('bash', [path.join(ROOT, 'scripts/install.sh'), '--apply'], { encoding: 'utf8', env: f.env, cwd: f.repo });
+	assert.equal(r.status, 0, r.stderr);
+	const installs = f
+		.calls()
+		.split('\n')
+		.filter((l) => /claude plugin install/.test(l));
+	assert.ok(
+		installs.some((l) => /superpowers@\S+ --scope user$/.test(l)),
+		installs.join('\n'),
+	);
+	assert.ok(
+		installs.some((l) => /frontend-design@\S+ --scope local$/.test(l)),
+		installs.join('\n'),
+	);
+});
+
+test('install --apply syncs the MCP servers after it writes the launcher, so a jira server saved before is added; the dry run only plans', () => {
+	const f = fixture();
+	fs.mkdirSync(path.join(f.home, 'state'), { recursive: true });
+	fs.writeFileSync(path.join(f.home, 'state/config.json'), JSON.stringify({ mcp: { servers: { jira: true } } }));
+	const adds = () =>
+		f
+			.calls()
+			.split('\n')
+			.filter((l) => /claude mcp add-json/.test(l));
+	let r = spawnSync('bash', [path.join(ROOT, 'scripts/install.sh')], { encoding: 'utf8', env: f.env, cwd: f.repo });
+	assert.equal(r.status, 0, r.stderr);
+	assert.match(r.stdout, /^add\s+jira\s+\(all projects\)$/m);
+	assert.deepEqual(adds(), [], 'a dry run adds nothing');
+	r = spawnSync('bash', [path.join(ROOT, 'scripts/install.sh'), '--apply'], { encoding: 'utf8', env: f.env, cwd: f.repo });
+	assert.equal(r.status, 0, r.stderr);
+	const jira = adds().find((l) => / -s user jira /.test(l));
+	assert.ok(jira, adds().join('\n'));
+	assert.ok(jira.includes(path.join(f.home, 'state/bin/dev-factory')), 'through the launcher install just wrote');
+	assert.deepEqual(JSON.parse(fs.readFileSync(path.join(f.home, 'state/managed.json'), 'utf8')).mcp.user.sort(), ['jira', 'playwright']);
+});
+
+test('install outside a repository is a machine-only setup: launcher, env file and plugins, no scheduler', () => {
+	const f = fixture();
+	const cwd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'df-install-nogit-')));
+	const env = { ...f.env };
+	delete env.DF_REPO;
+	let r = spawnSync('bash', [path.join(ROOT, 'scripts/install.sh')], { encoding: 'utf8', env, cwd });
+	assert.equal(r.status, 0, r.stderr);
+	assert.match(r.stdout, /no repository here: machine setup only \(launcher, env file, plugins\); run it in a repository to add its scheduler/);
+	assert.match(r.stdout, /install\s+superpowers@claude-plugins-official/);
+	assert.ok(!/\.plist/.test(r.stdout), 'no scheduler job is rendered');
+	assert.equal(fs.existsSync(path.join(f.home, 'state/bin/dev-factory')), false, 'a dry run writes nothing');
+	r = spawnSync('bash', [path.join(ROOT, 'scripts/install.sh'), '--apply'], { encoding: 'utf8', env, cwd });
+	assert.equal(r.status, 0, r.stderr);
+	assert.ok(fs.existsSync(path.join(f.home, 'state/bin/dev-factory')), 'the launcher was written');
+	assert.ok(fs.existsSync(path.join(f.home, 'state/.env.local')), 'the env file was created');
+	assert.ok(/claude plugin install superpowers@\S+ --scope user/.test(f.calls()), f.calls());
+	assert.ok(!/launchctl|\.plist/.test(f.calls()), 'no scheduler step ran');
+	assert.equal(fs.existsSync(path.join(f.home, 'Library/LaunchAgents')), false);
 });
 
 // ---- a pass that could not reach a tool keeps its frontier ----
@@ -367,6 +441,7 @@ case "$1 $2" in
   "plugin marketplace") exit 0 ;;
 esac
 case "$1" in --version) echo "9.9.9"; exit 0 ;; esac
+printf '%s\\n' "$@" > "${path.join(f.home, 'claude-args')}"
 cat "${out}"
 `,
 		{ mode: 0o755 },
@@ -416,6 +491,85 @@ test('a pass that ended with "tick: aborted" discards the frontier it was about 
 	assert.equal(typeof runs.at(-1).wallMs, 'number');
 });
 
+// ---- the pass starts from the generated MCP config ----
+
+const RESULT = { result: 'tick: claimed=0 resumed=0 shipped=0 blocked=0 merged=0 skipped=0', is_error: false, subtype: 'success' };
+
+// Runs a pass script on a passFixture and returns the arguments the stub claude was started with (the last call) and the pass log.
+function runPass(f, script = 'tick') {
+	const listing = path.join(f.home, 'listing.txt');
+	fs.writeFileSync(listing, '');
+	f.env.DF_MCP_LISTING = listing;
+	if (script === 'tick') f.tick();
+	else spawnSync('bash', [path.join(ROOT, 'scripts', `${script}.sh`)], { encoding: 'utf8', env: f.env, cwd: f.repo, timeout: 90000 });
+	const argsFile = path.join(f.home, 'claude-args');
+	return {
+		args: fs.existsSync(argsFile) ? fs.readFileSync(argsFile, 'utf8').trim().split('\n') : [],
+		log: fs.readFileSync(f.env.DF_LOG, 'utf8'),
+	};
+}
+
+for (const script of ['tick', 'improve']) {
+	test(`${script}.sh starts claude from the generated .devfactory/mcp.json, strictly when nothing else is wanted`, () => {
+		const f = passFixture(RESULT);
+		f.env.DF_LOG = path.join(f.home, `${script}.log`);
+		const { args, log } = runPass(f, script);
+		const file = path.join(f.repo, '.devfactory', 'mcp.json');
+		const at = args.indexOf('--mcp-config');
+		assert.ok(at > 0, `no --mcp-config in: ${args.join(' ')}\n${log}`);
+		assert.equal(args[at + 1], file);
+		assert.ok(args.includes('--strict-mcp-config'), args.join(' '));
+		assert.ok(Object.keys(JSON.parse(fs.readFileSync(file, 'utf8')).mcpServers).includes('playwright'));
+	});
+
+	test(`${script}.sh is not strict, and logs why, while a legacy .mcp.json holds other servers`, () => {
+		const f = passFixture(RESULT);
+		f.env.DF_LOG = path.join(f.home, `${script}.log`);
+		fs.writeFileSync(path.join(f.repo, '.mcp.json'), JSON.stringify({ mcpServers: { mine: { command: 'x' } } }));
+		const { args, log } = runPass(f, script);
+		assert.ok(args.includes('--mcp-config'), args.join(' '));
+		assert.ok(!args.includes('--strict-mcp-config'), args.join(' '));
+		assert.match(log, /note: mine comes from \.mcp\.json/);
+	});
+
+	test(`${script}.sh keeps its log clean when mktemp fails, and still falls back`, () => {
+		const f = passFixture(RESULT);
+		f.env.DF_LOG = path.join(f.home, `${script}.log`);
+		fs.writeFileSync(path.join(f.repo, '.mcp.json'), JSON.stringify({ mcpServers: { mine: { command: 'x' } } }));
+		fs.writeFileSync(path.join(f.repo, '.devfactory'), 'in the way');
+		f.env.TMPDIR = path.join(f.home, 'no-such-folder');
+		const { args, log } = runPass(f, script);
+		assert.ok(args.includes('--mcp-config'), args.join(' '));
+		assert.match(log, /could not write the MCP config; using \.mcp\.json when present/);
+		assert.doesNotMatch(log, /mktemp/);
+	});
+
+	test(`${script}.sh falls back to the legacy .mcp.json and says why when the config cannot be written`, () => {
+		const f = passFixture(RESULT);
+		f.env.DF_LOG = path.join(f.home, `${script}.log`);
+		fs.writeFileSync(path.join(f.repo, '.mcp.json'), JSON.stringify({ mcpServers: { mine: { command: 'x' } } }));
+		// a file where the folder should be
+		fs.writeFileSync(path.join(f.repo, '.devfactory'), 'in the way');
+		const { args, log } = runPass(f, script);
+		assert.deepEqual(args.slice(args.indexOf('--mcp-config'), args.indexOf('--mcp-config') + 2), [
+			'--mcp-config',
+			path.join(f.repo, '.mcp.json'),
+		]);
+		assert.ok(!args.includes('--strict-mcp-config'));
+		assert.match(log, /could not write the MCP config/);
+		assert.match(log, new RegExp(script === 'tick' ? 'pass end rc=0' : 'improve end rc=0'));
+	});
+}
+
+test('the pass scripts take their MCP arguments from write-config and never hard-code --strict-mcp-config', () => {
+	for (const f of ['tick.sh', 'improve.sh', 'runtime.sh']) {
+		const text = fs.readFileSync(path.join(ROOT, 'scripts', f), 'utf8');
+		assert.doesNotMatch(text, /--strict-mcp-config/, f);
+	}
+	for (const f of ['tick.sh', 'improve.sh']) assert.match(fs.readFileSync(path.join(ROOT, 'scripts', f), 'utf8'), /df_mcp_args/, f);
+	assert.match(fs.readFileSync(path.join(ROOT, 'scripts/runtime.sh'), 'utf8'), /mcp\.mjs" write-config/);
+});
+
 test('a failed preflight is recorded once, shown by status, and cleared by a pass that gets through', () => {
 	const f = passFixture({ result: 'tick: claimed=0', is_error: false });
 	// make the doctor fail: no git identity
@@ -432,4 +586,88 @@ test('a failed preflight is recorded once, shown by status, and cleared by a pas
 	spawnSync('git', ['config', 'user.email', 'dev@example.com'], { cwd: f.repo });
 	f.tick();
 	assert.equal(fs.existsSync(path.join(f.state, 'preflight-alert.json')), false, 'cleared');
+});
+
+// ---- a state folder of its own per repository (install --isolate) ----
+
+const slugOf = (f) =>
+	spawnSync('bash', ['-c', `DIR="${ROOT}"; . "${ROOT}/scripts/runtime.sh"; df_slug "${f.repo}"`], { encoding: 'utf8', env: f.env }).stdout.trim();
+const installSh = (f, ...args) => spawnSync('bash', [path.join(ROOT, 'scripts/install.sh'), ...args], { encoding: 'utf8', env: f.env, cwd: f.repo });
+const plistOf = (f, job) => fs.readFileSync(path.join(f.agents, `com.dev-factory.${slugOf(f)}.${job}.plist`), 'utf8');
+
+test('install --isolate gives the repository a state folder of its own and shares the secrets and the launcher', () => {
+	const f = fixture();
+	const machine = path.join(f.home, 'state');
+	const own = path.join(machine, slugOf(f));
+	const plan = installSh(f, '--isolate');
+	assert.equal(plan.status, 0, plan.stderr);
+	assert.match(plan.stdout, /plan .*state folder of its own/);
+	assert.equal(fs.existsSync(own), false, 'a dry run writes nothing');
+	const r = installSh(f, '--apply', '--isolate');
+	assert.equal(r.status, 0, r.stderr);
+	for (const name of ['.env.local', 'bin', 'plugin-dir'])
+		assert.equal(fs.realpathSync(path.join(own, name)), fs.realpathSync(path.join(machine, name)), `${name} is the machine's, not a copy`);
+	for (const job of ['tick', 'improve']) {
+		const plist = plistOf(f, job);
+		assert.match(plist, new RegExp(`<key>DF_STATE_DIR</key><string>${own}</string>`), `${job} runs on its own state`);
+		assert.match(plist, new RegExp(`<key>WorkingDirectory</key><string>${own}</string>`));
+		assert.match(plist, new RegExp(`<string>${machine}/bin/dev-factory</string>`), 'the launcher stays the machine one');
+	}
+	// installing again without the flag keeps the repository isolated rather than moving its jobs back
+	assert.equal(installSh(f, '--apply').status, 0);
+	assert.match(plistOf(f, 'tick'), new RegExp(`<key>DF_STATE_DIR</key><string>${own}</string>`));
+});
+
+test("an isolated repository's jobs read the machine's settings for all projects and managed.json, not copies in their own folder", () => {
+	const f = fixture();
+	const machine = path.join(f.home, 'state');
+	const own = path.join(machine, slugOf(f));
+	assert.equal(installSh(f, '--apply', '--isolate').status, 0);
+	fs.writeFileSync(path.join(machine, 'config.json'), JSON.stringify({ scheduler: { intervalMinutes: 23 } }));
+	// the environment the rendered job gives a pass
+	const env = { ...f.env, DF_STATE_DIR: own, DF_SCHEDULER_INTERVAL_MINUTES: '' };
+	const get = spawnSync('node', [path.join(ROOT, 'scripts/config.mjs'), 'get', 'scheduler.intervalMinutes'], {
+		encoding: 'utf8',
+		env,
+		cwd: f.repo,
+	});
+	assert.equal(get.stdout.trim(), '23', get.stderr);
+	const where = spawnSync(
+		'node',
+		['--input-type=module', '-e', `import { managedFile } from '${ROOT}/scripts/mcp-scope.mjs'; console.log(managedFile());`],
+		{ encoding: 'utf8', env },
+	);
+	assert.equal(where.stdout.trim(), path.join(machine, 'managed.json'), where.stderr);
+	for (const name of ['config.json', 'managed.json']) assert.equal(fs.existsSync(path.join(own, name)), false, `no ${name} of its own`);
+});
+
+test('install --isolate outside a repository is a usage error, and writes nothing', () => {
+	const f = fixture();
+	const cwd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'df-install-nogit-')));
+	const env = { ...f.env };
+	delete env.DF_REPO;
+	const r = spawnSync('bash', [path.join(ROOT, 'scripts/install.sh'), '--apply', '--isolate'], { encoding: 'utf8', env, cwd });
+	assert.equal(r.status, 3);
+	assert.match(r.stderr, /install --isolate gives one repository a state folder of its own: run it from inside that repository/);
+	assert.equal(fs.existsSync(path.join(f.home, 'state')), false);
+});
+
+test('install without --isolate keeps every job on the machine state folder', () => {
+	const f = fixture();
+	assert.equal(installSh(f, '--apply').status, 0);
+	assert.match(plistOf(f, 'tick'), new RegExp(`<key>DF_STATE_DIR</key><string>${path.join(f.home, 'state')}</string>`));
+	assert.equal(fs.existsSync(path.join(f.home, 'state', slugOf(f))), false);
+});
+
+test('the pause switch follows the repository to its own state folder', () => {
+	const f = fixture();
+	const slug = f.install();
+	const env = { ...f.env };
+	delete env.DF_STATE_DIR;
+	const own = path.join(f.home, '.dev-factory', slug);
+	fs.mkdirSync(own, { recursive: true });
+	const off = spawnSync('bash', [SCRIPT, 'off'], { encoding: 'utf8', env, cwd: f.repo });
+	assert.equal(off.status, 0, off.stderr);
+	assert.ok(fs.existsSync(path.join(own, `paused.${slug}.tick`)), 'the scheduled pass reads its own folder, so the switch is set there');
+	assert.equal(fs.existsSync(path.join(f.home, '.dev-factory', `paused.${slug}.tick`)), false);
 });
