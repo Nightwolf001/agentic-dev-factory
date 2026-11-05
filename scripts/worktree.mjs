@@ -104,14 +104,16 @@ function exclude(worktree, names = ['.dev-factory/']) {
 // tracks is already there and is left alone. The ones in .devfactory/ need no info/exclude line: that folder ignores itself.
 // The old places stay in the list for the release in which a repository moves its files.
 export const LOCAL_SETTINGS = [PROJECT_FILES.config, PROJECT_FILES.qa, LEGACY_FILES.config, LEGACY_FILES.qa];
+// Whether or not anything is carried, the worktree gets its `.devfactory/` with the .gitignore that keeps it out of git: a
+// builder's scratch QA cases are written there, and the edit guard does not let it make that file itself.
 function carrySettings(repo, dest) {
+	ensureProjectDir(dest);
 	const copied = [];
 	const excluded = [];
 	for (const f of LOCAL_SETTINGS) {
 		const from = path.join(repo, f);
 		if (!fs.existsSync(from) || !fs.statSync(from).isFile() || gitOk(dest, 'ls-files', '--error-unmatch', f)) continue;
 		const inFolder = f.startsWith(`${PROJECT_DIR}/`);
-		if (inFolder) ensureProjectDir(dest);
 		fs.copyFileSync(from, path.join(dest, f));
 		copied.push(f);
 		if (!inFolder) excluded.push(f);

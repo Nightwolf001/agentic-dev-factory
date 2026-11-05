@@ -36,7 +36,7 @@ import * as debugLib from '../scripts/debug-lib.mjs';
 import { load as loadConfig } from '../scripts/config.mjs';
 import { globToRegExp, readSealed, stillSealed } from '../scripts/env-build-files.mjs';
 import { isMain } from '../scripts/is-main.mjs';
-import { LEGACY_FILES, PROJECT_FILES } from '../scripts/project-dir.mjs';
+import { LEGACY_FILES, PROJECT_FILES, ensureProjectDir } from '../scripts/project-dir.mjs';
 import { ProbeError, probe as sendProbe } from '../scripts/probe-lib.mjs';
 import { redactText } from '../scripts/scrub-lib.mjs';
 import { learningRequired, lintLearnings, parseLearnings } from '../scripts/learnings-lib.mjs';
@@ -180,7 +180,7 @@ function caseFilesIn(dir) {
 		return [];
 	}
 	return names
-		.filter((d) => !d.isDirectory())
+		.filter((d) => d.isFile())
 		.map((d) => {
 			const f = d.name;
 			const hit = CASE_FILE.find(([, re]) => re.test(f));
@@ -219,9 +219,11 @@ function casesChanged(root, key, recorded, casesDir) {
 }
 
 // A run cannot outlive its cases. A manifest written before digests were recorded has none and is accepted as it always was.
+// One with digests but no folder name was made when the cases were still committed under the legacy folder; judging it against
+// whatever folder holds cases now could switch it to another set.
 function checkCases(root, m) {
 	if (!m.caseDigests) return;
-	const changed = casesChanged(root, m.key, m.caseDigests, m.casesDir ?? casesDirFor(root, m.key));
+	const changed = casesChanged(root, m.key, m.caseDigests, m.casesDir ?? LEGACY_CASES_DIR);
 	if (changed.length)
 		throw new QaError(
 			`cases_changed: ${changed.slice(0, 5).join(', ')}${changed.length > 5 ? `, and ${changed.length - 5} more` : ''} (the cases are not what this run walked; start a new run)`,
@@ -246,6 +248,7 @@ export function start({ root, key, profile }) {
 	if (!key || !profile) throw new QaError('start needs --key and --profile');
 	const dirty = dirtyFiles(root);
 	if (dirty.length) throw new QaError(`working tree is not clean (commit first): ${dirty.slice(0, 5).join(', ')}`);
+	ensureProjectDir(root); // the folder the cases are written in keeps itself out of git, whoever made it
 	const casesDir = casesDirFor(root, key);
 	const cases = listCaseFiles(root, key);
 	if (!cases.length) throw new QaError(`needs_own_case: no case authored under ${PROJECT_FILES.cases}/${key}/`, 2);

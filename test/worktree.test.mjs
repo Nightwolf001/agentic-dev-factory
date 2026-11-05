@@ -165,10 +165,29 @@ test('carrySettings copies .devfactory/config.json and qa.yaml into a new worktr
 	assert.doesNotMatch(exclude, /\.devfactory/, 'the folder needs no info/exclude line');
 });
 
-test('no .devfactory folder is made in a worktree when the checkout has no settings in it', () => {
+test('a worktree of a checkout with no settings files still gets a .devfactory that ignores itself, so scratch QA cases cannot be committed', () => {
 	const t = ticket();
 	assert.deepEqual(t.add().copied, []);
-	assert.equal(fs.existsSync(path.join(t.dest, '.devfactory')), false);
+	assert.match(fs.readFileSync(path.join(t.dest, '.devfactory', '.gitignore'), 'utf8'), /^\*$/m);
+	const cases = path.join(t.dest, '.devfactory', 'qa', 'cases', 'APP-1');
+	fs.mkdirSync(cases, { recursive: true });
+	fs.writeFileSync(path.join(cases, 'login.yaml'), 'appId: x\n');
+	assert.equal(g(t.dest, 'status', '--porcelain'), '', 'a case written there is not seen by git');
+	g(t.dest, 'add', '-A');
+	assert.equal(g(t.dest, 'status', '--porcelain'), '', 'and git add -A does not stage it');
+});
+
+test('attach, on a fresh checkout of the branch and on an existing worktree, also makes .devfactory ignore itself', () => {
+	const t = ticket();
+	t.add();
+	t.commit();
+	g(t.dest, 'push', '-q', '-u', 'origin', t.branch);
+	fs.rmSync(path.join(t.dest, '.devfactory'), { recursive: true, force: true });
+	attachWorktree({ repo: t.clone, branch: t.branch, dest: t.dest });
+	assert.ok(fs.existsSync(path.join(t.dest, '.devfactory', '.gitignore')), 'existing worktree');
+	fs.rmSync(t.dest, { recursive: true, force: true });
+	attachWorktree({ repo: t.clone, branch: t.branch, dest: t.dest });
+	assert.ok(fs.existsSync(path.join(t.dest, '.devfactory', '.gitignore')), 'new worktree');
 });
 
 test('an old-place file and a .devfactory file are both carried, so a repository that has not migrated yet still runs on its settings', () => {

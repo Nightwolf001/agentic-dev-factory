@@ -1404,3 +1404,44 @@ test('a run made before a merge of the base still verifies with its cases untouc
 	assert.equal(res.ok, true);
 	assert.ok(res.carriedFrom, 'carried over the merge');
 });
+
+test('start makes .devfactory ignore itself, so cases written there stay out of git', () => {
+	const { root } = scratchRepo();
+	assert.equal(fs.existsSync(path.join(root, '.devfactory/.gitignore')), false);
+	start({ root, key: 'APP-3', profile: 'web' });
+	assert.match(fs.readFileSync(path.join(root, '.devfactory/.gitignore'), 'utf8'), /^\*$/m);
+	assert.equal(g(root, 'status', '--porcelain'), '');
+});
+
+test('only regular files are cases: a link to a folder or a dangling link is skipped, not a crash', () => {
+	const { root, dir } = scratchRepo();
+	fs.mkdirSync(path.join(root, 'elsewhere'));
+	fs.symlinkSync(path.join(root, 'elsewhere'), path.join(dir, 'folder.yaml'));
+	fs.symlinkSync(path.join(root, 'missing'), path.join(dir, 'dangling.api.md'));
+	fs.mkdirSync(path.join(dir, 'sub.yaml'));
+	assert.deepEqual(
+		listCaseFiles(root, 'APP-3').map((c) => c.slug),
+		['arm', 'login'],
+	);
+	const m = start({ root, key: 'APP-3', profile: 'web' });
+	assert.deepEqual(Object.keys(m.caseDigests).sort(), ['.devfactory/qa/cases/APP-3/arm.yaml', '.devfactory/qa/cases/APP-3/login.yaml']);
+});
+
+test('a manifest with caseDigests but no casesDir is judged against the legacy folder, whatever the new one holds now', () => {
+	const root = makeRepo();
+	const m = start({ root, key: 'APP-1', profile: 'web' });
+	walkBoth(root, m, 31);
+	const file = path.join(root, '.dev-factory/qa', `run-${m.run}.json`);
+	const body = JSON.parse(fs.readFileSync(file, 'utf8'));
+	assert.equal(body.casesDir, '.factory/qa/cases');
+	delete body.casesDir;
+	fs.writeFileSync(file, JSON.stringify(body));
+	// a case of the same key appears in the new folder: the old run must not switch to it
+	fs.mkdirSync(path.join(root, '.devfactory/qa/cases/APP-1'), { recursive: true });
+	fs.writeFileSync(path.join(root, '.devfactory/qa/cases/APP-1/other.yaml'), 'appId: n\n');
+	assert.equal(done({ root, run: m.run }).verdict, 'pass');
+	const head = g(root, 'rev-parse', 'HEAD');
+	assert.equal(verify({ root, head, run: m.run }).ok, true);
+	fs.appendFileSync(path.join(root, '.factory/qa/cases/APP-1/login.yaml'), '# x\n');
+	refused(() => verify({ root, head, run: m.run }), /cases_changed: .*\.factory\/qa\/cases\/APP-1\/login\.yaml/);
+});
