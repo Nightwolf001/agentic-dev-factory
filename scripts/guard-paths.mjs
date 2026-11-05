@@ -393,19 +393,32 @@ export function runStatePlace(abs, key = null) {
 }
 
 // The folder of a path that exists, resolved through symlinks, with the rest of the path kept: a file that is not there yet is
-// judged by where it would be created.
-export function realPath(abs) {
+// judged by where it would be created. A link whose target is not there yet is followed too (writing through it creates the
+// target), for as many hops as a system allows before it gives up and takes the path as it is.
+export function realPath(abs, hops = 0) {
 	let rest = '';
 	let dir = abs;
 	for (let i = 0; i < 64; i++) {
+		let base = null;
 		try {
-			return path.join(fs.realpathSync(dir), rest);
+			base = fs.realpathSync(dir);
 		} catch {
 			const up = path.dirname(dir);
 			if (up === dir) break;
 			rest = path.join(path.basename(dir), rest);
 			dir = up;
 		}
+		if (base === null) continue;
+		if (rest && hops < 40) {
+			const [first, ...others] = rest.split('/');
+			try {
+				const at = path.join(base, first);
+				if (fs.lstatSync(at).isSymbolicLink()) return realPath(path.join(path.resolve(base, fs.readlinkSync(at)), ...others), hops + 1);
+			} catch {
+				/* not a link: the path is where it would be created */
+			}
+		}
+		return path.join(base, rest);
 	}
 	return abs;
 }

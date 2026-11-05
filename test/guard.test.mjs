@@ -850,3 +850,61 @@ test('shell writes into .devfactory/ are refused, its own cases and reads are no
 	for (const role of ['reviewer', 'debugger'])
 		assert.equal(b('echo x > .devfactory/qa/cases/A-1/x.yaml', { role }).deny, true, `${role}: no own-case exception`);
 });
+
+test('a link in the own cases folder whose target is not there yet is followed, for edits and for shell writes', () => {
+	const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'df-guard-dangle-')));
+	const own = path.join(root, '.devfactory', 'qa', 'cases', 'A-1');
+	fs.mkdirSync(own, { recursive: true });
+	fs.symlinkSync('../../../mcp.json', path.join(own, 'x'));
+	fs.symlinkSync(path.join(root, '.devfactory', 'qa.yaml'), path.join(own, 'abs'));
+	fs.symlinkSync('chain2', path.join(own, 'chain1'));
+	fs.symlinkSync('../../../config.json', path.join(own, 'chain2'));
+	fs.symlinkSync('loop', path.join(own, 'loop'));
+	const run = { role: 'builder', key: 'A-1' };
+	const e = (filePath) => evaluateEdit({ filePath, root, active: true, run });
+	const sh = (command) => evaluate(command, { role: 'builder', branch: 'task/A-1-x', key: 'A-1', cwd: root });
+	for (const f of ['x', 'abs', 'chain1']) {
+		assert.equal(e(`.devfactory/qa/cases/A-1/${f}`).deny, true, `edit through ${f}`);
+		assert.equal(sh(`echo x > .devfactory/qa/cases/A-1/${f}`).deny, true, `shell through ${f}`);
+	}
+	assert.equal(e('.devfactory/qa/cases/A-1/loop').deny, false, 'a link that loops resolves to itself, inside the own cases');
+	assert.equal(e('.devfactory/qa/cases/A-1/fresh.yaml').deny, false);
+	assert.equal(sh('echo x > .devfactory/qa/cases/A-1/fresh.yaml').deny, false);
+});
+
+test('a link into, in or out of .devfactory/ is not made from a run', () => {
+	const b = (command, role = 'builder') => evaluate(command, { role, branch: 'task/A-1-x', key: 'A-1', cwd: '/w' });
+	for (const c of [
+		'ln -s ../../../mcp.json .devfactory/qa/cases/A-1/x',
+		'ln -s /w/.devfactory/mcp.json notes.yaml',
+		'ln .devfactory/config.json x',
+		'ln -sf ../mcp.json .DevFactory/qa/cases/A-1/x',
+		'cd .devfactory/qa/cases/A-1 && ln -s ../../../mcp.json x',
+		'ln -s ../../../mcp.json sub/.devfactory/qa/cases/A-1/x',
+	])
+		for (const role of ['builder', 'improver']) assert.equal(b(c, role).deny, true, `${role}: ${c}`);
+	assert.equal(b('ln -s ../a.txt b.txt').deny, false, 'a link elsewhere is not the folder');
+});
+
+test('config write-from-env is the owner’s: no factory role runs it, reading the configuration stays allowed', () => {
+	for (const role of ['builder', 'reviewer', 'debugger', 'researcher', 'improver', 'promoter']) {
+		const r = (command) => evaluate(command, { role, branch: 'task/A-1-x', key: 'A-1', cwd: '/w' }).deny;
+		for (const c of [
+			`DF_PROJECT_CONFIG='{"a":1}' node ${PLUGIN_ROOT}/scripts/config.mjs write-from-env --force`,
+			`node "${PLUGIN_ROOT}/scripts/config.mjs" write-from-env`,
+			'node scripts/config.mjs write-from-env --if-set',
+			'dev-factory config write-from-env --force',
+			'~/.dev-factory/bin/dev-factory config write-from-env',
+		])
+			assert.equal(r(c), true, `${role}: ${c}`);
+	}
+	assert.equal(evaluate('node scripts/config.mjs write-from-env', { cwd: '/w' }).deny, false, 'the scheduler may');
+	assert.equal(evaluate(`node "${PLUGIN_ROOT}/scripts/config.mjs" get tasks.source`, { role: 'builder', cwd: '/w' }).deny, false);
+});
+
+test('only a builder gets the own-cases exception: an unknown role does not', () => {
+	const e = (role) => evaluateEdit({ filePath: '.devfactory/qa/cases/A-1/x.yaml', root: '/w', active: true, run: { role, key: 'A-1' } });
+	assert.equal(e('builder').deny, false);
+	assert.equal(e('tester').deny, true);
+	assert.equal(e(undefined).deny, true);
+});

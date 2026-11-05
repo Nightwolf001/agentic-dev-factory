@@ -617,6 +617,8 @@ function denyMachinePaths(seg, inv, ctx, st) {
 	let runState = false;
 	let runStateDir = false;
 	let ancestor = false;
+	// a link made in, into or from the owner's settings folder (hard or symbolic): a write through it lands outside the cases
+	let underProjectDir = cmd === 'ln' && hasProjectDir(st.cwd);
 	const writer = FILE_WRITERS.has(cmd);
 	// the message of a commit or of PR text is prose, not a path
 	const words = writesText(cmd, args) ? stripMessages(cmd, tokens) : tokens;
@@ -631,11 +633,13 @@ function denyMachinePaths(seg, inv, ctx, st) {
 			if (!abs) continue;
 			if (runStatePlace(abs, ctx.key)) runState = true;
 			if (runStateRoot(abs)) runStateDir = true;
+			if (cmd === 'ln' && hasProjectDir(abs)) underProjectDir = true;
 			let place = protectedPlace(abs, ctx);
 			if (!place && abs.startsWith('/') && !/[*?[]/.test(abs)) {
 				const real = realPath(abs);
 				place = protectedPlace(real, ctx);
 				if (!place && runStatePlace(real, ctx.key)) runState = true;
+				if (cmd === 'ln' && hasProjectDir(real)) underProjectDir = true;
 			}
 			// the scheduler's own passes keep their state; only a factory agent is kept out of it
 			if (place === 'state' && !FACTORY_ROLES.has(ctx.role)) continue;
@@ -652,7 +656,10 @@ function denyMachinePaths(seg, inv, ctx, st) {
 	// run state and factory files: changed only through qa.mjs and the scheduler (reading them is fine)
 	if (runState && WRITE_LIKE.test(seg) && !qaBin('').test(seg) && !readsOnly(seg, cmd, args))
 		return 'factory files and run state are changed only through qa.mjs and the scheduler';
-	if (cmd === 'ln' && (hits.length || ancestor || runState || tokens.some((t) => /(^|\/)\.?(dev-factory|factory|claude|git)(\/|$)/i.test(t))))
+	if (
+		cmd === 'ln' &&
+		(hits.length || ancestor || runState || underProjectDir || tokens.some((t) => /(^|\/)\.?(dev-factory|factory|claude|git)(\/|$)/i.test(t)))
+	)
 		return 'a symlink into run state, a repository’s git folder or a machine folder is not made from a run';
 	if (!hits.length && !ancestor) return null;
 	if (readsOnly(seg, cmd, args)) return null;
@@ -739,6 +746,9 @@ export function hitsTrackerHost(inv, ctx = {}, vars = {}) {
 	return false;
 }
 
+// `config.mjs write-from-env` or `dev-factory config write-from-env`: it writes the owner's settings folder from DF_PROJECT_*.
+const WRITE_FROM_ENV = /(?:\bconfig\.mjs["']?|\bdev-factory["']?\s+config)\s+write-from-env\b/i;
+
 const TAKEOVER_REFUSAL =
 	'dev-factory guard: takeover is switched on by the machine owner (DF_TAKEOVER in the environment the scheduler starts with), not by an agent';
 const UNJUDGEABLE = (why) => ({ deny: true, reason: `dev-factory guard: this command cannot be judged (${why}); split it into smaller commands` });
@@ -791,6 +801,8 @@ function judge(command, ctx) {
 			ctx.role,
 		);
 		if (common) return deny(common);
+		if (FACTORY_ROLES.has(ctx.role) && WRITE_FROM_ENV.test(seg))
+			return deny(`config write-from-env fills ${PROJECT_DIR}/ from the owner's environment; a factory run does not run it`);
 		const machine = denyMachinePaths(seg, inv, ctx, st);
 		if (machine) return deny(machine);
 		if (cmd === 'cd' || cmd === 'pushd') {
@@ -855,7 +867,6 @@ const normalize = (p, root) => {
 	return abs.startsWith(`${root}/`) ? abs.slice(root.length + 1) : abs;
 };
 
-const ROLES_WITH_OWN_RULES = new Set(['reviewer', 'debugger', 'promoter', 'researcher', 'improver']);
 const hasProjectDir = (rel) => rel.toLowerCase().split('/').includes(PROJECT_DIR);
 // A builder's scratch QA cases for its own ticket, in the folder at the top of the worktree.
 const inOwnProjectCases = (rel, key) => !!key && !rel.split('/').includes('..') && rel.startsWith(`${PROJECT_FILES.cases}/${key}/`);
@@ -901,7 +912,7 @@ export function evaluateEdit({ filePath, text = '', root, active = false, run = 
 	// The owner's settings folder, wherever it is and however its name is cased, on the path as written and as it resolves. The one
 	// way in is a builder's scratch cases for its own ticket, and then only when the resolved path is that folder too.
 	if (hasProjectDir(rel) || hasProjectDir(relReal)) {
-		const builds = !ROLES_WITH_OWN_RULES.has(run?.role);
+		const builds = run?.role === 'builder';
 		if (!(builds && inOwnProjectCases(rel, run?.key) && (relReal === rel || inOwnProjectCases(relReal, run?.key))))
 			return { deny: true, reason: `dev-factory guard: ${PROJECT_DIR}/ holds the owner's settings; a factory run does not edit it (${rel})` };
 	}
