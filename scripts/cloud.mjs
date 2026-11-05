@@ -14,7 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { get, layers, load } from './config.mjs';
 import { isMain } from './is-main.mjs';
-import { catalog, desired, launcherPath, serverConfig } from './mcp-scope.mjs';
+import { catalog, desired, serverConfig } from './mcp-scope.mjs';
 import { PLUGIN_ROOT } from './plugin-root.mjs';
 
 const read = (p) => JSON.parse(fs.readFileSync(p, 'utf8'));
@@ -43,17 +43,28 @@ export function mergeSettings(existing, repo, required = ['superpowers@claude-pl
 
 // The committed .mcp.json for a routine: the servers the project wants, written from the catalog as variable references. Merged into
 // what is there: an entry the factory writes replaces only its own id, so a server the person added by hand and every other key stay.
-// A launcher entry (the jira server) keeps the catalog's reference instead of this machine's absolute path: the file is committed,
-// and a routine does not have this machine's folders.
+// A server that starts through this machine's launcher (the jira server) is left out: a routine has no launcher and Claude does not
+// expand `~`, so the entry could not start, and a committed file must not carry this machine's folders. It is not approved either.
+// -> { mcp, written, skipped }: the merged document, the ids written, the ids left out
 export function routineConfig(existing, ids, cat = catalog(), env = process.env) {
-	const out = { ...existing, mcpServers: { ...existing.mcpServers } };
+	const mcp = { ...existing, mcpServers: { ...existing.mcpServers } };
+	const written = [];
+	const skipped = [];
 	for (const id of ids) {
-		const config = serverConfig(id, cat, env);
-		if (config.command === launcherPath(env)) config.command = cat[id].config.command;
-		out.mcpServers[id] = config;
+		if (needsLauncher(id, cat)) {
+			skipped.push(id);
+			continue;
+		}
+		mcp.mcpServers[id] = serverConfig(id, cat, env);
+		written.push(id);
 	}
-	return out;
+	return { mcp, written, skipped };
 }
+
+const needsLauncher = (id, cat) => /\$\{DF_LAUNCHER/.test(String(cat[id]?.config?.command ?? ''));
+
+export const launcherNote = (skipped) =>
+	`${skipped.join(', ')} ${skipped.length > 1 ? 'need' : 'needs'} the dev-factory launcher, which a routine does not have, so ${skipped.length > 1 ? 'they are' : 'it is'} not in .mcp.json; a Jira routine needs the claude.ai Atlassian connector, or passes scheduled on a machine where dev-factory install has written the launcher`;
 
 // settings.enabledMcpjsonServers gains the ids, without dropping or repeating what is there.
 export function approveServers(existing, ids) {
@@ -129,8 +140,10 @@ if (isMain(import.meta.url)) {
 		if (flag('routine')) {
 			const cat = catalog();
 			const ids = desired(layers(), cat).map((w) => w.id);
-			mcp = routineConfig(readJson(mcpFile), ids, cat);
-			settings = approveServers(settings, ids);
+			const out = routineConfig(readJson(mcpFile), ids, cat);
+			mcp = out.mcp;
+			settings = approveServers(settings, out.written);
+			if (out.skipped.length) console.error(`note: ${launcherNote(out.skipped)}`);
 		}
 		fs.mkdirSync(path.dirname(settingsFile), { recursive: true });
 		fs.writeFileSync(settingsFile, JSON.stringify(settings, null, '\t') + '\n');

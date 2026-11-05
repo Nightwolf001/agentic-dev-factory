@@ -87,4 +87,10 @@ test('the README explains the three state folders in one place and the cloud var
 	])
 		assert.ok(readme.includes(needle), needle);
 	assert.match(readme, /claude plugin install dev-factory@dev-factory --scope user/);
+	// what a routine and a cloud session cannot have
+	assert.match(readme, /`DF_PROJECT_CONFIG` stands in for the project layer only/);
+	assert.match(readme, /The `jira` server is left out and not approved/);
+	assert.match(readme, /used by the routine: enabledMcpjsonServers/);
+	assert.match(readme, /nothing new is written to them, with one exception: `dev-factory cloud init --routine`/);
+	assert.match(readme, /strictly unless a wanted server is available only from elsewhere/);
 });

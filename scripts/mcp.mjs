@@ -36,6 +36,7 @@ import {
 	mainCheckout,
 	parseListing,
 	planLegacyMigration,
+	routineIds,
 	planSync,
 	readManaged,
 	readProject,
@@ -309,7 +310,11 @@ export function runSync({ dry = false, root } = {}) {
 function runMigrate(file, cat, apply, root) {
 	const plan = planLegacyMigration(file, cat);
 	if (!plan.length) return console.log('nothing to migrate: no servers in the legacy .mcp.json');
-	for (const p of plan) console.log(p.action === 'adopt' ? `adopt  ${p.id}` : `keep   ${p.id}  (not the catalog's entry: left in the file)`);
+	for (const p of plan) {
+		if (p.action === 'adopt') console.log(`adopt  ${p.id}`);
+		else if (p.action === 'routine') console.log(`keep   ${p.id}  (used by the routine: enabledMcpjsonServers)`);
+		else console.log(`keep   ${p.id}  (not the catalog's entry: left in the file)`);
+	}
 	if (!apply) return console.log('run again with --apply to move the adopted entries into the settings');
 	const doc = readProject(file);
 	for (const p of plan.filter((x) => x.action === 'adopt')) {
@@ -349,7 +354,8 @@ if (isMain(import.meta.url)) {
 			for (const id of ids) {
 				for (const layer of flagScope ? [flagScope] : ['user', 'project'])
 					if (layerHas(layer, id, root)) setIn(layer, `mcp.servers.${id}`, undefined, { from: root });
-				if (readProject(file).mcpServers?.[id]) console.log(`note: ${id} is still in the legacy .mcp.json: dev-factory mcp migrate`);
+				if (readProject(file).mcpServers?.[id] && !routineIds(file).includes(id))
+					console.log(`note: ${id} is still in the legacy .mcp.json: dev-factory mcp migrate`);
 			}
 			runSync({ root });
 		} else if (cmd === 'sync') runSync({ dry: rest.includes('--dry-run'), root });

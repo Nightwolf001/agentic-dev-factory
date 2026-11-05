@@ -366,15 +366,29 @@ const isLegacyJiraEntry = (id, config) =>
 
 // An entry the factory wrote moves to the settings (`adopt`): one equal to the catalog's (ignoring a variable's default), to what
 // serverConfig writes (the jira server with its absolute launcher path), or jira-mcp-config.mjs's own. Anything else is the person's own (`keep`).
+// An entry listed in .claude/settings.json's enabledMcpjsonServers (next to the .mcp.json) is a routine's: `cloud init --routine` wrote it
+// there because a routine has no ~/.claude.json, so it is left alone (`routine`) rather than moved into settings the routine cannot read.
 export function planLegacyMigration(file, cat = catalog(), env = process.env) {
+	const routine = new Set(routineIds(file));
 	return Object.entries(readProject(file).mcpServers ?? {}).map(([id, config]) => ({
 		id,
-		action:
-			cat[id] &&
-			(isDeepStrictEqual(normalise(config), normalise(cat[id].config)) ||
-				isDeepStrictEqual(config, serverConfig(id, cat, env)) ||
-				isLegacyJiraEntry(id, config))
+		action: routine.has(id)
+			? 'routine'
+			: cat[id] &&
+				  (isDeepStrictEqual(normalise(config), normalise(cat[id].config)) ||
+						isDeepStrictEqual(config, serverConfig(id, cat, env)) ||
+						isLegacyJiraEntry(id, config))
 				? 'adopt'
 				: 'keep',
 	}));
+}
+
+// The ids the project's committed .claude/settings.json approves for its .mcp.json; none when it is missing or cannot be read.
+export function routineIds(mcpFile) {
+	try {
+		const list = JSON.parse(fs.readFileSync(path.join(path.dirname(mcpFile), '.claude', 'settings.json'), 'utf8')).enabledMcpjsonServers;
+		return Array.isArray(list) ? list.filter((x) => typeof x === 'string') : [];
+	} catch {
+		return [];
+	}
 }

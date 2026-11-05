@@ -649,11 +649,52 @@ test('write-from-env --if-set writes only the file whose variable is set', () =>
 test('write-from-env refuses invalid JSON and writes nothing', () => {
 	const { repo, state } = world();
 	for (const bad of ['{ nope', b64('not json'), b64('[1,2]')]) {
-		const r = run(repo, state, ['--if-set'], { DF_PROJECT_CONFIG: bad, DF_PROJECT_QA: 'profiles: {}\n' });
+		const r = run(repo, state, [], { DF_PROJECT_CONFIG: bad, DF_PROJECT_QA: 'profiles: {}\n' });
 		assert.equal(r.status, 1, bad);
 		assert.match(r.stderr, /DF_PROJECT_CONFIG/);
 	}
 	assert.equal(fs.existsSync(path.join(repo, '.devfactory/qa.yaml')), false, 'nothing is written when one value is invalid');
+});
+
+// The start hook runs this on every session: a problem must never fail the session, and standard output of a start hook is added
+// to the model's context, so it says nothing there.
+test('write-from-env --if-set turns every problem into a note on stderr and exits 0', () => {
+	const { repo, state } = world();
+	for (const bad of ['{ nope', b64('not json'), b64('[1,2]')]) {
+		const r = run(repo, state, ['--if-set'], { DF_PROJECT_CONFIG: bad, DF_PROJECT_QA: 'profiles: {}\n' });
+		assert.equal(r.status, 0, bad);
+		assert.match(r.stderr, /^note: DF_PROJECT_CONFIG /m);
+		assert.equal(r.stdout, '');
+		assert.doesNotMatch(r.stderr, /\n\s+at /, 'no stack trace');
+	}
+	assert.equal(fs.existsSync(path.join(repo, '.devfactory/qa.yaml')), false, 'nothing is written when one value is invalid');
+	const dir = tmp('df-nogit-');
+	const none = run(dir, dir, ['--if-set'], { DF_PROJECT_CONFIG: '{}' });
+	assert.equal(none.status, 0);
+	assert.match(none.stderr, /^note: not inside a git repository/m);
+	assert.equal(none.stdout, '');
+});
+
+test('write-from-env --if-set puts what it wrote on stderr too, and an unwritable folder is a note', { skip: process.getuid?.() === 0 }, () => {
+	const { repo, state } = world();
+	const ok = run(repo, state, ['--if-set'], { DF_PROJECT_CONFIG: '{"caps":{"maxConcurrent":2}}' });
+	assert.equal(ok.status, 0, ok.stderr);
+	assert.equal(ok.stdout, '', 'stdout of a start hook reaches the model');
+	assert.match(ok.stderr, /config: wrote .*config\.json/);
+	const locked = world();
+	fs.chmodSync(locked.repo, 0o555);
+	try {
+		const r = run(locked.repo, locked.state, ['--if-set'], { DF_PROJECT_CONFIG: '{"a":1}' });
+		assert.equal(r.status, 0, r.stderr);
+		assert.match(r.stderr, /^note: .*(EACCES|permission)/im);
+		assert.doesNotMatch(r.stderr, /\n\s+at /);
+		assert.equal(r.stdout, '');
+		const strict = run(locked.repo, locked.state, [], { DF_PROJECT_CONFIG: '{"a":1}' });
+		assert.equal(strict.status, 1, 'without --if-set a failure still fails');
+		assert.doesNotMatch(strict.stderr, /\n\s+at /);
+	} finally {
+		fs.chmodSync(locked.repo, 0o755);
+	}
 });
 
 test('write-from-env keeps an existing file and exits 1, unless --force', () => {

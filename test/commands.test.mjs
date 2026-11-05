@@ -87,6 +87,20 @@ test('a secret reaches .env.local through standard input and never through the c
 	assert.match(setup, /`!`/, 'a value the person would otherwise type into the conversation is run by them with !');
 });
 
+test('setup.md tells a routine what it cannot have, and every settings command in it is a whole command', () => {
+	const setup = read('setup.md');
+	assert.match(setup, /carries only the project layer/);
+	assert.match(setup, /`jira` server[^.]*launcher[^.]*routine/);
+	assert.match(setup, /claude\.ai Atlassian connector/);
+	assert.match(setup, /used by the routine/);
+	for (const span of spans(setup).filter((s) => /settings\.mjs/.test(s)))
+		assert.match(
+			span,
+			/^(node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/settings\.mjs"|! pbpaste \| node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/settings\.mjs")/,
+			span,
+		);
+});
+
 test('the Jira server choice is asked only for a Jira task source, and the two servers are named', () => {
 	const setup = read('setup.md');
 	assert.match(setup, /tasks\.source[^.\n]*jira[^\n]*`jira`[^\n]*`atlassian`/i);

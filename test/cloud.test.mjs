@@ -79,6 +79,7 @@ function routineRepo() {
 	);
 	return dir;
 }
+const settings_ = (dir) => JSON.parse(fs.readFileSync(path.join(dir, '.claude/settings.json'), 'utf8'));
 const runCloud = (dir, args, extra = {}) =>
 	spawnSync('node', [path.join(ROOT, 'scripts/cloud.mjs'), 'init', '--marketplace', 'o/r', ...args], {
 		cwd: dir,
@@ -92,7 +93,13 @@ test('init --routine writes .mcp.json with variable references only and enabledM
 	assert.equal(r.status, 0, r.stderr);
 	const raw = fs.readFileSync(path.join(dir, '.mcp.json'), 'utf8');
 	const mcp = JSON.parse(raw);
-	for (const id of ['playwright', 'context7', 'github', 'jira', 'notion']) assert.ok(mcp.mcpServers[id], id);
+	for (const id of ['playwright', 'context7', 'github', 'notion']) assert.ok(mcp.mcpServers[id], id);
+	// the jira server starts through the launcher on this machine, which a routine does not have: it is neither written nor approved
+	assert.equal(mcp.mcpServers.jira, undefined, 'no jira entry in a routine');
+	assert.ok(!settings_(dir).enabledMcpjsonServers.includes('jira'), 'and it is not pre-approved');
+	assert.match(r.stderr, /^note: jira needs the dev-factory launcher, which a routine does not have/m);
+	assert.match(r.stderr, /claude\.ai Atlassian connector/);
+	assert.ok(!raw.includes('DF_LAUNCHER'), 'no launcher reference in a committed file');
 	assert.equal(mcp.mcpServers.context7.env.CONTEXT7_API_KEY, '${CONTEXT7_API_KEY:-}');
 	assert.equal(mcp.mcpServers.github.headers.Authorization, 'Bearer ${GITHUB_PERSONAL_ACCESS_TOKEN:-}');
 	assert.doesNotMatch(raw, /should-never-appear/, 'no value from the environment');

@@ -11,7 +11,8 @@
 //   config.mjs write-from-env [--if-set] [--force]
 //                                       write .devfactory/config.json from DF_PROJECT_CONFIG and .devfactory/qa.yaml from
 //                                       DF_PROJECT_QA (raw or base64), for a checkout that has neither; an existing file is
-//                                       kept unless --force, and --if-set skips a variable that is not set
+//                                       kept unless --force, and --if-set skips a variable that is not set. --if-set is the
+//                                       session-start form: every problem is a `note:` on stderr, nothing on stdout, exit 0
 // A path that starts with `source.` reads from the active task source: `source.states.inProgress` is
 // `sources.<tasks.source>.states.inProgress`.
 import fs from 'node:fs';
@@ -611,7 +612,21 @@ if (isMain(import.meta.url)) {
 		}
 		console.log('config: ok');
 	} else if (cmd === 'write-from-env') {
-		const { code, messages, notes, wrote } = writeFromEnv({ ifSet: flag('--if-set'), force: flag('--force') });
+		const ifSet = flag('--if-set');
+		let result;
+		try {
+			result = writeFromEnv({ ifSet, force: flag('--force') });
+		} catch (e) {
+			// an unwritable folder: said in a line, not as a stack trace
+			result = { code: 1, messages: [e.message], notes: [], wrote: [] };
+		}
+		const { code, messages, notes, wrote } = result;
+		if (ifSet) {
+			// the session-start form: it never fails a session, and what a start hook prints on stdout is added to the model's context
+			for (const f of wrote) console.error(`config: wrote ${f}`);
+			for (const n of [...notes, ...messages]) console.error(`note: ${n}`);
+			process.exit(0);
+		}
 		for (const f of wrote) console.log(`config: wrote ${f}`);
 		for (const n of notes) console.error(`note: ${n}`);
 		for (const m of messages) console.error(`config: ${m}`);

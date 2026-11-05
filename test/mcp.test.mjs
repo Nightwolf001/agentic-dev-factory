@@ -908,6 +908,44 @@ test('CLI: migrate adopts a legacy .mcp.json entry that matches the catalog and 
 	assert.equal(read(path.join(repo, '.devfactory', 'config.json')).mcp.servers.axiom, true);
 });
 
+// `cloud init --routine` writes catalog entries into the committed .mcp.json and approves them in .claude/settings.json; a routine has
+// no ~/.claude.json, so that file is its only source. Moving them into the settings would delete what the routine reads.
+test('planLegacyMigration leaves the entries a routine approved, and says so', () => {
+	const { run, read, repo } = sandbox();
+	const legacy = path.join(repo, '.mcp.json');
+	fs.writeFileSync(legacy, JSON.stringify({ mcpServers: { sentry: catalog().sentry.config, axiom: catalog().axiom.config } }));
+	fs.mkdirSync(path.join(repo, '.claude'));
+	fs.writeFileSync(path.join(repo, '.claude', 'settings.json'), JSON.stringify({ enabledMcpjsonServers: ['sentry'], permissions: {} }));
+	assert.deepEqual(planLegacyMigration(legacy, catalog()), [
+		{ id: 'sentry', action: 'routine' },
+		{ id: 'axiom', action: 'adopt' },
+	]);
+	const plan = run('migrate');
+	assert.match(plan.stdout, /keep\s+sentry\s+\(used by the routine: enabledMcpjsonServers\)/);
+	assert.match(plan.stdout, /adopt\s+axiom/);
+	assert.equal(run('migrate', '--apply').status, 0);
+	assert.deepEqual(Object.keys(read(legacy).mcpServers), ['sentry'], 'the routine entry stays in the file');
+	assert.equal(read(path.join(repo, '.devfactory', 'config.json')).mcp.servers.axiom, true);
+	assert.equal(read(path.join(repo, '.devfactory', 'config.json')).mcp.servers.sentry, undefined, 'and is not turned on here by the migration');
+	// only the approved ids: a settings file that cannot be read, or has no list, keeps today's behaviour
+	fs.writeFileSync(path.join(repo, '.claude', 'settings.json'), '{ not json');
+	assert.deepEqual(planLegacyMigration(legacy, catalog()), [{ id: 'sentry', action: 'adopt' }]);
+});
+
+test('CLI: disable does not nag about a legacy entry a routine approved', () => {
+	const { run, repo } = sandbox();
+	fs.writeFileSync(
+		path.join(repo, '.mcp.json'),
+		JSON.stringify({ mcpServers: { sentry: catalog().sentry.config, axiom: catalog().axiom.config } }),
+	);
+	fs.mkdirSync(path.join(repo, '.claude'));
+	fs.writeFileSync(path.join(repo, '.claude', 'settings.json'), JSON.stringify({ enabledMcpjsonServers: ['sentry'] }));
+	const r = run('disable', 'sentry', 'axiom');
+	assert.equal(r.status, 0, r.stderr);
+	assert.doesNotMatch(r.stdout, /sentry is still in the legacy/);
+	assert.match(r.stdout, /axiom is still in the legacy .mcp.json/);
+});
+
 test('CLI: from a linked worktree the local scope is the main checkout’s', () => {
 	const { repo, run, fake, env, stateDirectory, read } = sandbox();
 	execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '--allow-empty', '-m', 'init']);
