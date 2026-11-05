@@ -42,7 +42,7 @@ function machine({ installed = [], ghFailures = 0 } = {}) {
 	delete env.DF_TAKEOVER;
 	const slug = execFileSync('bash', ['-c', `DIR="${PLUGIN}"; . "${PLUGIN}/scripts/runtime.sh"; df_slug "${repo}"`], { encoding: 'utf8' });
 	const run = (...a) => spawnSync('bash', [DOCTOR, ...a], { encoding: 'utf8', env, cwd: repo });
-	return { root, repo, home, slug, run, ghCalls: () => Number(fs.readFileSync(ghCalls, 'utf8')) };
+	return { root, repo, home, slug, run, env, ghCalls: () => Number(fs.readFileSync(ghCalls, 'utf8')) };
 }
 
 test('gh is asked a second time before doctor calls it unauthenticated, and a lasting failure is a FAIL', () => {
@@ -95,3 +95,53 @@ test(
 		assert.doesNotMatch(m.run('--lenient', '--ci').stdout, /installed tick job lacks/, '--ci as the second argument counts too');
 	},
 );
+
+// ---- the secrets the enabled servers need ----
+
+const SECRETS = ['GITHUB_PERSONAL_ACCESS_TOKEN', 'JIRA_API_TOKEN', 'JIRA_EMAIL', 'CONTEXT7_API_KEY'];
+
+function withServers(m, servers) {
+	fs.mkdirSync(path.join(m.repo, '.devfactory'), { recursive: true });
+	fs.writeFileSync(path.join(m.repo, '.devfactory', 'config.json'), JSON.stringify({ mcp: { servers } }));
+	for (const k of SECRETS) delete m.env[k];
+}
+
+test('doctor prints one line per secret the enabled servers read, and never a value', () => {
+	const m = machine();
+	withServers(m, { jira: true, github: true });
+	const empty = m.run().stdout;
+	assert.match(empty, /warn {2}JIRA_API_TOKEN empty: needed by jira/);
+	assert.match(empty, /warn {2}JIRA_EMAIL empty: needed by jira/);
+	assert.match(empty, /warn {2}GITHUB_PERSONAL_ACCESS_TOKEN empty: needed by github/);
+	Object.assign(m.env, { JIRA_API_TOKEN: 'sekrit-value', JIRA_EMAIL: 'a@example.test', GITHUB_PERSONAL_ACCESS_TOKEN: 'ghp_sekrit' });
+	const set = m.run();
+	assert.match(set.stdout, /ok {4}JIRA_API_TOKEN set \(jira\)/);
+	assert.match(set.stdout, /ok {4}GITHUB_PERSONAL_ACCESS_TOKEN set \(github\)/);
+	assert.doesNotMatch(set.stdout + set.stderr, /sekrit/);
+});
+
+test('doctor warns that a token Claude reads itself must be exported when it is only in .env.local', () => {
+	const m = machine();
+	withServers(m, { jira: true, github: true });
+	const state = m.env.DF_STATE_DIR;
+	fs.mkdirSync(state, { recursive: true });
+	fs.writeFileSync(
+		path.join(state, '.env.local'),
+		'GITHUB_PERSONAL_ACCESS_TOKEN=ghp_stored\nJIRA_API_TOKEN=jira_stored\nJIRA_EMAIL=a@example.test\n',
+		{
+			mode: 0o600,
+		},
+	);
+	const out = m.run();
+	assert.match(out.stdout, /warn {2}GITHUB_PERSONAL_ACCESS_TOKEN is set only in .*\.env\.local.*export it in the shell that starts claude/);
+	assert.match(out.stdout, /ok {4}JIRA_API_TOKEN set \(jira\)/, 'the Jira launcher reads .env.local itself');
+	assert.doesNotMatch(out.stdout + out.stderr, /ghp_stored|jira_stored/);
+	m.env.GITHUB_PERSONAL_ACCESS_TOKEN = 'ghp_stored';
+	assert.match(m.run().stdout, /ok {4}GITHUB_PERSONAL_ACCESS_TOKEN set \(github\)/);
+});
+
+test('doctor shows the notes config validate prints', () => {
+	const m = machine();
+	fs.writeFileSync(path.join(m.repo, 'dev-factory.config.json'), '{}\n');
+	assert.match(m.run().stdout, /warn {2}.*dev-factory\.config\.json is the old location/);
+});

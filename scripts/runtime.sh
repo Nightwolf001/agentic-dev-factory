@@ -11,6 +11,7 @@
 #   df_job_paused REPO JOB        true while that job's switch is set (or the older switch that paused both jobs)
 #   df_interval_minutes           minutes between scheduled ticks: DF_SCHEDULER_INTERVAL_MINUTES, else scheduler.intervalMinutes
 #   df_load_env           secrets: <state>/.env.local only, never a file inside the plugin directory
+#   df_mcp_args REPO LOG  into DF_MCP_ARGS: the Claude arguments for the MCP servers of a pass (from mcp.mjs write-config)
 # DIR is the plugin directory and must be set by the caller.
 df_runtime() {
   case "${DF_RUNTIME:-}" in local|cloud) echo "$DF_RUNTIME"; return ;; esac
@@ -45,5 +46,24 @@ df_load_env() {
   # Only the state folder: a run working in a clone of the plugin can write a file inside it, and the scheduler would load it.
   local f; f="$(df_state_dir)/.env.local"
   [ -f "$f" ] && { set -a; . "$f"; set +a; }
+  return 0
+}
+df_mcp_args() {
+  # The Claude arguments for the MCP servers of a pass, into the array DF_MCP_ARGS: whatever `mcp.mjs write-config` prints, one per line
+  # (the strict flag only when nothing wanted is outside the generated file). Its note goes to LOG. If it fails the pass goes on with
+  # the legacy .mcp.json when there is one, and LOG says why: a pass must not stop for this.
+  local repo="$1" log="$2" out err l
+  DF_MCP_ARGS=()
+  err="$(mktemp "${TMPDIR:-/tmp}/df-mcp-err.XXXXXX")"
+  if out="$(cd "$repo" && node "$DIR/scripts/mcp.mjs" write-config 2>"$err")"; then
+    [ -s "$err" ] && sed "s/^/$(date -u +%FT%TZ) mcp: /" "$err" >> "$log"
+    while IFS= read -r l; do [ -n "$l" ] && DF_MCP_ARGS+=("$l"); done <<EOF
+$out
+EOF
+  else
+    echo "$(date -u +%FT%TZ) could not write the MCP config ($(tr "\n" " " < "$err")); using .mcp.json when present" >> "$log"
+    DF_MCP_ARGS=(); [ -f "$repo/.mcp.json" ] && DF_MCP_ARGS=(--mcp-config "$repo/.mcp.json")
+  fi
+  rm -f "$err"
   return 0
 }

@@ -368,6 +368,7 @@ case "$1 $2" in
   "plugin marketplace") exit 0 ;;
 esac
 case "$1" in --version) echo "9.9.9"; exit 0 ;; esac
+printf '%s\\n' "$@" > "${path.join(f.home, 'claude-args')}"
 cat "${out}"
 `,
 		{ mode: 0o755 },
@@ -415,6 +416,73 @@ test('a pass that ended with "tick: aborted" discards the frontier it was about 
 		.map((l) => JSON.parse(l));
 	assert.equal(runs.at(-1).subtype, 'success');
 	assert.equal(typeof runs.at(-1).wallMs, 'number');
+});
+
+// ---- the pass starts from the generated MCP config ----
+
+const RESULT = { result: 'tick: claimed=0 resumed=0 shipped=0 blocked=0 merged=0 skipped=0', is_error: false, subtype: 'success' };
+
+// Runs a pass script on a passFixture and returns the arguments the stub claude was started with (the last call) and the pass log.
+function runPass(f, script = 'tick') {
+	const listing = path.join(f.home, 'listing.txt');
+	fs.writeFileSync(listing, '');
+	f.env.DF_MCP_LISTING = listing;
+	if (script === 'tick') f.tick();
+	else spawnSync('bash', [path.join(ROOT, 'scripts', `${script}.sh`)], { encoding: 'utf8', env: f.env, cwd: f.repo, timeout: 90000 });
+	const argsFile = path.join(f.home, 'claude-args');
+	return {
+		args: fs.existsSync(argsFile) ? fs.readFileSync(argsFile, 'utf8').trim().split('\n') : [],
+		log: fs.readFileSync(f.env.DF_LOG, 'utf8'),
+	};
+}
+
+for (const script of ['tick', 'improve']) {
+	test(`${script}.sh starts claude from the generated .devfactory/mcp.json, strictly when nothing else is wanted`, () => {
+		const f = passFixture(RESULT);
+		f.env.DF_LOG = path.join(f.home, `${script}.log`);
+		const { args, log } = runPass(f, script);
+		const file = path.join(f.repo, '.devfactory', 'mcp.json');
+		const at = args.indexOf('--mcp-config');
+		assert.ok(at > 0, `no --mcp-config in: ${args.join(' ')}\n${log}`);
+		assert.equal(args[at + 1], file);
+		assert.ok(args.includes('--strict-mcp-config'), args.join(' '));
+		assert.ok(Object.keys(JSON.parse(fs.readFileSync(file, 'utf8')).mcpServers).includes('playwright'));
+	});
+
+	test(`${script}.sh is not strict, and logs why, while a legacy .mcp.json holds other servers`, () => {
+		const f = passFixture(RESULT);
+		f.env.DF_LOG = path.join(f.home, `${script}.log`);
+		fs.writeFileSync(path.join(f.repo, '.mcp.json'), JSON.stringify({ mcpServers: { mine: { command: 'x' } } }));
+		const { args, log } = runPass(f, script);
+		assert.ok(args.includes('--mcp-config'), args.join(' '));
+		assert.ok(!args.includes('--strict-mcp-config'), args.join(' '));
+		assert.match(log, /note: mine comes from \.mcp\.json/);
+	});
+
+	test(`${script}.sh falls back to the legacy .mcp.json and says why when the config cannot be written`, () => {
+		const f = passFixture(RESULT);
+		f.env.DF_LOG = path.join(f.home, `${script}.log`);
+		fs.writeFileSync(path.join(f.repo, '.mcp.json'), JSON.stringify({ mcpServers: { mine: { command: 'x' } } }));
+		// a file where the folder should be
+		fs.writeFileSync(path.join(f.repo, '.devfactory'), 'in the way');
+		const { args, log } = runPass(f, script);
+		assert.deepEqual(args.slice(args.indexOf('--mcp-config'), args.indexOf('--mcp-config') + 2), [
+			'--mcp-config',
+			path.join(f.repo, '.mcp.json'),
+		]);
+		assert.ok(!args.includes('--strict-mcp-config'));
+		assert.match(log, /could not write the MCP config/);
+		assert.match(log, new RegExp(script === 'tick' ? 'pass end rc=0' : 'improve end rc=0'));
+	});
+}
+
+test('the pass scripts take their MCP arguments from write-config and never hard-code --strict-mcp-config', () => {
+	for (const f of ['tick.sh', 'improve.sh', 'runtime.sh']) {
+		const text = fs.readFileSync(path.join(ROOT, 'scripts', f), 'utf8');
+		assert.doesNotMatch(text, /--strict-mcp-config/, f);
+	}
+	for (const f of ['tick.sh', 'improve.sh']) assert.match(fs.readFileSync(path.join(ROOT, 'scripts', f), 'utf8'), /df_mcp_args/, f);
+	assert.match(fs.readFileSync(path.join(ROOT, 'scripts/runtime.sh'), 'utf8'), /mcp\.mjs" write-config/);
 });
 
 test('a failed preflight is recorded once, shown by status, and cleared by a pass that gets through', () => {

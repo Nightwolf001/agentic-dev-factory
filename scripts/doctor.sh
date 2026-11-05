@@ -7,6 +7,8 @@ for a in "$@"; do case "$a" in --ci) CI=1 ;; --lenient) LENIENT=1 ;; --wizard) W
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 . "$DIR/scripts/runtime.sh"
 REPO="$(df_repo)"; REPO="${REPO:-$PWD}"; RUNTIME="$(df_runtime)"
+# what the shell exported before the secrets file is read: a token Claude itself expands has to be among these
+DF_SHELL_ENV_NAMES="$(compgen -e | tr '\n' ' ')"; export DF_SHELL_ENV_NAMES
 df_load_env   # the machine secrets file, so a token kept there counts as set (as it does for a scheduled pass)
 if [ "$WIZARD" = 1 ]; then exec bash "$DIR/scripts/wizard.sh"; fi
 fail=0
@@ -126,6 +128,15 @@ MCP_ARGS=(); [ "$LENIENT" = 1 ] && MCP_ARGS=(--lenient)
 while IFS= read -r line; do
   case "$line" in ok*) ok "${line#ok }" ;; warn*) warn "${line#warn }" ;; FAIL*) bad "${line#FAIL }" ;; esac
 done < <(DF_MCP_FILE="$MCP_FILE" node "$DIR/scripts/mcp.mjs" doctor ${MCP_ARGS[@]+"${MCP_ARGS[@]}"} 2>/dev/null | sed 's/^ok   */ok /;s/^warn  */warn /;s/^FAIL  */FAIL /')
-node "$DIR/scripts/config.mjs" validate >/dev/null 2>&1 && ok "config.json valid" || bad "config.json invalid (dev-factory config validate)"
+# the variables the servers in use read: one line each, set or empty (never the value)
+while IFS= read -r line; do
+  case "$line" in ok*) ok "${line#ok }" ;; warn*) warn "${line#warn }" ;; FAIL*) bad "${line#FAIL }" ;; esac
+done < <(node "$DIR/scripts/mcp.mjs" secrets --lines ${MCP_ARGS[@]+"${MCP_ARGS[@]}"} 2>/dev/null | sed 's/^ok   */ok /;s/^warn  */warn /;s/^FAIL  */FAIL /')
+vout="$(node "$DIR/scripts/config.mjs" validate 2>&1)" && ok "config.json valid" || bad "config.json invalid (dev-factory config validate)"
+while IFS= read -r line; do
+  case "$line" in note:*) warn "${line#note: }" ;; esac
+done <<EOF
+$vout
+EOF
 bash "$DIR/scripts/lint-vocabulary.sh" >/dev/null && ok "vocabulary lint" || bad "vocabulary lint"
 exit $fail

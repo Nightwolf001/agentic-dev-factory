@@ -131,7 +131,7 @@ test('connect reports which enabled servers are connected, need a login, or have
 
 // ---- servers Claude already has ----
 
-import { doctorLines, externalServers, findServer, parseListing, planEnable, stateOf } from '../scripts/mcp.mjs';
+import { doctorLines, externalServers, findServer, parseListing, planEnable, secretLines, stateOf } from '../scripts/mcp.mjs';
 
 const LISTING = [
 	'Checking MCP server health…',
@@ -962,4 +962,127 @@ test('CLI: from a linked worktree the settings are read from the main checkout, 
 	const out = fromWorktree('write-config');
 	assert.equal(out.status, 0, out.stderr);
 	assert.deepEqual(Object.keys(read(path.join(repo, '.devfactory', 'mcp.json')).mcpServers).sort(), ['playwright', 'sentry']);
+});
+
+test('CLI: enable, disable and connect from a linked worktree write the main checkout’s settings, and write-config reads its .mcp.json', () => {
+	const { repo, env, read, run } = sandbox();
+	execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '--allow-empty', '-m', 'init']);
+	const worktree = path.join(fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'df-wt-'))), 'wt');
+	execFileSync('git', ['-C', repo, 'worktree', 'add', '-q', worktree]);
+	const own = { ...env };
+	delete own.DF_MCP_FILE;
+	const fromWorktree = (...args) => spawnSync('node', [MCP, ...args], { cwd: worktree, env: own, encoding: 'utf8' });
+	const mine = path.join(repo, '.devfactory', 'config.json');
+	const enabled = fromWorktree('enable', 'sentry', '--project');
+	assert.equal(enabled.status, 0, enabled.stderr);
+	assert.equal(read(mine).mcp.servers.sentry, true, 'the main checkout holds the setting');
+	assert.equal(fs.existsSync(path.join(worktree, '.devfactory', 'config.json')), false, 'the worktree gets none of its own');
+	assert.match(run('list').stdout, /^proj\s+sentry/m, 'and a run from the main checkout sees it');
+	// moving it to the user layer takes the key out of the main checkout's project layer
+	assert.equal(fromWorktree('enable', 'sentry', '--user').status, 0);
+	assert.equal(read(mine).mcp?.servers?.sentry, undefined);
+	assert.equal(fromWorktree('enable', 'axiom', '--project').status, 0);
+	assert.equal(read(mine).mcp.servers.axiom, true);
+	assert.equal(fromWorktree('disable', 'axiom', '--project').status, 0);
+	assert.equal(read(mine).mcp?.servers?.axiom, undefined, 'disable acts on the same file');
+	assert.equal(fromWorktree('connect').status, 0);
+	assert.equal(fs.existsSync(path.join(worktree, '.devfactory', 'config.json')), false, 'connect writes there too');
+	// a legacy .mcp.json in the main checkout keeps the pass from being strict, whichever folder it starts from
+	fs.writeFileSync(path.join(repo, '.mcp.json'), JSON.stringify({ mcpServers: { mine: { command: 'x' } } }));
+	const loose = fromWorktree('write-config');
+	assert.equal(loose.status, 0, loose.stderr);
+	assert.doesNotMatch(loose.stdout, /--strict-mcp-config/);
+	assert.match(loose.stderr, /mine comes from \.mcp\.json/);
+});
+
+test('factory-settings opens the hosts and allows the tools of the servers the settings turn on', () => {
+	const file = tmp();
+	const want = [
+		{ id: 'sentry', scope: 'project', required: false },
+		{ id: 'context7', scope: 'user', required: false },
+	];
+	const s = build({ cfg: load(), mcpFile: file, want });
+	assert.ok(s.sandbox.network.allowedDomains.includes('mcp.sentry.dev'));
+	assert.ok(s.sandbox.network.allowedDomains.includes('context7.com'));
+	assert.ok(s.permissions.allow.includes('mcp__sentry') && s.permissions.allow.includes('mcp__plugin_dev-factory_context7'));
+	const none = build({ cfg: load(), mcpFile: file, want: [] });
+	assert.equal(none.sandbox.network.allowedDomains.includes('mcp.sentry.dev'), false);
+	assert.equal(none.permissions.allow.includes('mcp__sentry'), false);
+	// the legacy file and servers from elsewhere still count
+	enable(['axiom'], file);
+	const both = build({ cfg: load(), mcpFile: file, want, external: ['notion'] });
+	for (const rule of ['mcp__axiom', 'mcp__sentry', 'mcp__notion']) assert.ok(both.permissions.allow.includes(rule), rule);
+});
+
+test('the factory-settings command line includes the servers the settings turn on', () => {
+	const { run, repo, read, env } = sandbox();
+	assert.equal(run('enable', 'sentry', '--project').status, 0);
+	const out = path.join(repo, 'settings.json');
+	const r = spawnSync('node', [new URL('../scripts/factory-settings.mjs', import.meta.url).pathname, out], { cwd: repo, env, encoding: 'utf8' });
+	assert.equal(r.status, 0, r.stderr);
+	const settings = read(out);
+	assert.ok(settings.sandbox.network.allowedDomains.includes('mcp.sentry.dev'));
+	assert.ok(settings.permissions.allow.includes('mcp__sentry'));
+});
+
+test('secretLines: ok when set, FAIL only for a required server’s non-optional secret, a warning for any other that is empty', () => {
+	const cat = {
+		core: { secrets: ['CORE_TOKEN'], config: { type: 'http', headers: { Authorization: 'Bearer ${CORE_TOKEN:-}' } } },
+		extra: { secrets: ['EXTRA_KEY'], secretsOptional: true, config: { command: 'x' } },
+		other: { secrets: ['OTHER_TOKEN'], config: { command: 'x' } },
+	};
+	const want = [
+		{ id: 'core', scope: 'user', required: true },
+		{ id: 'extra', scope: 'user', required: true },
+		{ id: 'other', scope: 'user', required: false },
+	];
+	const rows = [
+		{ name: 'CORE_TOKEN', state: 'empty', neededBy: ['core'], optional: false },
+		{ name: 'EXTRA_KEY', state: 'empty', neededBy: ['extra'], optional: true },
+		{ name: 'OTHER_TOKEN', state: 'empty', neededBy: ['other'], optional: false },
+	];
+	const lines = secretLines({ rows, want, cat });
+	assert.deepEqual(
+		lines.map((l) => l.level),
+		['fail', 'warn', 'warn'],
+	);
+	assert.equal(lines[0].text, 'CORE_TOKEN empty: needed by core');
+	assert.equal(lines[1].text, 'EXTRA_KEY empty: needed by extra (optional)');
+	assert.equal(secretLines({ rows, want, cat, lenient: true })[0].level, 'warn', '--lenient turns the failure into a warning');
+	const set = rows.map((r) => ({ ...r, state: 'set' }));
+	assert.deepEqual(secretLines({ rows: set, want, cat })[2], { level: 'ok', text: 'OTHER_TOKEN set (other)' });
+});
+
+test('secretLines warns when a token read by Claude itself is kept only in .env.local, and not for one a launcher reads', () => {
+	const cat = {
+		direct: { secrets: ['DIRECT_TOKEN'], config: { type: 'http', headers: { Authorization: 'Bearer ${DIRECT_TOKEN:-}' } } },
+		launched: { secrets: ['LAUNCHED_TOKEN'], config: { type: 'stdio', command: '${DF_LAUNCHER:-~/.dev-factory/bin/dev-factory}', args: ['x'] } },
+	};
+	const want = [
+		{ id: 'direct', scope: 'user', required: false },
+		{ id: 'launched', scope: 'user', required: false },
+	];
+	const rows = [
+		{ name: 'DIRECT_TOKEN', state: 'set', neededBy: ['direct'], optional: false },
+		{ name: 'LAUNCHED_TOKEN', state: 'set', neededBy: ['launched'], optional: false },
+	];
+	const only = secretLines({ rows, want, cat, shell: new Set() });
+	assert.equal(only[0].level, 'warn');
+	assert.match(only[0].text, /DIRECT_TOKEN is set only in .*\.env\.local.*export it in the shell that starts claude/);
+	assert.equal(only[1].level, 'ok');
+	assert.equal(secretLines({ rows, want, cat, shell: new Set(['DIRECT_TOKEN']) })[0].level, 'ok');
+	assert.equal(secretLines({ rows, want, cat })[0].level, 'ok', 'no record of the shell: nothing to compare');
+});
+
+test('CLI: secrets --lines prints doctor lines for the wanted servers and never a value', () => {
+	const { run, repo, env } = sandbox();
+	delete env.GITHUB_PERSONAL_ACCESS_TOKEN;
+	assert.equal(run('enable', 'github', '--user').status, 0);
+	const empty = run('secrets', '--lines');
+	assert.equal(empty.status, 0, empty.stderr);
+	assert.match(empty.stdout, /^warn +GITHUB_PERSONAL_ACCESS_TOKEN empty: needed by github$/m);
+	fs.writeFileSync(path.join(env.DF_STATE_DIR, '.env.local'), 'GITHUB_PERSONAL_ACCESS_TOKEN=abc123\n');
+	const set = spawnSync('node', [MCP, 'secrets', '--lines'], { cwd: repo, env: { ...env, DF_SHELL_ENV_NAMES: 'PATH HOME' }, encoding: 'utf8' });
+	assert.match(set.stdout, /GITHUB_PERSONAL_ACCESS_TOKEN is set only in/);
+	assert.doesNotMatch(set.stdout, /abc123/);
 });
