@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { test } from 'node:test';
 import { evaluate } from '../scripts/guard-lib.mjs';
 
@@ -766,4 +769,84 @@ test('the Notion upload helper and a curl with an image type are allowed for the
 	assert.equal(evaluate(`curl -sS -X POST -H "Authorization: Bearer ntn_x" -F "file=@${file};type=image/png" ${UPLOAD}`, {}).deny, false);
 	assert.equal(evaluate(`curl -sS -X POST -F "file=@${file};type=text/html" ${UPLOAD}`, {}).deny, true);
 	assert.equal(evaluate('node /p/scripts/other.mjs https://api.notion.com/v1/pages', {}).deny, true);
+});
+
+test('a run stays out of .devfactory/, except a builder’s own scratch cases', () => {
+	const e = (filePath, run = { role: 'builder', key: 'A-1' }) => evaluateEdit({ filePath, root: '/w', active: true, run });
+	for (const bad of [
+		'.devfactory/config.json',
+		'.devfactory/qa.yaml',
+		'.devfactory/.gitignore',
+		'.devfactory/mcp.json',
+		'.devfactory/qa/cases/B-2/x.yaml',
+		'.devfactory/qa/cases/x.yaml',
+		'.devfactory/qa/cases/A-1/../../config.json',
+		'.DevFactory/Config.json',
+		'.DEVFACTORY/qa/cases/B-2/x.yaml',
+		'sub/.devfactory/config.json',
+		'sub/.devfactory/qa/cases/A-1/x.yaml',
+		'/w/.devfactory/config.json',
+	]) {
+		const v = e(bad);
+		assert.equal(v.deny, true, bad);
+		assert.match(v.reason, /\.devfactory\/ holds the owner's settings; a factory run does not edit it/, bad);
+	}
+	assert.equal(e('/elsewhere/checkout/.devfactory/config.json').deny, true, 'the owner’s checkout, by absolute path');
+	assert.equal(e('.devfactory/qa/cases/A-1/x.yaml').deny, false, 'its own cases');
+	assert.equal(e('/w/.devfactory/qa/cases/A-1/x.yaml').deny, false, 'its own cases by absolute path');
+	assert.equal(e('.devfactory-notes/a.md').deny, false, 'a folder that merely starts with the name');
+	// the legacy spellings keep their rules
+	assert.equal(e('.factory/qa/cases/A-1/x.yaml').deny, false);
+	assert.equal(e('.factory/qa/cases/B-2/x.yaml').deny, true);
+	assert.equal(e('dev-factory.config.json').deny, true);
+	// no other role gets the own-case exception
+	for (const role of ['reviewer', 'debugger', 'promoter', 'researcher', 'improver'])
+		assert.equal(e('.devfactory/qa/cases/A-1/x.yaml', { role, key: 'A-1', factoryPrefix: '' }).deny, true, role);
+	assert.equal(e('.devfactory/qa/cases/A-1/x.yaml', { role: 'builder' }).deny, true, 'a run without a key has no cases of its own');
+});
+
+test('a link that leads into .devfactory/ is judged on where it really points', () => {
+	const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'df-guard-dev-')));
+	fs.mkdirSync(path.join(root, '.devfactory', 'qa', 'cases', 'A-1'), { recursive: true });
+	fs.mkdirSync(path.join(root, 'src'));
+	fs.symlinkSync(path.join(root, '.devfactory'), path.join(root, 'src', 'cfg'));
+	fs.writeFileSync(path.join(root, '.devfactory', 'config.json'), '{}\n');
+	fs.symlinkSync(path.join(root, '.devfactory', 'config.json'), path.join(root, '.devfactory', 'qa', 'cases', 'A-1', 'out.yaml'));
+	const e = (filePath) => evaluateEdit({ filePath, root, active: true, run: { role: 'builder', key: 'A-1' } });
+	assert.equal(e('src/cfg/config.json').deny, true, 'through a folder link');
+	assert.equal(e('src/cfg/qa/cases/B-2/x.yaml').deny, true);
+	assert.equal(e('.devfactory/qa/cases/A-1/out.yaml').deny, true, 'an own-case file that is a link to the settings');
+	assert.equal(e('.devfactory/qa/cases/A-1/new.yaml').deny, false);
+});
+
+test('shell writes into .devfactory/ are refused, its own cases and reads are not', () => {
+	const b = (command, extra = {}) => evaluate(command, { role: 'builder', branch: 'task/A-1-x', key: 'A-1', cwd: '/w', ...extra });
+	for (const c of [
+		'echo {} > .devfactory/config.json',
+		'cp /tmp/x .devfactory/qa.yaml',
+		'sed -i s/a/b/ .devfactory/config.json',
+		'rm .devfactory/mcp.json',
+		'rm -rf .devfactory',
+		'mv .devfactory /tmp/x',
+		'echo x > .DevFactory/Config.json',
+		'echo x > sub/.devfactory/config.json',
+		'echo x > .devfactory/qa/cases/B-2/x.yaml',
+		'echo x > .devfactory/qa/cases/A-1/../../config.json',
+		'cd .devfactory && echo x > config.json',
+		'cd .devfactory/qa/cases/B-2 && echo x > x.yaml',
+		'echo x | tee .devfactory/config.json',
+		'echo x > /Users/me/code/app/.devfactory/config.json',
+	])
+		assert.equal(b(c).deny, true, c);
+	for (const c of [
+		'cat > .devfactory/qa/cases/A-1/x.yaml',
+		'mkdir -p .devfactory/qa/cases/A-1',
+		'cd .devfactory/qa/cases/A-1 && echo x > x.yaml',
+		'cat .devfactory/config.json',
+		'ls .devfactory && wc -l .devfactory/qa.yaml',
+		'echo x > .devfactory-notes.md',
+	])
+		assert.equal(b(c).deny, false, c);
+	for (const role of ['reviewer', 'debugger'])
+		assert.equal(b('echo x > .devfactory/qa/cases/A-1/x.yaml', { role }).deny, true, `${role}: no own-case exception`);
 });

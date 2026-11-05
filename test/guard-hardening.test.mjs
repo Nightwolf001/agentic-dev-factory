@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { evaluate, evaluateEdit, segments, stripHeredocs } from '../scripts/guard-lib.mjs';
-import { ancestorOfProtected, braceExpand, expandVars, protectedPlace, runStatePlace } from '../scripts/guard-paths.mjs';
+import { ancestorOfProtected, braceExpand, expandVars, protectedPlace, runStatePlace, runStateRoot } from '../scripts/guard-paths.mjs';
 
 const HOME = '/Users/dev';
 const STATE = `${HOME}/.dev-factory`;
@@ -144,6 +144,24 @@ test('run state and factory files are protected by where the path really points,
 	assert.equal(runStatePlace('/w/dev-factory/qa/cases/APP-1/a.yaml'), false, 'a ticket’s own cases');
 	assert.equal(runStatePlace('/w/dist/app.js'), false);
 	assert.equal(runStatePlace('/w/agentic-dev-factory/src/a.js'), false, 'a folder that merely contains the name');
+});
+
+test('the .devfactory/ settings folder is protected at any depth and in any case; only the ticket’s own cases inside it are not', () => {
+	for (const p of [
+		'/w/.devfactory/config.json',
+		'/w/.DevFactory/Config.json',
+		'/w/sub/.devfactory/qa.yaml',
+		'/w/.devfactory/qa/cases/APP-2/a.yaml',
+	])
+		assert.equal(runStatePlace(p, 'APP-1'), true, p);
+	assert.equal(runStatePlace('/w/.devfactory/qa/cases/APP-1/a.yaml', 'APP-1'), false);
+	assert.equal(runStatePlace('/w/.devfactory/qa/cases/APP-1', 'APP-1'), false, 'the folder itself, to make it');
+	assert.equal(runStatePlace('/w/.devfactory/qa/cases', 'APP-1'), true, 'the folder that holds every ticket’s cases');
+	assert.equal(runStatePlace('/w/.devfactory/qa/cases/*/a.yaml', 'APP-1'), true, 'a glob can reach another ticket’s folder');
+	assert.equal(runStatePlace('/w/.devfactory/qa/cases/../config.json', 'APP-1'), true);
+	assert.equal(runStatePlace('/w/.devfactory/qa/cases/APP-1/a.yaml'), false, 'with no key, one ticket’s folder');
+	assert.equal(runStatePlace('/w/.devfactory-notes/a.md', 'APP-1'), false);
+	assert.equal(runStateRoot('/w/.devfactory'), true, 'removing the folder whole takes the settings with it');
 });
 
 test('machine folders are protected through globs, groups, mounts and links as well as plain paths', () => {

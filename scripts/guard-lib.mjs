@@ -21,6 +21,7 @@ import {
 	triesTakeover,
 } from './guard-paths.mjs';
 import { PLUGIN_ROOT } from './plugin-root.mjs';
+import { PROJECT_DIR, PROJECT_FILES } from './project-dir.mjs';
 
 // `node <plugin>/bin/qa.mjs <rest>`: the real script of this plugin (its own directory, quoted or not), or one vendored at
 // dev-factory/ in the working directory (`dev-factory/bin/qa.mjs`, with or without `./`). A file called qa.mjs that an agent wrote
@@ -628,13 +629,13 @@ function denyMachinePaths(seg, inv, ctx, st) {
 			if (!(c.includes('/') || c.startsWith('.') || c.startsWith('~') || bareOk || /[*?[]/.test(c) || /dev-factory/i.test(c))) continue;
 			const abs = resolveWord(c, st.cwd);
 			if (!abs) continue;
-			if (runStatePlace(abs)) runState = true;
+			if (runStatePlace(abs, ctx.key)) runState = true;
 			if (runStateRoot(abs)) runStateDir = true;
 			let place = protectedPlace(abs, ctx);
 			if (!place && abs.startsWith('/') && !/[*?[]/.test(abs)) {
 				const real = realPath(abs);
 				place = protectedPlace(real, ctx);
-				if (!place && runStatePlace(real)) runState = true;
+				if (!place && runStatePlace(real, ctx.key)) runState = true;
 			}
 			// the scheduler's own passes keep their state; only a factory agent is kept out of it
 			if (place === 'state' && !FACTORY_ROLES.has(ctx.role)) continue;
@@ -742,7 +743,7 @@ const TAKEOVER_REFUSAL =
 	'dev-factory guard: takeover is switched on by the machine owner (DF_TAKEOVER in the environment the scheduler starts with), not by an agent';
 const UNJUDGEABLE = (why) => ({ deny: true, reason: `dev-factory guard: this command cannot be judged (${why}); split it into smaller commands` });
 
-// ctx: branch, role, containerOnly, service, noAttribution, takeover, plus for the path rules cwd (the directory the command
+// ctx: branch, key (the ticket, which names the one folder of scratch QA cases in .devfactory/ the run may write), role, containerOnly, service, noAttribution, takeover, plus for the path rules cwd (the directory the command
 // starts in), home, stateDir and env (default: the process's), and trackerHosts (hosts beyond the built-in ones).
 export function evaluate(command, ctx = {}) {
 	try {
@@ -854,6 +855,11 @@ const normalize = (p, root) => {
 	return abs.startsWith(`${root}/`) ? abs.slice(root.length + 1) : abs;
 };
 
+const ROLES_WITH_OWN_RULES = new Set(['reviewer', 'debugger', 'promoter', 'researcher', 'improver']);
+const hasProjectDir = (rel) => rel.toLowerCase().split('/').includes(PROJECT_DIR);
+// A builder's scratch QA cases for its own ticket, in the folder at the top of the worktree.
+const inOwnProjectCases = (rel, key) => !!key && !rel.split('/').includes('..') && rel.startsWith(`${PROJECT_FILES.cases}/${key}/`);
+
 // Edit, Write and MultiEdit. Vocabulary applies to everyone editing dev-factory/; path protection only inside a factory run.
 // ctx (home, stateDir, env) overrides where the machine's own folders are, for tests.
 export function evaluateEdit({ filePath, text = '', root, active = false, run = null, ...ctx }) {
@@ -892,6 +898,13 @@ export function evaluateEdit({ filePath, text = '', root, active = false, run = 
 			deny: true,
 			reason: `dev-factory guard: ${rel} sets what the factory allows a run to do; the owner changes it, a run does not`,
 		};
+	// The owner's settings folder, wherever it is and however its name is cased, on the path as written and as it resolves. The one
+	// way in is a builder's scratch cases for its own ticket, and then only when the resolved path is that folder too.
+	if (hasProjectDir(rel) || hasProjectDir(relReal)) {
+		const builds = !ROLES_WITH_OWN_RULES.has(run?.role);
+		if (!(builds && inOwnProjectCases(rel, run?.key) && (relReal === rel || inOwnProjectCases(relReal, run?.key))))
+			return { deny: true, reason: `dev-factory guard: ${PROJECT_DIR}/ holds the owner's settings; a factory run does not edit it (${rel})` };
+	}
 	if (SENTINEL.test(rel) && relReal === rel) return { deny: false };
 	if (run?.role === 'reviewer' || run?.role === 'debugger') return { deny: true, reason: `dev-factory guard: ${run.role}s do not edit files` };
 	if (run?.role === 'promoter') {

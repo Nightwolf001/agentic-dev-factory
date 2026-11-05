@@ -359,6 +359,8 @@ const RUN_STATE = [
 	['.factory', 'tasks'],
 	['dev-factory'],
 	['dev-factory.config.json'],
+	// the owner's settings (config, QA profiles, MCP servers), at any depth; a builder's own scratch cases are the one exception
+	['.devfactory'],
 	['.claude'],
 	['.github', 'workflows'],
 	['.husky'],
@@ -368,17 +370,22 @@ const RUN_STATE = [
 // takes everything in it. (Writing a hand-off file inside .dev-factory is fine; deleting .dev-factory is not.)
 export function runStateRoot(abs) {
 	const last = comps(abs).at(-1);
-	return !!last && ['.dev-factory', '.factory', 'dev-factory', '.claude', '.husky'].some((n) => compEq(last, n));
+	return !!last && ['.dev-factory', '.devfactory', '.factory', 'dev-factory', '.claude', '.husky'].some((n) => compEq(last, n));
 }
 
-// Whether an absolute path (globs allowed) is run state or a factory file, wherever the worktree is.
-export function runStatePlace(abs) {
+// Whether an absolute path (globs allowed) is run state or a factory file, wherever the worktree is. `key` is the ticket the
+// caller runs for: the one folder of QA cases inside .devfactory/ that is its own (with no key, any single ticket's folder is).
+export function runStatePlace(abs, key = null) {
 	const cs = comps(abs);
 	for (let i = 0; i < cs.length; i++) {
 		for (const ps of RUN_STATE) {
 			if (!ps.every((p, j) => cs[i + j] !== undefined && compEq(cs[i + j], p))) continue;
 			// a ticket's own QA cases live under the vendored folder
 			if (ps.length === 1 && ps[0] === 'dev-factory' && cs[i + 1] === 'qa' && cs[i + 2] === 'cases') continue;
+			if (ps.length === 1 && ps[0] === '.devfactory' && cs[i + 1] === 'qa' && cs[i + 2] === 'cases' && cs[i + 3] !== undefined) {
+				const own = key ? cs[i + 3] === key.toLowerCase() : !hasGlob(cs[i + 3]);
+				if (own) continue;
+			}
 			return true;
 		}
 	}
