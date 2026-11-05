@@ -289,7 +289,7 @@ function turnOn(id, scope, cat, root) {
 }
 
 // Makes Claude's user and local scopes match the settings and prints what it did.
-function runSync({ dry = false, root } = {}) {
+export function runSync({ dry = false, root } = {}) {
 	const repo = root ?? mainCheckout();
 	const cat = catalog();
 	const ls = layers({ from: repo ?? process.cwd() });

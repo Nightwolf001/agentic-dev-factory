@@ -65,3 +65,18 @@ test('dev-factory plugins resolves to the companion plugin sync, passing its arg
 	assert.equal(r.args[0], path.join(ROOT, 'scripts/plugins.mjs'));
 	assert.deepEqual(r.args.slice(1), ['sync', '--dry-run']);
 });
+
+test('dev-factory settings resolves to the settings page, passing its arguments on', () => {
+	const r = resolve(['settings', 'set', 'sentry', 'on']);
+	assert.equal(r.cmd, 'node');
+	assert.equal(r.args[0], path.join(ROOT, 'scripts/settings.mjs'));
+	assert.deepEqual(r.args.slice(1), ['set', 'sentry', 'on']);
+});
+
+test('dev-factory migrate resolves to the project-folder migration, with its fixed argument first', () => {
+	const r = resolve(['migrate', '--apply']);
+	assert.equal(r.cmd, 'node');
+	assert.equal(r.args[0], path.join(ROOT, 'scripts/project-dir.mjs'));
+	assert.deepEqual(r.args.slice(1), ['migrate', '--apply']);
+	assert.deepEqual(resolve(['migrate']).args.slice(1), ['migrate']);
+});

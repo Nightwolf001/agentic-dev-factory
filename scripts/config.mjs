@@ -214,7 +214,11 @@ export function get(dotted, { config = load(), env = process.env } = {}) {
 // Where the value of `dotted` comes from: the DF_* variable that overrides it, else the last layer that sets it
 // ('project', or 'file' when DF_CONFIG replaces the project layer), else 'default'.
 export function sourceOf(dotted, { from = process.cwd(), env = process.env } = {}) {
-	const ls = layers({ from, env });
+	return sourceFrom(layers({ from, env }), dotted, env);
+}
+
+// sourceOf over layers already read (the settings page reads them once).
+export function sourceFrom(ls, dotted, env = process.env) {
 	dotted = resolvePath(
 		dotted,
 		ls.reduce((acc, l) => merge(acc, l.data), {}),

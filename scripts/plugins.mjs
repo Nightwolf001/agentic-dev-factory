@@ -241,7 +241,7 @@ export function applyPlugins(plan, { repo, env = process.env } = {}) {
 
 const WHERE = { user: 'all projects', project: 'this project', local: 'this project' };
 
-function runSync({ dry = false, root } = {}) {
+export function runSync({ dry = false, root } = {}) {
 	const cat = pluginCatalog();
 	const ls = layers({ from: root ?? process.cwd() });
 	const want = desiredPlugins(ls, cat);

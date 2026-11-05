@@ -46,3 +46,40 @@ export function loadTrackerEnv({ env = process.env, dir = stateDir(env) } = {}) 
 	}
 	return filled;
 }
+
+// Sets NAME in <state>/.env.local, mode 600. The line that holds NAME is replaced where it stands (an `export ` prefix is kept) and
+// every other line, comment and blank is left as it is; a new name is appended. The file is sourced by the shell that starts a
+// scheduled pass, so a value that is not plain text is single-quoted, and one that cannot be (a quote or a line break) is refused.
+// Never prints the value. -> the file
+export function setEnvValue(name, value, { env = process.env, dir = stateDir(env) } = {}) {
+	if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error(`${name} is not a variable name`);
+	const text = String(value);
+	if (/['\r\n\0]/.test(text)) throw new Error(`the value of ${name} holds a quote or a line break, which .env.local cannot keep safely`);
+	const file = path.join(dir, '.env.local');
+	let lines = [];
+	try {
+		lines = fs.readFileSync(file, 'utf8').split('\n');
+		if (lines.at(-1) === '') lines.pop();
+	} catch {
+		// no store yet
+	}
+	const own = new RegExp(`^(\\s*(?:export\\s+)?)${name}=`);
+	const written = (prefix = '') => `${prefix}${name}=${/^[A-Za-z0-9_.\/:@+=,%-]*$/.test(text) ? text : `'${text}'`}`;
+	let placed = false;
+	const out = [];
+	for (const line of lines) {
+		const m = own.exec(line);
+		if (!m) out.push(line);
+		else if (!placed) {
+			out.push(written(m[1]));
+			placed = true;
+		}
+	}
+	if (!placed) out.push(written());
+	fs.mkdirSync(dir, { recursive: true });
+	const tmp = `${file}.${process.pid}.tmp`;
+	fs.writeFileSync(tmp, `${out.join('\n')}\n`, { mode: 0o600 });
+	fs.chmodSync(tmp, 0o600);
+	fs.renameSync(tmp, file);
+	return file;
+}

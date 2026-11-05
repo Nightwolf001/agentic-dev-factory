@@ -4,6 +4,8 @@
 //   dev-factory install [--apply] [--load] launchers, plugins and the scheduler for this repository
 //   dev-factory mcp list|enable|connect... optional MCP servers
 //   dev-factory plugins sync|list          companion plugins, for all projects or this one
+//   dev-factory settings [list|set|reset]  every server, plugin, secret and setting with its value and source; edit them on a page
+//   dev-factory migrate [--apply]          move this repository's old settings and QA files into .devfactory/
 //   dev-factory tasks list|create|init...  tasks in the configured task source
 //   dev-factory config get|validate|...    read the layered configuration; write-from-env fills .devfactory/ from DF_PROJECT_*
 //   dev-factory scheduler on|off|status    switch the scheduled passes of this repository on or off
@@ -30,6 +32,9 @@ export const COMMANDS = {
 	plugins: ['node', 'scripts/plugins.mjs'],
 	tasks: ['node', 'scripts/tasks.mjs'],
 	config: ['node', 'scripts/config.mjs'],
+	settings: ['node', 'scripts/settings.mjs'],
+	// a fixed extra argument follows the script: `dev-factory migrate` is `project-dir.mjs migrate`
+	migrate: ['node', 'scripts/project-dir.mjs', 'migrate'],
 	tick: ['bash', 'scripts/tick.sh'],
 	improve: ['bash', 'scripts/improve.sh'],
 	scheduler: ['bash', 'scripts/scheduler.sh'],
@@ -49,7 +54,7 @@ export function resolve(argv) {
 	if (name === 'path') return { print: PLUGIN_ROOT };
 	const found = COMMANDS[name];
 	if (!found) return { usage: `usage: dev-factory ${[...Object.keys(COMMANDS), 'path'].join('|')} [args]` };
-	return { cmd: found[0], args: [path.join(PLUGIN_ROOT, found[1]), ...rest] };
+	return { cmd: found[0], args: [path.join(PLUGIN_ROOT, found[1]), ...found.slice(2), ...rest] };
 }
 
 if (isMain(import.meta.url)) {
