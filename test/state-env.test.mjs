@@ -67,6 +67,17 @@ test('a Jira list typed in a terminal finds the credentials in the state folder'
 	assert.equal(without.status, 21);
 });
 
+test('loadTrackerEnv also fills an empty JIRA_SITE, and leaves a set one', () => {
+	const dir = tmp();
+	fs.writeFileSync(path.join(dir, '.env.local'), 'JIRA_SITE=from-file.example.atlassian.net\n');
+	const env = { JIRA_SITE: '' };
+	assert.deepEqual(loadTrackerEnv({ env, dir }), ['JIRA_SITE']);
+	assert.equal(env.JIRA_SITE, 'from-file.example.atlassian.net');
+	const set = { JIRA_SITE: 'mine.example.atlassian.net' };
+	assert.deepEqual(loadTrackerEnv({ env: set, dir }), []);
+	assert.equal(set.JIRA_SITE, 'mine.example.atlassian.net');
+});
+
 // ---- import-env.sh ----
 
 function setup(extra = {}) {

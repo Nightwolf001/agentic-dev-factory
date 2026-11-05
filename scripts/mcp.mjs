@@ -57,7 +57,7 @@ export function disable(ids, file) {
 
 // What this setup would use: the tracker's server for the chosen source, the ones flagged recommended, and the ones flagged
 // required. A required server is part of what the factory needs on this machine, so setup always enables it and the doctor fails
-// while it is missing or down. The catalog flags none: which servers a deployment cannot do without is its own choice.
+// while it is missing or down. The catalog flags playwright (every UI change needs a browser walk); maestro is required by requiredServers(config) once mobile.appDir is set.
 export function recommend(cfg, cat = catalog()) {
 	const source = get('tasks.source', { config: cfg });
 	const ids = Object.entries(cat)

@@ -286,12 +286,17 @@ export function requiredFor(config) {
 	return [...REQUIRED, ...SOURCE_NEEDS[source].map((k) => `sources.${source}.${k}`), ...STATE_KEYS.map((k) => `sources.${source}.states.${k}`)];
 }
 
-// The MCP servers a configuration cannot do without: the browser for web QA, and the device runner once a mobile app is set.
-export function requiredServers(config) {
-	return dig(config, 'mobile.appDir') != null ? ['playwright', 'maestro'] : ['playwright'];
+const readPluginFile = (rel) => JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, rel), 'utf8'));
+
+// The MCP servers a configuration cannot do without: those the catalog flags `required` (the browser for web QA), and the device
+// runner once a mobile app is set, which the catalog cannot say because it depends on the configuration.
+export function requiredServers(config, servers = readPluginFile('mcp/catalog.json').servers ?? {}) {
+	const ids = Object.entries(servers)
+		.filter(([, s]) => s?.required === true)
+		.map(([id]) => id);
+	return dig(config, 'mobile.appDir') != null && !ids.includes('maestro') ? [...ids, 'maestro'] : ids;
 }
 
-const readPluginFile = (rel) => JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, rel), 'utf8'));
 const catalogIds = () => Object.keys(readPluginFile('mcp/catalog.json').servers ?? {});
 const pluginList = () => readPluginFile('plugins.json').plugins ?? [];
 

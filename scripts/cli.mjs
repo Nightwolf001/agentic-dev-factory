@@ -39,6 +39,7 @@ export const COMMANDS = {
 	cleanup: ['node', 'scripts/cleanup.mjs'],
 	update: ['node', 'scripts/update.mjs'],
 	'import-env': ['bash', 'scripts/import-env.sh'],
+	'jira-mcp': ['node', 'scripts/jira-mcp.mjs'],
 };
 
 export function resolve(argv) {

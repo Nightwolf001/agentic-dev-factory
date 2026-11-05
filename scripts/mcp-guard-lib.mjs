@@ -1,4 +1,4 @@
-// Rules for the read-only Sentry and Axiom MCP tools. Enforced by hook, not by instruction.
+// Rules for the read-only Sentry and Axiom MCP tools, and for the GitHub MCP server inside a run. Enforced by hook, not by instruction.
 // Pure function so it is unit-tested; mcp-guard.mjs feeds it the PreToolUse input.
 //
 // Three kinds of server carry these tools: the plugin's own (`plugin_dev-factory_sentry`), one from the repository's .mcp.json
@@ -14,6 +14,11 @@ const isWrite = (tool) => SNAKE.test(tool) || CAMEL.test(tool);
 // The server is named plugin_dev-factory_<id> when the plugin starts it, <id> when the repository's .mcp.json does, and
 // claude_ai_<Id> for a claude.ai connector.
 const PREFIX = /^mcp__(plugin_dev-factory_|claude_ai_)?(sentry|axiom)__(.+)$/i;
+
+// GitHub is the person's own server, so it is judged inside a factory run only. There it may read (get, list, search, and the
+// `<thing>_read` tools); every change goes through the guarded gh CLI, whose pushes and merges the shell guard already limits.
+const GITHUB = /^mcp__(?:plugin_dev-factory_|claude_ai_)?github__(.+)$/i;
+const GITHUB_READ = /^(get|list|search)_|_read$/i;
 
 // Sentry's connector runs its other tools through one tool, `execute_sentry_tool`, which names the tool it runs. That name,
 // not the wrapper's, decides whether the call writes. The input key and the key holding its arguments are not fixed, so the
@@ -47,6 +52,14 @@ export function datasetsIn(input) {
 
 // inRun: the event belongs to a factory run. role: that run's role, when known.
 export function evaluateMcp({ toolName, toolInput = {}, config, inRun, role }) {
+	const gh = GITHUB.exec(toolName || '');
+	if (gh) {
+		if (inRun !== true || GITHUB_READ.test(gh[1])) return { deny: false };
+		return {
+			deny: true,
+			reason: `dev-factory guard: github ${gh[1]}: a run reaches GitHub through the guarded gh CLI; the GitHub MCP server is read-only here`,
+		};
+	}
 	const m = PREFIX.exec(toolName || '');
 	if (!m) return { deny: false };
 	const connector = m[1] === 'claude_ai_';

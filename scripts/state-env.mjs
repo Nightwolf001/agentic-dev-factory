@@ -1,13 +1,13 @@
 // The task-source credentials for a command a person runs by hand. A scheduled pass loads the state folder's .env.local into its
 // environment (scripts/runtime.sh); `dev-factory tasks list` typed in a terminal has no such step, so a Jira list there would fail
-// or, worse, look empty. This reads the file as TEXT and takes only the tracker credential names from it, and only for names the
+// or, worse, look empty. This reads the file as TEXT and takes only the tracker credential names (and the Jira host) from it, and only for names the
 // environment does not already set. It never executes the file (no `source`, no substitution): whatever else the file holds, such as
 // DF_TAKEOVER or a command in a value, stays where it is.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-export const TRACKER_NAMES = ['JIRA_EMAIL', 'JIRA_API_TOKEN', 'NOTION_TOKEN'];
+export const TRACKER_NAMES = ['JIRA_EMAIL', 'JIRA_API_TOKEN', 'JIRA_SITE', 'NOTION_TOKEN'];
 
 // NAME=value or export NAME=value, one per line. A value in matching quotes loses them; nothing is expanded, so $(...) and $VAR stay literal text.
 export function parseEnvText(text) {

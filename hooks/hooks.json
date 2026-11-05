@@ -22,7 +22,7 @@
 				]
 			},
 			{
-				"matcher": "mcp__(plugin_dev-factory_|claude_ai_)?([Ss]entry|[Aa]xiom)__.*",
+				"matcher": "mcp__(plugin_dev-factory_|claude_ai_)?([Ss]entry|[Aa]xiom|[Gg]it[Hh]ub)__.*",
 				"hooks": [
 					{
 						"type": "command",

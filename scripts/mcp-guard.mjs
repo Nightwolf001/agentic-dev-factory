@@ -1,4 +1,4 @@
-// PreToolUse hook entry for the Sentry and Axiom MCP tools.
+// PreToolUse hook entry for the Sentry and Axiom MCP tools, and for GitHub's inside a run.
 import { load } from './config.mjs';
 import { evaluateMcp } from './mcp-guard-lib.mjs';
 import { resolveRun } from './run-context.mjs';

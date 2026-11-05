@@ -278,10 +278,48 @@ test('--lenient and --ci turn the failure into a warning, and an ordinary server
 	assert.match(doctor, /\[ "\$CI" = 1 \] && LENIENT=1/);
 });
 
-test('the shipped catalog flags no server required, and a required flag has to be a boolean', async () => {
+// Every UI change needs a browser walk, so playwright is the one server the catalog flags required. maestro is required only once
+// mobile.appDir is set, which the catalog cannot say: requiredServers(config) in scripts/config.mjs adds it.
+test('the shipped catalog flags exactly playwright required, and a required flag has to be a boolean', async () => {
 	const { catalog } = await import('../scripts/mcp.mjs');
-	for (const [id, s] of Object.entries(catalog())) {
-		assert.ok(s.required === undefined || typeof s.required === 'boolean', `${id}.required`);
-		assert.notEqual(s.required, true, `${id}: which servers a deployment cannot do without is its own choice`);
+	for (const [id, s] of Object.entries(catalog())) assert.ok(s.required === undefined || typeof s.required === 'boolean', `${id}.required`);
+	assert.deepEqual(
+		Object.entries(catalog())
+			.filter(([, s]) => s.required === true)
+			.map(([id]) => id),
+		['playwright'],
+	);
+});
+
+test('every catalog server names a defaultScope of user or project', () => {
+	const scopes = Object.fromEntries(Object.entries(catalog()).map(([id, s]) => [id, s.defaultScope]));
+	for (const [id, scope] of Object.entries(scopes)) assert.ok(['user', 'project'].includes(scope), `${id}: ${scope}`);
+	for (const id of ['playwright', 'maestro', 'jira', 'atlassian', 'notion', 'context7', 'github', 'sequential-thinking'])
+		assert.equal(scopes[id], 'user', id);
+	for (const id of ['21st', 'sentry', 'axiom']) assert.equal(scopes[id], 'project', id);
+});
+
+test('jira and github are in the catalog and their configs hold variable references, no values', () => {
+	const cat = catalog();
+	assert.ok(cat.jira && cat.github);
+	assert.equal(cat.jira.recommended, false);
+	assert.equal(cat.jira.tracker, 'jira', 'recommended only when tasks.source = jira, like atlassian');
+	assert.deepEqual(cat.jira.config.args, ['jira-mcp']);
+	assert.deepEqual(Object.keys(cat.jira.config.env), ['JIRA_EMAIL', 'JIRA_API_TOKEN']);
+	assert.deepEqual(cat.jira.secrets, ['JIRA_EMAIL', 'JIRA_API_TOKEN']);
+	assert.ok(cat.jira.requires.some((r) => /dev-factory install --apply/.test(r)));
+	assert.equal(cat.github.config.url, 'https://api.githubcopilot.com/mcp/');
+	assert.deepEqual(cat.github.secrets, ['GITHUB_PERSONAL_ACCESS_TOKEN']);
+	assert.deepEqual(cat.github.domains, ['api.githubcopilot.com']);
+	assert.deepEqual(cat.context7.secrets, ['CONTEXT7_API_KEY']);
+	assert.equal(cat.context7.secretsOptional, true);
+	for (const id of ['jira', 'github', 'context7']) {
+		const text = JSON.stringify(cat[id].config);
+		assert.doesNotMatch(text, id === 'context7' ? /ghp_|github_pat_/ : /ghp_|github_pat_|@/, id);
+		for (const v of [...Object.values(cat[id].config.env ?? {}), ...Object.values(cat[id].config.headers ?? {})])
+			if (typeof v === 'string') assert.match(v, /\$\{[A-Z0-9_]+:-/, `${id}: a reference, not a value`);
 	}
+	const rec = (source) => recommend(merge(load(), { tasks: { source } }));
+	assert.ok(rec('jira').includes('jira'));
+	for (const s of ['local', 'github', 'notion']) assert.ok(!rec(s).includes('jira') && !rec(s).includes('github'), s);
 });

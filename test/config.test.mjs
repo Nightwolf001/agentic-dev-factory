@@ -538,6 +538,13 @@ test('requiredServers: playwright always, maestro once a mobile app is configure
 	assert.deepEqual(requiredServers(merge(load(), { mobile: { appDir: 'apps/mobile' } })), ['playwright', 'maestro']);
 });
 
+test('requiredServers reads the catalog flags, then adds maestro for a mobile app', () => {
+	const cat = { alpha: { required: true }, beta: {}, maestro: {}, gamma: { required: true } };
+	assert.deepEqual(requiredServers(load(), cat), ['alpha', 'gamma']);
+	assert.deepEqual(requiredServers(merge(load(), { mobile: { appDir: 'apps/mobile' } }), cat), ['alpha', 'gamma', 'maestro']);
+	assert.deepEqual(requiredServers(load(), { playwright: { required: true } }), ['playwright'], 'the flags decide, not a built-in list');
+});
+
 test('validate rejects an unknown server, a non-boolean and a required server set to false', () => {
 	const bad = merge(load(), { mcp: { servers: { nope: true, sentry: 'yes', playwright: false } } });
 	const p = validate(bad);

@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { resolve } from '../scripts/cli.mjs';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -49,4 +50,11 @@ test('importing a CLI module does not run its main()', async () => {
 	});
 	assert.equal(r.stdout.trim(), 'imported');
 	assert.equal(r.stderr, '');
+});
+
+test('dev-factory jira-mcp resolves to the Jira token server, passing its arguments on', () => {
+	const r = resolve(['jira-mcp', '--x']);
+	assert.equal(r.cmd, 'node');
+	assert.equal(r.args[0], path.join(ROOT, 'scripts/jira-mcp.mjs'));
+	assert.deepEqual(r.args.slice(1), ['--x']);
 });
