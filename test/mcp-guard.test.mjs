@@ -157,6 +157,10 @@ test('GitHub is read-only inside a run, whichever server carries it, and free ou
 		'mcp__claude_ai_GitHub__push_files',
 		'mcp__plugin_dev-factory_github__create_issue',
 		'mcp__github__add_issue_comment',
+		'mcp__github__get_or_create_branch',
+		'mcp__github__search_and_replace_file',
+		'mcp__github__list_and_delete_branches',
+		'mcp__github__getOrCreateBranch',
 	]) {
 		const v = gh(t);
 		assert.equal(v.deny, true, t);
@@ -168,6 +172,9 @@ test('GitHub is read-only inside a run, whichever server carries it, and free ou
 		'mcp__github__search_code',
 		'mcp__github__pull_request_read',
 		'mcp__claude_ai_GitHub__get_me',
+		'mcp__github__list_workflow_runs',
+		'mcp__github__get_job_logs',
+		'mcp__github__get_pull_request_diff',
 	])
 		assert.equal(gh(t).deny, false, t);
 	assert.equal(gh('mcp__github__merge_pull_request', false).deny, false, 'outside a run the server is the person’s');

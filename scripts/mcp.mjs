@@ -23,6 +23,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { get, load } from './config.mjs';
 import { isMain } from './is-main.mjs';
+import { loadTrackerEnv } from './state-env.mjs';
 
 const CATALOG = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'mcp', 'catalog.json');
 
@@ -58,12 +59,26 @@ export function disable(ids, file) {
 // What this setup would use: the tracker's server for the chosen source, the ones flagged recommended, and the ones flagged
 // required. A required server is part of what the factory needs on this machine, so setup always enables it and the doctor fails
 // while it is missing or down. The catalog flags playwright (every UI change needs a browser walk); maestro is required by requiredServers(config) once mobile.appDir is set.
-export function recommend(cfg, cat = catalog()) {
+//
+// Two servers serve Jira with the same tool names (`jira` on an API token, `atlassian` on OAuth), so exactly one is recommended: the one
+// the repository's .mcp.json already has, else `jira` when JIRA_EMAIL and JIRA_API_TOKEN are available (the environment, or the state
+// folder's .env.local read as text), else `atlassian`, whose login at least works by hand. `file`, `env` and `dir` are for tests.
+export function recommend(cfg, cat = catalog(), { file, env = process.env, dir } = {}) {
 	const source = get('tasks.source', { config: cfg });
+	const tracker = source === 'jira' ? 'jira' : source === 'notion' ? 'notion' : null;
 	const ids = Object.entries(cat)
-		.filter(([, s]) => s.required === true || s.recommended || s.tracker === (source === 'jira' ? 'jira' : source === 'notion' ? 'notion' : null))
+		.filter(([, s]) => s.required === true || s.recommended || s.tracker === tracker)
 		.map(([id]) => id);
-	return ids;
+	const jira = ids.filter((id) => tracker === 'jira' && cat[id].tracker === 'jira');
+	if (jira.length < 2) return ids;
+	const have = file ? Object.keys(readProject(file).mcpServers ?? {}) : [];
+	let pick = jira.find((id) => have.includes(id));
+	if (!pick) {
+		const scratch = { ...env };
+		loadTrackerEnv({ env: scratch, ...(dir ? { dir } : {}) });
+		pick = scratch.JIRA_EMAIL && scratch.JIRA_API_TOKEN && jira.includes('jira') ? 'jira' : jira.includes('atlassian') ? 'atlassian' : jira[0];
+	}
+	return ids.filter((id) => !jira.includes(id) || id === pick);
 }
 
 // ---- what Claude already knows about: the text of `claude mcp list` ----
@@ -239,7 +254,7 @@ if (isMain(import.meta.url)) {
 					`${s.enabled ? 'on ' : s.elsewhere ? 'ext' : 'off'}  ${s.id.padEnd(20)} ${s.purpose}${s.elsewhere ? `\n     already available as "${s.elsewhere}"` : ''}\n     without it: ${s.without}`,
 				);
 		} else if (cmd === 'enable' || cmd === 'connect') {
-			const chosen = cmd === 'connect' ? (rest.includes('--all') ? Object.keys(catalog()) : recommend(load())) : ids;
+			const chosen = cmd === 'connect' ? (rest.includes('--all') ? Object.keys(catalog()) : recommend(load(), catalog(), { file })) : ids;
 			const listing = claudeListing();
 			const plan = planEnable(chosen, file, listing, { force });
 			const added = enable(plan.write, file);
@@ -260,7 +275,7 @@ if (isMain(import.meta.url)) {
 				}
 			}
 		} else if (cmd === 'disable') console.log(JSON.stringify({ removed: disable(ids, file) }));
-		else if (cmd === 'recommend') console.log(recommend(load()).join(' '));
+		else if (cmd === 'recommend') console.log(recommend(load(), catalog(), { file }).join(' '));
 		else if (cmd === 'doctor')
 			for (const l of doctorLines(file, claudeListing(), catalog(), { lenient: process.argv.includes('--lenient') }))
 				console.log(`${{ ok: 'ok   ', warn: 'warn ', fail: 'FAIL ' }[l.level]} ${l.text}`);

@@ -6,7 +6,7 @@
 // are used. A connector belongs to the person and is also used in their own sessions, so it is guarded only inside a factory
 // run (`inRun`).
 const VERBS =
-	'update|resolve|assign|merge|create|delete|mute|ingest|write|edit|set|add|remove|archive|ignore|unresolve|post|send|upload|import|trigger|manage';
+	'update|resolve|assign|merge|create|delete|mute|ingest|write|edit|set|add|remove|archive|ignore|unresolve|post|send|upload|import|trigger|manage|replace|push|fork|close|submit|cancel';
 // snake_case, kebab-case and camelCase tool names alike.
 const SNAKE = new RegExp(`(^|[_-])(${VERBS})([_-]|$)`, 'i');
 const CAMEL = new RegExp(`(^(${VERBS})|[a-z](${VERBS.replace(/\b[a-z]/g, (c) => c.toUpperCase())}))([A-Z]|$)`);
@@ -16,7 +16,8 @@ const isWrite = (tool) => SNAKE.test(tool) || CAMEL.test(tool);
 const PREFIX = /^mcp__(plugin_dev-factory_|claude_ai_)?(sentry|axiom)__(.+)$/i;
 
 // GitHub is the person's own server, so it is judged inside a factory run only. There it may read (get, list, search, and the
-// `<thing>_read` tools); every change goes through the guarded gh CLI, whose pushes and merges the shell guard already limits.
+// `<thing>_read` tools) and only when the name holds no write verb, so `get_or_create_x` or `search_and_replace_x` is refused;
+// every change goes through the guarded gh CLI, whose pushes and merges the shell guard already limits.
 const GITHUB = /^mcp__(?:plugin_dev-factory_|claude_ai_)?github__(.+)$/i;
 const GITHUB_READ = /^(get|list|search)_|_read$/i;
 
@@ -54,7 +55,7 @@ export function datasetsIn(input) {
 export function evaluateMcp({ toolName, toolInput = {}, config, inRun, role }) {
 	const gh = GITHUB.exec(toolName || '');
 	if (gh) {
-		if (inRun !== true || GITHUB_READ.test(gh[1])) return { deny: false };
+		if (inRun !== true || (GITHUB_READ.test(gh[1]) && !isWrite(gh[1]))) return { deny: false };
 		return {
 			deny: true,
 			reason: `dev-factory guard: github ${gh[1]}: a run reaches GitHub through the guarded gh CLI; the GitHub MCP server is read-only here`,

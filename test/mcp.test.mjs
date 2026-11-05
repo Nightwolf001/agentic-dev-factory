@@ -45,11 +45,44 @@ test('status lists the whole catalog with what is enabled; allow rules cover bot
 });
 
 test('the tracker server follows the chosen task source, and nothing else is recommended beyond the basics', () => {
-	const rec = (source) => recommend(merge(load(), { tasks: { source } }));
+	const none = { env: {}, dir: fs.mkdtempSync(path.join(os.tmpdir(), 'df-rec-')) };
+	const rec = (source) => recommend(merge(load(), { tasks: { source } }), catalog(), none);
 	assert.ok(rec('jira').includes('atlassian') && !rec('jira').includes('notion'));
 	assert.ok(rec('notion').includes('notion') && !rec('notion').includes('atlassian'));
 	for (const s of ['local', 'github']) assert.ok(!rec(s).includes('atlassian') && !rec(s).includes('notion'), s);
 	assert.ok(!rec('local').includes('sentry'), 'telemetry is never recommended unasked');
+});
+
+test('for tasks.source = jira exactly one Jira server is recommended: the enabled one, else jira on credentials, else atlassian', () => {
+	const cfg = merge(load(), { tasks: { source: 'jira' } });
+	const empty = () => fs.mkdtempSync(path.join(os.tmpdir(), 'df-rec-'));
+	const jiraOf = (ids) => ids.filter((id) => ['jira', 'atlassian'].includes(id));
+	const creds = { JIRA_EMAIL: 'a@example.com', JIRA_API_TOKEN: 'tok' };
+	// no credentials anywhere: the OAuth server
+	assert.deepEqual(jiraOf(recommend(cfg, catalog(), { env: {}, dir: empty() })), ['atlassian']);
+	assert.deepEqual(
+		jiraOf(recommend(cfg, catalog(), { env: { JIRA_EMAIL: 'a@example.com' }, dir: empty() })),
+		['atlassian'],
+		'a token is needed too',
+	);
+	// credentials in the environment
+	assert.deepEqual(jiraOf(recommend(cfg, catalog(), { env: { ...creds }, dir: empty() })), ['jira']);
+	// credentials in the state folder's .env.local, which the call does not copy into the environment
+	const dir = empty();
+	fs.writeFileSync(path.join(dir, '.env.local'), 'JIRA_EMAIL=a@example.com\nJIRA_API_TOKEN=tok\n');
+	const env = {};
+	assert.deepEqual(jiraOf(recommend(cfg, catalog(), { env, dir })), ['jira']);
+	assert.deepEqual(env, {}, 'the caller’s environment is left alone');
+	// a repository that already has one keeps it, whatever the credentials say
+	const file = tmp();
+	enable(['atlassian'], file);
+	assert.deepEqual(jiraOf(recommend(cfg, catalog(), { file, env: { ...creds }, dir })), ['atlassian']);
+	const file2 = tmp();
+	enable(['jira'], file2);
+	assert.deepEqual(jiraOf(recommend(cfg, catalog(), { file: file2, env: {}, dir: empty() })), ['jira']);
+	// the rest of the recommendation is unchanged, and other sources never recommend either
+	assert.ok(recommend(cfg, catalog(), { env: {}, dir: empty() }).includes('playwright'));
+	for (const source of ['local', 'github', 'notion']) assert.deepEqual(jiraOf(recommend(merge(load(), { tasks: { source } }))), [], source);
 });
 
 test('the scheduled settings open only the hosts of enabled servers and of the chosen tracker', () => {
@@ -319,7 +352,8 @@ test('jira and github are in the catalog and their configs hold variable referen
 		for (const v of [...Object.values(cat[id].config.env ?? {}), ...Object.values(cat[id].config.headers ?? {})])
 			if (typeof v === 'string') assert.match(v, /\$\{[A-Z0-9_]+:-/, `${id}: a reference, not a value`);
 	}
-	const rec = (source) => recommend(merge(load(), { tasks: { source } }));
+	const creds = { env: { JIRA_EMAIL: 'a@example.com', JIRA_API_TOKEN: 'tok' }, dir: fs.mkdtempSync(path.join(os.tmpdir(), 'df-rec-')) };
+	const rec = (source) => recommend(merge(load(), { tasks: { source } }), catalog(), creds);
 	assert.ok(rec('jira').includes('jira'));
 	for (const s of ['local', 'github', 'notion']) assert.ok(!rec(s).includes('jira') && !rec(s).includes('github'), s);
 });

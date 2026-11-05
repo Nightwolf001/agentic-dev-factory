@@ -269,9 +269,11 @@ test('the MCP handshake, the tool list and a call, as a client sends them', asyn
 
 test('the server runs over stdio and refuses to start without its credentials', async () => {
 	const script = path.resolve(import.meta.dirname, '../scripts/jira-mcp.mjs');
+	// an empty state folder: the server reads <DF_STATE_DIR>/.env.local, never the developer's own
+	const state = fs.mkdtempSync(path.join(os.tmpdir(), 'df-jira-spawn-'));
 	const run = (env, lines) =>
 		new Promise((resolve) => {
-			const c = spawn(process.execPath, [script], { env: { PATH: process.env.PATH, ...env }, cwd: os.tmpdir() });
+			const c = spawn(process.execPath, [script], { env: { PATH: process.env.PATH, DF_STATE_DIR: state, ...env }, cwd: os.tmpdir() });
 			let out = '';
 			let err = '';
 			c.stdout.on('data', (d) => (out += d));
