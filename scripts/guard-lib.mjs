@@ -822,6 +822,9 @@ function judge(command, ctx) {
 			reason = 'direct task-tracker access is reserved for the scheduler, which sends only QA screenshots to a Notion upload URL';
 		if (!reason && FACTORY_ROLES.has(ctx.role) && /^node\s+\S*tasks\.mjs"?\s+(set-state|comment|label|link|block|create|init)\b/.test(seg))
 			reason = 'the task tracker is written only by the scheduler, not by a factory agent (tasks.mjs ' + seg.split(/\s+/)[2] + ')';
+		// run.json records the role and limits a run is judged by: a factory agent does not rewrite its own
+		if (!reason && FACTORY_ROLES.has(ctx.role) && /^node\s+\S*run-context\.mjs"?\s+write\b/.test(seg))
+			reason = 'run state is written only by the scheduler, not by a factory agent (run-context.mjs write)';
 		if (!reason && /^docker\s+(system|volume|image|builder|network|container)\s+prune/.test(body)) reason = 'docker prune is not allowed';
 		if (!reason && FACTORY_ROLES.has(ctx.role)) reason = denyProcessControl(seg, cmd, args, ctx);
 		if (
