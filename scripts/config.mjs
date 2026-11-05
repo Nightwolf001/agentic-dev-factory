@@ -215,7 +215,11 @@ export function get(dotted, { config = load(), env = process.env } = {}) {
 // ('project', or 'file' when DF_CONFIG replaces the project layer), else 'default'.
 export function sourceOf(dotted, { from = process.cwd(), env = process.env } = {}) {
 	const ls = layers({ from, env });
-	dotted = resolvePath(dotted, merge(ls[0].data, {}), env);
+	dotted = resolvePath(
+		dotted,
+		ls.reduce((acc, l) => merge(acc, l.data), {}),
+		env,
+	);
 	const name = ENV_OVERRIDES[dotted];
 	if (name && env[name] !== undefined && env[name] !== '') return name;
 	for (const l of [...ls].reverse()) {
@@ -521,9 +525,12 @@ const FROM_ENV = [
 
 // Writes .devfactory/config.json and .devfactory/qa.yaml from DF_PROJECT_CONFIG and DF_PROJECT_QA, for a checkout that does
 // not have them (they are never committed). Returns { code, messages }: code 1 when a value is invalid, a variable is unset
-// without ifSet, or a file exists without force. Nothing is written when a value is invalid.
+// without ifSet, or a file exists without force or ifSet (with ifSet an existing file is kept and named in `notes`).
+// Nothing is written when a value is invalid. `wrote` lists the files written.
 export function writeFromEnv({ from = process.cwd(), env = process.env, ifSet = false, force = false } = {}) {
 	const messages = [];
+	const notes = [];
+	const wrote = [];
 	let code = 0;
 	const todo = [];
 	for (const item of FROM_ENV) {
@@ -541,28 +548,32 @@ export function writeFromEnv({ from = process.cwd(), env = process.env, ifSet = 
 			try {
 				parsed = JSON.parse(text);
 			} catch (e) {
-				return { code: 1, messages: [`${item.variable} is not valid JSON: ${e.message}`] };
+				return { code: 1, messages: [`${item.variable} is not valid JSON: ${e.message}`], notes, wrote };
 			}
-			if (!isObject(parsed)) return { code: 1, messages: [`${item.variable} must be a JSON object`] };
+			if (!isObject(parsed)) return { code: 1, messages: [`${item.variable} must be a JSON object`], notes, wrote };
 		}
 		todo.push({ ...item, text });
 	}
-	if (todo.length === 0) return { code, messages };
+	if (todo.length === 0) return { code, messages, notes, wrote };
 	const root = projectRoot(from);
-	if (!root) return { code: 1, messages: [...messages, 'not inside a git repository: nowhere to write .devfactory/'] };
+	if (!root) return { code: 1, messages: [...messages, 'not inside a git repository: nowhere to write .devfactory/'], notes, wrote };
 	ensureProjectDir(root);
 	for (const item of todo) {
 		const file = path.join(root, item.file);
 		if (fs.existsSync(file) && !force) {
-			messages.push(`${file} exists: kept (use --force to replace it)`);
-			code = 1;
+			// A session start runs this with ifSet on every start, so a configured checkout is not a failure there.
+			if (ifSet) notes.push(`${file} exists, kept (use --force to replace it)`);
+			else {
+				messages.push(`${file} exists: kept (use --force to replace it)`);
+				code = 1;
+			}
 			continue;
 		}
 		fs.mkdirSync(path.dirname(file), { recursive: true });
 		fs.writeFileSync(file, item.text);
-		messages.push(`wrote ${file}`);
+		wrote.push(file);
 	}
-	return { code, messages };
+	return { code, messages, notes, wrote };
 }
 
 if (isMain(import.meta.url)) {
@@ -591,8 +602,10 @@ if (isMain(import.meta.url)) {
 		}
 		console.log('config: ok');
 	} else if (cmd === 'write-from-env') {
-		const { code, messages } = writeFromEnv({ ifSet: flag('--if-set'), force: flag('--force') });
-		for (const m of messages) (code ? console.error : console.log)(`config: ${m}`);
+		const { code, messages, notes, wrote } = writeFromEnv({ ifSet: flag('--if-set'), force: flag('--force') });
+		for (const f of wrote) console.log(`config: wrote ${f}`);
+		for (const n of notes) console.error(`note: ${n}`);
+		for (const m of messages) console.error(`config: ${m}`);
 		process.exit(code);
 	} else {
 		console.error('usage: config.mjs get <path> | agent <role> | validate | write-from-env [--if-set] [--force]');

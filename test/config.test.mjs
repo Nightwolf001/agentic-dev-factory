@@ -667,3 +667,39 @@ test('write-from-env outside a git repository says so', () => {
 	assert.equal(r.status, 1);
 	assert.match(r.stderr, /not inside a git repository/);
 });
+
+test('sourceOf resolves source. paths against every layer, as get() does', () => {
+	const { repo, state, opts } = world();
+	put(repo, '.devfactory/config.json', { tasks: { source: 'github' }, sources: { github: { states: { inProgress: 'wip' } } } });
+	assert.equal(get('source.states.inProgress', { config: load(undefined, opts), env: opts.env }), 'wip');
+	assert.equal(sourceOf('source.states.inProgress', opts), 'project');
+	put(state, 'config.json', { sources: { github: { states: { done: ['shipped'] } } } });
+	assert.equal(sourceOf('source.states.done', opts), 'user');
+	assert.equal(sourceOf('source.states.inReview', opts), 'default');
+	assert.equal(sourceOf('source.states.inProgress', { ...opts, env: { ...opts.env, DF_TASK_SOURCE: 'local' } }), 'default');
+});
+
+test('write-from-env --if-set keeps existing files, notes it on stderr and exits 0; without --if-set it exits 1', () => {
+	const { repo, state } = world();
+	put(repo, '.devfactory/config.json', '{"keep":true}');
+	put(repo, '.devfactory/qa.yaml', 'keep: 1\n');
+	const set = { DF_PROJECT_CONFIG: '{"new":true}', DF_PROJECT_QA: 'profiles: {}\n' };
+	const r = run(repo, state, ['--if-set'], set);
+	assert.equal(r.status, 0, r.stderr);
+	assert.equal(fs.readFileSync(path.join(repo, '.devfactory/config.json'), 'utf8'), '{"keep":true}');
+	assert.equal(fs.readFileSync(path.join(repo, '.devfactory/qa.yaml'), 'utf8'), 'keep: 1\n');
+	for (const f of ['config.json', 'qa.yaml'])
+		assert.match(r.stderr, new RegExp(`^note: ${quote(path.join(repo, '.devfactory', f))} exists, kept \\(use --force to replace it\\)$`, 'm'));
+	assert.equal(run(repo, state, [], set).status, 1);
+	assert.equal(run(repo, state, ['--if-set', '--force'], set).status, 0);
+	assert.deepEqual(JSON.parse(fs.readFileSync(path.join(repo, '.devfactory/config.json'), 'utf8')), { new: true });
+});
+
+test('write-from-env reports a file it wrote on stdout even when another one was kept', () => {
+	const { repo, state } = world();
+	put(repo, '.devfactory/config.json', '{"keep":true}');
+	const r = run(repo, state, [], { DF_PROJECT_CONFIG: '{"new":true}', DF_PROJECT_QA: 'profiles: {}\n' });
+	assert.equal(r.status, 1);
+	assert.match(r.stdout, /config: wrote .*qa\.yaml/);
+	assert.doesNotMatch(r.stderr, /wrote/);
+});
