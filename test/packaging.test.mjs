@@ -61,10 +61,13 @@ test('commands, skills and agents run the plugin through CLAUDE_PLUGIN_ROOT, nev
 	assert.ok(withScripts.length >= 10, 'the prompts do reference the plugin root');
 });
 
-test('QA cases are committed in the repository under .factory, and the plugin is never asked to hold them', () => {
+test('QA cases are scratch work in the repository under .devfactory, and the plugin is never asked to hold them', () => {
 	for (const f of ['skills/qa/SKILL.md', 'commands/quick.md', 'commands/plan.md', 'agents/factory-builder.md']) {
 		const t = read(f);
-		if (/qa\/cases/.test(t)) assert.match(t, /\.factory\/qa\/cases/, f);
+		if (/qa\/cases/.test(t)) {
+			assert.match(t, /\.devfactory\/qa\/cases/, f);
+			assert.doesNotMatch(t, /\.factory\/qa\/cases/, `${f}: names the old committed folder`);
+		}
 	}
 });
 
