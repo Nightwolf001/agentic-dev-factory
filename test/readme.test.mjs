@@ -3,21 +3,19 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { test } from 'node:test';
 import { ENV_OVERRIDES } from '../scripts/config.mjs';
+import { optionCatalog } from '../scripts/settings-lib.mjs';
 
 const read = (f) => fs.readFileSync(new URL(`../${f}`, import.meta.url), 'utf8');
 const config = JSON.parse(read('config.json'));
 
-// maps whose entries are the user's own (task types, status names, globs): documented as one setting
+// maps whose entries are the user's own (task types, status names, globs) are documented as one setting; the option
+// catalogue says which keys are maps. The two catalog-built sections are not options but are open as well.
 const OPEN = [
-	/^git\.branchTypes$/,
-	/^pr\.sizeLabels$/,
-	/^pr\.categoryByBranchType$/,
-	/^models\.efforts$/,
-	/^review\.specialistAxes$/,
-	/^environments$/,
+	...Object.entries(optionCatalog().options)
+		.filter(([, o]) => o.type === 'map')
+		.map(([k]) => new RegExp(`^${k.replace(/\./g, '\\.')}$`)),
 	/^mcp\.servers$/,
 	/^plugins\.enabled$/,
-	/^sources\.\w+\.(states|properties)$/,
 ];
 function leaves(obj, prefix = '') {
 	return Object.entries(obj).flatMap(([k, v]) => {

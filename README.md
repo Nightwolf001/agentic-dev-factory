@@ -614,13 +614,9 @@ The platform is **not** a default setting (a default would always win, and the t
 
 #### Repository skills
 
-| Key                    | Default | What it does                                                                                                                                 |
-| ---------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `repoSkills.implement` | `[]`    | Skills (names such as `repo-rules` or `plugin:skill`) the builder invokes at the start of the implement phase, on top of the plugin's steps. |
-| `repoSkills.qa`        | `[]`    | The same for the QA phase.                                                                                                                   |
-| `repoSkills.review`    | `[]`    | The same for each reviewer.                                                                                                                  |
-| `repoSkills.ship`      | `[]`    | The same for the ship phase.                                                                                                                 |
-| `repoSkills.diagnose`  | `[]`    | The same for the debugger. Each skill adds to the phase's steps and never replaces them.                                                     |
+| Key          | Default           | What it does                                                                                                                                                                                                                                                                                                                  |
+| ------------ | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `repoSkills` | `see config.json` | Per phase (`implement`, `qa`, `review`, `ship`, `diagnose`), a list of skills (names such as `repo-rules` or `plugin:skill`) the builder invokes at the start of that phase, the reviewers at the start of each review, the debugger at the start of diagnosis. Each skill adds to the phase's steps and never replaces them. |
 
 #### Review
 
