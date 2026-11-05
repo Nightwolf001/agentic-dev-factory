@@ -811,7 +811,10 @@ function denyFactoryWrite(inv, st) {
 	const { cmd, args } = inv;
 	let script;
 	let rest;
+	let built = false;
 	const viaCli = (words) => {
+		// a command word built at run time ($x, "$X", $(...), a backtick, a brace list) could be any of them
+		if (/[$`{]/.test(words[0] ?? '')) built = true;
 		const s = BY_CLI.get(words[0]);
 		if (!s) return;
 		script = s;
@@ -833,6 +836,8 @@ function denyFactoryWrite(inv, st) {
 			rest = args.slice(i + 1);
 		}
 	}
+	if (built)
+		return "the factory's command word is built at run time, so it cannot be told from a settings, servers or plugins writer; write it out";
 	if (!script || FACTORY_WRITERS[script].reads(rest)) return null;
 	return FACTORY_WRITERS[script].what;
 }

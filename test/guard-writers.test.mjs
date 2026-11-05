@@ -73,6 +73,18 @@ const REFUSED = [
 	'cd /tmp && dev-factory mcp sync',
 	'x=$(dev-factory mcp enable github)',
 	`P=${PLUGIN_ROOT}; node $P/scripts/settings.mjs set x y`,
+	// the command word itself built at run time
+	'x=settings; dev-factory $x set a b',
+	'dev-factory $(echo settings) set a b',
+	'dev-factory {settings,} set a b',
+	'dev-factory "$X" set a b',
+	'dev-factory `echo settings` set a b',
+	`node ${PLUGIN_ROOT}/scripts/cli.mjs $C sync`,
+	'bash -c "x=settings; dev-factory $x set a b"',
+	'bash -c "dev-factory $(echo settings) set a b"',
+	"bash -c 'dev-factory {settings,} set a b'",
+	'bash -c \'dev-factory "$X" set a b\'',
+	`bash -c "node ${PLUGIN_ROOT}/scripts/cli.mjs $C sync"`,
 ];
 
 const READS = [
