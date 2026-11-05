@@ -11,6 +11,7 @@ import { execFileSync } from 'node:child_process';
 import { get, load } from './config.mjs';
 import { isMain } from './is-main.mjs';
 import { makeSource } from './sources/index.mjs';
+import { loadTrackerEnv } from './state-env.mjs';
 
 export const AT_CAP = 20;
 export const UNKNOWN = 21;
@@ -36,6 +37,8 @@ const ghPrs = () =>
 	JSON.parse(execFileSync('gh', ['pr', 'list', '--state', 'open', '--limit', '200', '--json', 'number,title,headRefName'], { encoding: 'utf8' }));
 
 if (isMain(import.meta.url)) {
+	// run by hand (the status command) nothing has loaded .env.local: without this a Notion count fails with a 401
+	loadTrackerEnv();
 	const argv = process.argv.slice(2);
 	const cfg = load();
 	const max = Number(argv.includes('--max') ? argv[argv.indexOf('--max') + 1] : get('caps.maxOpenPrs', { config: cfg }));

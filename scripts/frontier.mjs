@@ -19,6 +19,7 @@ import { get, load } from './config.mjs';
 import { isMain } from './is-main.mjs';
 import { isStacked, planStack, parseStackNote, stackAction, stackSettings } from './stack-lib.mjs';
 import { fingerprintOf, isBuildable, makeSource, missingCredentials } from './sources/index.mjs';
+import { loadTrackerEnv } from './state-env.mjs';
 
 export const SKIP = 20;
 export const UNKNOWN = 21;
@@ -303,6 +304,8 @@ async function main() {
 		process.exit(3);
 	}
 	discardPending(dir);
+	// a scheduled pass has loaded .env.local already; a check run by hand has not
+	loadTrackerEnv();
 	const cfg = load();
 	const missing = missingCredentials(cfg);
 	if (missing) {
