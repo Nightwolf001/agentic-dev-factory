@@ -24,41 +24,41 @@ function leaves(obj, prefix = '') {
 	});
 }
 
-test('every setting in config.json is in the README reference with its default, so the docs cannot fall behind the code', () => {
-	const readme = read('README.md');
+test('every setting in config.json is in the reference with its default, so the docs cannot fall behind the code', () => {
+	const readme = read('docs/reference.md');
 	const reference = readme.slice(readme.indexOf('### Complete reference'), readme.indexOf('## Starting a session'));
 	assert.ok(reference.length > 1000, 'the reference exists');
 	const missing = leaves(config).filter((k) => !new RegExp(`^\\|\\s*\`${k.replace(/\./g, '\\.')}\`\\s*\\|`, 'm').test(reference));
-	assert.deepEqual(missing, [], `settings missing from the README reference: ${missing.join(', ')}`);
+	assert.deepEqual(missing, [], `settings missing from the reference: ${missing.join(', ')}`);
 });
 
-test('the README names no setting that config.json does not have', () => {
-	const readme = read('README.md');
+test('the reference names no setting that config.json does not have', () => {
+	const readme = read('docs/reference.md');
 	const reference = readme.slice(readme.indexOf('### Complete reference'), readme.indexOf('## Starting a session'));
 	const known = new Set(leaves(config));
 	const documented = [...reference.matchAll(/^\|\s*`([a-z][A-Za-z.]+)`\s*\|/gm)].map((m) => m[1]);
 	assert.ok(documented.length >= known.size);
-	for (const k of documented) assert.ok(known.has(k), `README documents ${k}, which is not a setting`);
+	for (const k of documented) assert.ok(known.has(k), `the reference documents ${k}, which is not a setting`);
 });
 
-test('the variables the README lists as overriding a setting are the ones the code reads', () => {
-	const readme = read('README.md');
+test('the variables the reference lists as overriding a setting are the ones the code reads', () => {
+	const readme = read('docs/reference.md');
 	const section = readme.slice(readme.indexOf('#### Variables that override a setting'), readme.indexOf('#### Common changes'));
 	const listed = Object.fromEntries([...section.matchAll(/^\|\s*`([\w.]+)`\s*\|\s*`(DF_\w+)`\s*\|/gm)].map((m) => [m[1], m[2]]));
 	assert.deepEqual(listed, ENV_OVERRIDES);
 });
 
-test('the README examples of settings are valid settings', async () => {
+test('the reference examples of settings are valid settings', async () => {
 	const { merge, validate } = await import('../scripts/config.mjs');
-	const readme = read('README.md');
+	const readme = read('docs/reference.md');
 	const block = /#### Common changes\s+```json\n([\s\S]*?)```/.exec(readme)[1];
 	const example = JSON.parse(block);
 	for (const k of Object.keys(example)) assert.ok(k in config, `${k} is a real section`);
 	assert.deepEqual(validate(merge(config, example)), []);
 });
 
-test('the README has a Settings page section and a Moving to .devfactory section that name their commands', () => {
-	const readme = read('README.md');
+test('the reference has a Settings page section and a Moving to .devfactory section that name their commands', () => {
+	const readme = read('docs/reference.md');
 	const section = (title) => {
 		const start = readme.indexOf(`\n## ${title}\n`);
 		assert.ok(start >= 0, `## ${title}`);
@@ -74,8 +74,8 @@ test('the README has a Settings page section and a Moving to .devfactory section
 		assert.ok(moving.includes(needle), `Moving to .devfactory: ${needle}`);
 });
 
-test('the README explains the three state folders in one place and the cloud variables', () => {
-	const readme = read('README.md');
+test('the reference explains the three state folders in one place and the cloud variables', () => {
+	const readme = read('docs/reference.md');
 	for (const needle of [
 		'`.devfactory/`',
 		'`.factory/`',

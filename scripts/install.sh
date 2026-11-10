@@ -124,9 +124,9 @@ case "$SCHED" in
       else echo "to load: launchctl bootstrap gui/\$(id -u) $PLIST   (unload: launchctl bootout gui/\$(id -u)/$LABEL)"; fi
     done ;;
   github-actions) echo "scheduler: GitHub Actions. Run: dev-factory cloud init --github-actions   (writes .github/workflows/dev-factory-tick.yml)" ;;
-  routine) echo "scheduler: a Claude Code routine. Run /schedule in claude and ask for a routine that runs /dev-factory:tick every $INTERVAL minutes in this repository (see README, Cloud and scheduled runs)" ;;
+  routine) echo "scheduler: a Claude Code routine. Run /schedule in claude and ask for a routine that runs /dev-factory:tick every $INTERVAL minutes in this repository (see docs/reference.md, Cloud and Claude environments)" ;;
   *) if [ -z "$REPO" ]; then echo "scheduler: skipped, there is no repository here (run install in one to add its scheduler)"
-     else echo "scheduler: none on this machine (runtime.scheduler is $SCHED). Run 'dev-factory tick' by hand, or see README, Cloud and scheduled runs"; fi ;;
+     else echo "scheduler: none on this machine (runtime.scheduler is $SCHED). Run 'dev-factory tick' by hand, or see docs/reference.md, Cloud and Claude environments"; fi ;;
 esac
 
 cat <<TXT
