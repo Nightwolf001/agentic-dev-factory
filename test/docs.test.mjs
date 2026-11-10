@@ -33,9 +33,9 @@ test('every `dev-factory <x>` command the documentation shows is a real subcomma
 	for (const c of ['doctor', 'install', 'update', 'import-env', 'tick', 'scheduler', 'cleanup', 'qa', 'config']) assert.ok(known.has(c), c);
 });
 
-test('the commands the README presents in code blocks run a real subcommand', () => {
+test('the commands the README and the reference present in code blocks run a real subcommand', () => {
 	const known = new Set([...Object.keys(COMMANDS), 'path']);
-	const readme = text('README.md');
+	const readme = text('README.md') + '\n' + text('docs/reference.md');
 	const bad = [];
 	for (const block of readme.match(/^```(?:bash|sh|shell|zsh|console)?[ \t]*\n[\s\S]*?^```[ \t]*$/gm) ?? [])
 		for (const line of block.split('\n')) {
@@ -78,6 +78,13 @@ test('the contributor guide keeps the sections a new contributor needs, and its 
 		assert.ok(t.includes(cmd), cmd);
 	assert.match(t, /AGENTS\.md/);
 	assert.match(text('AGENTS.md'), /npx prettier@3\.2\.5 --check/);
+});
+
+test('the README stays short and points at the reference for the details', () => {
+	const t = text('README.md');
+	assert.ok(t.split('\n').length <= 150, 'the README is a quick start, the details go in docs/reference.md');
+	assert.match(t, /\(docs\/reference\.md\)/);
+	assert.match(t, /claude plugin install dev-factory@dev-factory --scope user/);
 });
 
 test('the README names every script a command or skill tells an agent to run, and every one exists', () => {
