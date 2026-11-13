@@ -649,6 +649,56 @@ test('tasks.mjs link is refused to a factory agent like every other tracker writ
 	assert.equal(evaluate(link, { branch: 'task/APP-1-x' }).deny, false, 'the scheduler may');
 });
 
+test('auto-merge is the scheduler’s alone and gh pr merge stays reserved for people', () => {
+	const FACTORY = ['builder', 'reviewer', 'debugger', 'researcher', 'improver', 'promoter'];
+	// not under a .claude/ path, which the shell guard refuses for its own reason
+	const cwd = '/work';
+	const cmd = 'node "/p/scripts/automerge.mjs" run --pr 7 --key APP-1 --labels auto-merge --worktree /w';
+	for (const role of FACTORY) {
+		const r = evaluate(cmd, { role, cwd });
+		assert.equal(r.deny, true, role);
+		assert.match(r.reason, /automerge\.mjs/, role);
+	}
+	assert.equal(evaluate(cmd, { cwd }).deny, false, 'the scheduler session has no role');
+	for (const c of ['gh pr merge 7 --squash', 'gh pr ready 7']) {
+		assert.equal(evaluate(c, { cwd }).deny, true, `${c} stays reserved for people, the scheduler included`);
+		for (const role of FACTORY) assert.equal(evaluate(c, { role, cwd }).deny, true, `${role}: ${c}`);
+	}
+});
+
+test('every way a factory agent could start automerge.mjs is refused, and the scheduler may', () => {
+	const FACTORY = ['builder', 'reviewer', 'debugger', 'researcher', 'improver', 'promoter'];
+	const cwd = '/work';
+	const run = 'run --pr 7 --key APP-1 --labels auto-merge --worktree /w';
+	const forms = [
+		`node /p/scripts/automerge.mjs --dry-run`,
+		`node "/p/scripts/automerge.mjs" --dry-run`,
+		`node '/p/scripts/automerge.mjs' ${run}`,
+		`node ./scripts/automerge.mjs ${run}`,
+		`node scripts/automerge.mjs ${run}`,
+		`FOO=1 node /p/scripts/automerge.mjs ${run}`,
+		`command node /p/scripts/automerge.mjs ${run}`,
+		`env FOO=1 node /p/scripts/automerge.mjs ${run}`,
+		`/usr/local/bin/node /p/scripts/automerge.mjs ${run}`,
+		`node --no-warnings /p/scripts/automerge.mjs ${run}`,
+		`cd /w && node /p/scripts/automerge.mjs ${run}`,
+		`git status; node /p/scripts/automerge.mjs ${run}`,
+		`bash -c 'node /p/scripts/automerge.mjs ${run}'`,
+		`sh -c "node /p/scripts/automerge.mjs ${run}"`,
+		`echo $(node /p/scripts/automerge.mjs ${run})`,
+	];
+	for (const c of forms) {
+		for (const role of FACTORY) {
+			const r = evaluate(c, { role, cwd });
+			assert.equal(r.deny, true, `${role}: ${c}`);
+			assert.match(r.reason, /automerge\.mjs/, `${role}: ${c}`);
+		}
+		assert.equal(evaluate(c, { cwd }).deny, false, `the scheduler may: ${c}`);
+	}
+	// naming the file is not running it
+	for (const role of FACTORY) assert.equal(evaluate('git log --oneline -- scripts/automerge.mjs', { role, cwd }).deny, false, role);
+});
+
 test('stopping other processes, containers and simulators is the takeover toggle’s', () => {
 	const off = (c) => evaluate(c, { role: 'builder' });
 	const on = (c) => evaluate(c, { role: 'builder', takeover: true });

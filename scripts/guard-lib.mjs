@@ -2,7 +2,8 @@
 // the PreToolUse hook input. A hook sees command strings only, so this is a guard against mistakes
 // and against ordinary bypasses (wrappers, global options, substitutions, inline interpreters), not a
 // sandbox: an agent that writes and runs its own program is stopped by the real separation, which is that
-// the builder has no task-tracker or GitHub tools, the scheduler holds the credentials, and a person merges.
+// the builder has no task-tracker or GitHub tools, the scheduler holds the credentials, and the scheduler merges only through
+// automerge.mjs, which a factory agent is refused (gh pr merge stays denied for everyone).
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -930,6 +931,10 @@ function judge(command, ctx) {
 			reason = 'direct task-tracker access is reserved for the scheduler, which sends only QA screenshots to a Notion upload URL';
 		if (!reason && FACTORY_ROLES.has(ctx.role) && /^node\s+\S*tasks\.mjs"?\s+(set-state|comment|label|link|block|create|init)\b/.test(seg))
 			reason = 'the task tracker is written only by the scheduler, not by a factory agent (tasks.mjs ' + seg.split(/\s+/)[2] + ')';
+		// merging is the scheduler's: automerge.mjs calls gh itself, where no hook sees it, so the one door is closed here. Judged on
+		// the invocation (past wrappers and options, whatever way the path is written), not on the segment's first word.
+		if (!reason && FACTORY_ROLES.has(ctx.role) && /^(node|nodejs|bun|deno)$/.test(cmd) && args.some((a) => base(a) === 'automerge.mjs'))
+			reason = "merging is the scheduler's alone, not a factory agent's (automerge.mjs)";
 		// run.json records the role and limits a run is judged by: a factory agent does not rewrite its own
 		if (!reason && FACTORY_ROLES.has(ctx.role) && /^node\s+\S*run-context\.mjs"?\s+write\b/.test(seg))
 			reason = 'run state is written only by the scheduler, not by a factory agent (run-context.mjs write)';
