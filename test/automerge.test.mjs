@@ -262,6 +262,51 @@ test('mergeArgs is the exact argument list, with no admin and no auto', () => {
 	}
 });
 
+test('unknown bot state waits instead of merging: absent, empty or non-numeric', () => {
+	const unknown = [
+		base({ bugbot: undefined }),
+		base({ bugbot: null }),
+		base({ bugbot: {} }),
+		base({ bugbot: { unresolved: undefined } }),
+		base({ bugbot: { unresolved: NaN } }),
+		base({ bugbot: { unresolved: '0' } }),
+	];
+	for (const input of unknown) {
+		const r = decide(input);
+		assert.equal(r.action, 'wait');
+		assert.ok(r.reasons.includes('bot review state unknown'), r.reasons.join('|'));
+	}
+	const off = decide(base({ bugbot: { unresolved: 0, pending: false } }));
+	assert.equal(off.action, 'merge', 'a repository with Bugbot off passes zero and is not penalised');
+});
+
+test('a blank configured label, with a task tagged blank, authorises nothing', () => {
+	const r = decide(withPr({ additions: 4000, deletions: 1000 }, { cfg: withCfg({ label: '' }), labels: [' ', ''] }));
+	assert.equal(r.action, 'off');
+	assert.equal(r.via, null);
+});
+
+test('null review or null pr is a missing fact: refused, never a throw, never a merge', () => {
+	const noReview = decide(base({ review: null }));
+	assert.equal(noReview.action, 'refused');
+	assert.match(noReview.reasons.join('|'), /review not clean/);
+	const noPr = decide({ ...base(), pr: null });
+	assert.notEqual(noPr.action, 'merge');
+	assert.equal(noPr.action, 'refused');
+});
+
+test('mergeArgs throws for anything it must not build', () => {
+	const ok = { pr: 7, head: 'abc', method: 'squash' };
+	for (const method of ['admin', 'auto', undefined, '', 'Squash', 'squash --admin'])
+		assert.throws(() => mergeArgs({ ...ok, method }), /method/, String(method));
+	for (const head of ['', '  ', undefined, null, 5]) assert.throws(() => mergeArgs({ ...ok, head }), /head/, String(head));
+	for (const pr of [0, -1, undefined, null, '7', 1.5, NaN]) assert.throws(() => mergeArgs({ ...ok, pr }), /pr/, String(pr));
+	assert.throws(() => mergeArgs());
+	for (const method of ['squash', 'merge', 'rebase']) {
+		assert.deepEqual(mergeArgs({ pr: 12, head: 'deadbeef', method }), ['pr', 'merge', '12', `--${method}`, '--match-head-commit', 'deadbeef']);
+	}
+});
+
 test('EXIT carries the documented codes', () => {
 	assert.deepEqual(EXIT, { DONE: 0, WAIT: 10, REFUSED: 11, OFF: 12, UNKNOWN: 21 });
 });

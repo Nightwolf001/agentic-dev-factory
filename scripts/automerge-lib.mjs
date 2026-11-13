@@ -25,14 +25,20 @@ export function sizeBound(cfg) {
 	return Number.isFinite(n) && n >= 1 ? n : 0;
 }
 
-export function decide({ cfg, labels = [], pr = {}, verified, review = {}, bugbot = {}, readiedHead = null } = {}) {
+export function decide(input = {}) {
+	const { cfg, labels, verified, readiedHead = null } = input;
+	// a fact that is missing or null is treated as missing, never as a throw: unknown input must fail closed
+	const pr = input.pr ?? {};
+	const review = input.review ?? {};
+	const bugbot = input.bugbot ?? null;
 	const result = (action, via = null, reasons = [], notes = []) => ({ action, via, reasons, notes });
 	if (cfg?.autoMerge?.enabled !== true) return result('off');
 
-	const have = new Set((labels ?? []).map(norm));
+	const have = new Set((Array.isArray(labels) ? labels : []).map(norm));
 	const lines = changedLines(pr);
 	const bound = sizeBound(cfg);
-	const labelled = have.has(norm(cfg.autoMerge.label));
+	const want = norm(cfg.autoMerge.label);
+	const labelled = want !== '' && have.has(want); // a blank label authorises nothing
 	// at or below the bound, 0 included: an empty PR must reach the refusal below instead of being ignored
 	const small = bound > 0 && lines <= bound;
 	if (!small && !labelled) return result('off');
@@ -53,8 +59,10 @@ export function decide({ cfg, labels = [], pr = {}, verified, review = {}, bugbo
 	if (refused.length > 0) return result('refused', via, refused);
 
 	const waiting = [];
-	if (bugbot.pending) waiting.push('the bot review is still running');
-	if (bugbot.unresolved > 0) waiting.push(`${bugbot.unresolved} bot review thread(s) unresolved`);
+	// With Bugbot off the caller passes { unresolved: 0, pending: false }; only a missing or non-numeric count is unknown.
+	if (!Number.isFinite(bugbot?.unresolved)) waiting.push('bot review state unknown');
+	if (bugbot?.pending) waiting.push('the bot review is still running');
+	if (bugbot?.unresolved > 0) waiting.push(`${bugbot.unresolved} bot review thread(s) unresolved`);
 	if (!pr.isDraft && pr.mergeStateStatus !== 'CLEAN') waiting.push(`the merge state is ${pr.mergeStateStatus || 'unknown'}, not CLEAN`);
 	if (waiting.length > 0) return result('wait', via, waiting);
 
@@ -68,4 +76,11 @@ export function decide({ cfg, labels = [], pr = {}, verified, review = {}, bugbo
 }
 
 // The whole of the merge command: the method, pinned to the commit that was checked. Never --admin, never --auto.
-export const mergeArgs = ({ pr, head, method }) => ['pr', 'merge', String(pr), `--${method}`, '--match-head-commit', head];
+// It refuses to build anything else: an unknown method (admin, auto) or an empty head (no pin) throws.
+export function mergeArgs({ pr, head, method } = {}) {
+	if (!['squash', 'merge', 'rebase'].includes(method))
+		throw new Error(`mergeArgs: method must be squash, merge or rebase, got ${JSON.stringify(method)}`);
+	if (typeof head !== 'string' || head.trim() === '') throw new Error('mergeArgs: a head commit is required to pin the merge');
+	if (!Number.isInteger(pr) || pr < 1) throw new Error(`mergeArgs: pr must be a positive integer, got ${JSON.stringify(pr)}`);
+	return ['pr', 'merge', String(pr), `--${method}`, '--match-head-commit', head];
+}
