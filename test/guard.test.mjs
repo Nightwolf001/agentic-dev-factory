@@ -654,6 +654,7 @@ test('tasks.mjs link is refused to a factory agent like every other tracker writ
 const FACTORY_ROLES = ['builder', 'reviewer', 'debugger', 'researcher', 'improver', 'promoter'];
 const WRITING_ROLES = ['builder', 'improver', 'promoter'];
 const AUTO_MERGE_REASON = /scheduler's alone/;
+const BUILT_REASON = /built at run time/;
 const AUTO_MERGE_CWD = '/work'; // not under a .claude/ path, which the shell guard refuses for its own reason
 
 test('auto-merge is the scheduler’s alone and gh pr merge stays reserved for people', () => {
@@ -735,15 +736,38 @@ test('the auto-merge refusal sees case, brace lists, globs and built words', () 
 			assert.equal(evaluate(c, { cwd }).deny, false, `the scheduler may: ${c}`);
 		}
 	}
-	// a script path built at run time, where the script goes, could be any of them
+	// a script path built at run time, where the script goes, could be any of them: said so, not as a named merge
 	for (const c of [
 		`node $SCRIPT ${run}`,
 		`node "$SCRIPT" ${run}`,
 		`node "$ROOT/scripts/x.mjs" ${run}`,
 		'node `which automerge` --dry-run',
-		'node $(find / -name automerge.mjs) --dry-run',
+		'node $(ls /p/scripts/auto*) --dry-run',
 		`node --no-warnings $SCRIPT ${run}`,
 		`npx tsx $SCRIPT ${run}`,
+		`node --test-reporter=spec $SCRIPT ${run}`,
+		`npx -p tsx tsx $SCRIPT ${run}`,
+		`npx --package tsx tsx $SCRIPT ${run}`,
+	]) {
+		for (const role of WRITING_ROLES) {
+			const r = evaluate(c, { role, cwd });
+			assert.equal(r.deny, true, `${role}: ${c}`);
+			assert.match(r.reason, BUILT_REASON, `${role}: ${c}`);
+			assert.doesNotMatch(r.reason, AUTO_MERGE_REASON, `${role}: ${c}`);
+		}
+		assert.equal(evaluate(c, { cwd }).deny, false, `the scheduler may: ${c}`);
+	}
+});
+
+test('node options that only look like --test or -e do not hide the script from the auto-merge refusal', () => {
+	const cwd = AUTO_MERGE_CWD;
+	const run = 'run --pr 7 --key APP-1 --labels auto-merge --worktree /w';
+	for (const c of [
+		`node --test-only /p/scripts/automerg?.mjs ${run}`,
+		`node --test-reporter=spec /p/scripts/auto*.mjs ${run}`,
+		`node --test-timeout=5 /p/scripts/automerge.mjs ${run}`,
+		`npx -p tsx tsx /p/scripts/auto*.mjs ${run}`,
+		`npx --package=tsx tsx /p/scripts/auto*.mjs ${run}`,
 	]) {
 		for (const role of WRITING_ROLES) {
 			const r = evaluate(c, { role, cwd });
@@ -752,6 +776,14 @@ test('the auto-merge refusal sees case, brace lists, globs and built words', () 
 		}
 		assert.equal(evaluate(c, { cwd }).deny, false, `the scheduler may: ${c}`);
 	}
+	for (const c of ['node --test test/x.test.mjs', 'node --test-reporter=spec test/x.test.mjs'])
+		for (const role of WRITING_ROLES) assert.equal(evaluate(c, { role, cwd }).deny, false, `${role}: ${c}`);
+	// inline code may be refused by the guard's own rule for it, but never as an auto-merge run
+	for (const c of ['node -p "1+1"', 'node -e "1" $X', 'node -pe "1" $X'])
+		for (const role of WRITING_ROLES) {
+			const r = evaluate(c, { role, cwd });
+			assert.equal(r.deny && /scheduler's alone|built at run time/.test(r.reason), false, `${role}: ${c}`);
+		}
 });
 
 test('ordinary node, git and echo are not mistaken for auto-merge', () => {
