@@ -12,7 +12,8 @@
 			"gh *",
 			"bash *e2e-env.sh*",
 			"dev-factory env*",
-			"node *open-prs.mjs*"
+			"node *open-prs.mjs*",
+			"node *automerge.mjs*"
 		],
 		"filesystem": {
 			"denyRead": ["~/.ssh", "~/.aws", "~/.config/gh"]
