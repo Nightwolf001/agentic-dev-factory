@@ -766,9 +766,24 @@ test('autoMerge settings are validated', () => {
 		withSetting('autoMerge.maxSize', 'large').some((p) => /needs a line bound/.test(p)),
 		'the unbounded bucket is refused',
 	);
-	for (const bad of ['', 'dev-factory', 'factory-blocked', 'factory-question'])
+	for (const bad of ['', 'dev-factory', 'factory-blocked', 'factory-question', 'Dev-Factory', 'FACTORY-BLOCKED'])
 		assert.ok(
 			withSetting('autoMerge.label', bad).some((p) => /autoMerge\.label must be a label name/.test(p)),
 			bad,
 		);
+});
+
+test('autoMerge accepts every method, and any bounded bucket of a custom pr.sizeLabels', () => {
+	const mine = (p) => /^autoMerge\./.test(p);
+	const c = structuredClone(load());
+	for (const method of ['merge', 'rebase']) {
+		Object.assign(c.autoMerge, { maxSize: 'medium', method });
+		assert.deepEqual(validate(c).filter(mine), [], method);
+	}
+	c.autoMerge.method = 'squash';
+	c.pr.sizeLabels = { tiny: 20, big: null };
+	c.autoMerge.maxSize = 'tiny';
+	assert.deepEqual(validate(c).filter(mine), []);
+	c.autoMerge.maxSize = 'big';
+	assert.ok(validate(c).some((p) => /needs a line bound/.test(p)));
 });

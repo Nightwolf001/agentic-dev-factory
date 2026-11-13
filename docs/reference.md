@@ -466,13 +466,17 @@ Every setting, with its default. `see config.json` means the default is a longer
 
 #### Pull requests
 
-| Key                       | Default                                        | What it does                                                                                                                |
-| ------------------------- | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `pr.reviewedOnMergeInto`  | `null`                                         | `null`: a merged or approved PR makes the task reviewed. A branch (`"develop"`): only a merge into it does.                 |
-| `pr.doneOnMergeInto`      | `null`                                         | A branch (`"main"`): the task is done once its PR, or a release carrying it, reached that branch. `null`: a person does it. |
-| `pr.sizeLabels`           | `{"small": 100, "medium": 500, "large": null}` | PR size label to its upper bound in changed lines (`null` is unbounded).                                                    |
-| `pr.areaLabels`           | `[]`                                           | List of `{ "path": "services/api", "label": "api" }`: a PR touching the path gets the label. None by default.               |
-| `pr.categoryByBranchType` | `see config.json`                              | Branch prefix to the category label on the PR.                                                                              |
+| Key                       | Default                                        | What it does                                                                                                                                                                                                           |
+| ------------------------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pr.reviewedOnMergeInto`  | `null`                                         | `null`: a merged or approved PR makes the task reviewed. A branch (`"develop"`): only a merge into it does.                                                                                                            |
+| `pr.doneOnMergeInto`      | `null`                                         | A branch (`"main"`): the task is done once its PR, or a release carrying it, reached that branch. `null`: a person does it.                                                                                            |
+| `pr.sizeLabels`           | `{"small": 100, "medium": 500, "large": null}` | PR size label to its upper bound in changed lines (`null` is unbounded).                                                                                                                                               |
+| `pr.areaLabels`           | `[]`                                           | List of `{ "path": "services/api", "label": "api" }`: a PR touching the path gets the label. None by default.                                                                                                          |
+| `pr.categoryByBranchType` | `see config.json`                              | Branch prefix to the category label on the PR.                                                                                                                                                                         |
+| `autoMerge.enabled`       | `false`                                        | `false`: a person merges every PR. `true`: the scheduler merges a PR whose change is small, or whose task carries `autoMerge.label`, once the PR passes every check (the rule is described in the Auto-merge section). |
+| `autoMerge.label`         | `"auto-merge"`                                 | Task label that authorises the merge of a task bigger than small. Compared without regard to case. Must differ from `tasks.label`, `tasks.blockedLabel` and `tasks.questionLabel`.                                     |
+| `autoMerge.maxSize`       | `"small"`                                      | The `pr.sizeLabels` bucket a PR must fit in to count as small. The bucket needs a line bound, so the unbounded one is refused.                                                                                         |
+| `autoMerge.method`        | `"squash"`                                     | How the PR is merged: `squash`, `merge` or `rebase`.                                                                                                                                                                   |
 
 #### Caps and budgets
 

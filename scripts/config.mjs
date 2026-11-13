@@ -387,7 +387,12 @@ export function validate(config) {
 	const autoMergeLabel = dig(config, 'autoMerge.label');
 	if (autoMergeLabel !== undefined && (typeof autoMergeLabel !== 'string' || !/^[A-Za-z0-9._:-]+$/.test(autoMergeLabel)))
 		problems.push('autoMerge.label must be a label name (letters, digits, . _ : -)');
-	if (autoMergeLabel !== undefined && ['tasks.label', 'tasks.blockedLabel', 'tasks.questionLabel'].some((k) => autoMergeLabel === dig(config, k)))
+	if (
+		autoMergeLabel !== undefined &&
+		['tasks.label', 'tasks.blockedLabel', 'tasks.questionLabel'].some(
+			(k) => String(autoMergeLabel).toLowerCase() === String(dig(config, k)).toLowerCase(),
+		)
+	)
 		problems.push('autoMerge.label must be a label name that differs from tasks.label, tasks.blockedLabel and tasks.questionLabel');
 	const autoMergeMethod = dig(config, 'autoMerge.method');
 	if (autoMergeMethod !== undefined && !['squash', 'merge', 'rebase'].includes(autoMergeMethod))
