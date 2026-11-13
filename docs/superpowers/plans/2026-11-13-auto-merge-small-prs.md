@@ -24,6 +24,7 @@
 ## Global Constraints
 
 -   `node --test test/*.test.mjs`, `npx prettier@3.2.5 --check "**/*.{md,json,mjs}"`, `bash scripts/lint-vocabulary.sh` and `claude plugin validate .` pass after every task. Do not run `npm install` on the host.
+-   The factory is running real tasks on this machine while this is built, so nothing here may alter it: edit only inside this worktree; never touch `~/.dev-factory`, `~/.claude`, `~/.claude.json`, the installed plugin, launchd, the main checkout or any port or process; run no `npx`, `gh`, `claude` or `docker` command. Every test, format check and lint runs through a hermetic wrapper that writes only to a scratch folder, has no network, cannot signal another process and starts with an empty environment. The tests that need ports, processes, docker or the network are expected to fail there; a change is judged by failures that are not in that saved baseline.
 -   Scripts run on plain Node with no dependencies and as `node "${CLAUDE_PLUGIN_ROOT}/scripts/..."`; nothing may hard-code a `dev-factory/` path (`test/packaging.test.mjs`).
 -   Nothing names a company, tracker site, project key or host. Explain rules by their reason (`lint-vocabulary.sh`).
 -   A new setting goes in `config.json`, `scripts/config.mjs` (validation), `settings/options.json` and the table in `docs/reference.md`.
