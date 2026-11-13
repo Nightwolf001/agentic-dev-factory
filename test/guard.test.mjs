@@ -649,26 +649,30 @@ test('tasks.mjs link is refused to a factory agent like every other tracker writ
 	assert.equal(evaluate(link, { branch: 'task/APP-1-x' }).deny, false, 'the scheduler may');
 });
 
+// the reviewer, debugger and researcher are read-only roles: the read-only allowlist refuses node of any script before the
+// auto-merge rule is reached, so for them only the refusal is asserted, for the others the rule's own reason as well
+const FACTORY_ROLES = ['builder', 'reviewer', 'debugger', 'researcher', 'improver', 'promoter'];
+const WRITING_ROLES = ['builder', 'improver', 'promoter'];
+const AUTO_MERGE_REASON = /scheduler's alone/;
+const AUTO_MERGE_CWD = '/work'; // not under a .claude/ path, which the shell guard refuses for its own reason
+
 test('auto-merge is the scheduler’s alone and gh pr merge stays reserved for people', () => {
-	const FACTORY = ['builder', 'reviewer', 'debugger', 'researcher', 'improver', 'promoter'];
-	// not under a .claude/ path, which the shell guard refuses for its own reason
-	const cwd = '/work';
+	const cwd = AUTO_MERGE_CWD;
 	const cmd = 'node "/p/scripts/automerge.mjs" run --pr 7 --key APP-1 --labels auto-merge --worktree /w';
-	for (const role of FACTORY) {
+	for (const role of FACTORY_ROLES) {
 		const r = evaluate(cmd, { role, cwd });
 		assert.equal(r.deny, true, role);
-		assert.match(r.reason, /automerge\.mjs/, role);
+		if (WRITING_ROLES.includes(role)) assert.match(r.reason, AUTO_MERGE_REASON, role);
 	}
 	assert.equal(evaluate(cmd, { cwd }).deny, false, 'the scheduler session has no role');
 	for (const c of ['gh pr merge 7 --squash', 'gh pr ready 7']) {
 		assert.equal(evaluate(c, { cwd }).deny, true, `${c} stays reserved for people, the scheduler included`);
-		for (const role of FACTORY) assert.equal(evaluate(c, { role, cwd }).deny, true, `${role}: ${c}`);
+		for (const role of FACTORY_ROLES) assert.equal(evaluate(c, { role, cwd }).deny, true, `${role}: ${c}`);
 	}
 });
 
 test('every way a factory agent could start automerge.mjs is refused, and the scheduler may', () => {
-	const FACTORY = ['builder', 'reviewer', 'debugger', 'researcher', 'improver', 'promoter'];
-	const cwd = '/work';
+	const cwd = AUTO_MERGE_CWD;
 	const run = 'run --pr 7 --key APP-1 --labels auto-merge --worktree /w';
 	const forms = [
 		`node /p/scripts/automerge.mjs --dry-run`,
@@ -681,22 +685,99 @@ test('every way a factory agent could start automerge.mjs is refused, and the sc
 		`env FOO=1 node /p/scripts/automerge.mjs ${run}`,
 		`/usr/local/bin/node /p/scripts/automerge.mjs ${run}`,
 		`node --no-warnings /p/scripts/automerge.mjs ${run}`,
+		`node --require ./hook.cjs /p/scripts/automerge.mjs ${run}`,
 		`cd /w && node /p/scripts/automerge.mjs ${run}`,
 		`git status; node /p/scripts/automerge.mjs ${run}`,
 		`bash -c 'node /p/scripts/automerge.mjs ${run}'`,
 		`sh -c "node /p/scripts/automerge.mjs ${run}"`,
 		`echo $(node /p/scripts/automerge.mjs ${run})`,
+		// other runtimes and launchers
+		`bun /p/scripts/automerge.mjs ${run}`,
+		`deno run -A /p/scripts/automerge.mjs ${run}`,
+		`npx tsx /p/scripts/automerge.mjs ${run}`,
+		`npx --yes tsx /p/scripts/automerge.mjs ${run}`,
+		`bunx tsx /p/scripts/automerge.mjs ${run}`,
+		`tsx /p/scripts/automerge.mjs ${run}`,
+		`npx node /p/scripts/automerge.mjs ${run}`,
 	];
 	for (const c of forms) {
-		for (const role of FACTORY) {
+		for (const role of FACTORY_ROLES) {
 			const r = evaluate(c, { role, cwd });
 			assert.equal(r.deny, true, `${role}: ${c}`);
-			assert.match(r.reason, /automerge\.mjs/, `${role}: ${c}`);
+			if (WRITING_ROLES.includes(role)) assert.match(r.reason, AUTO_MERGE_REASON, `${role}: ${c}`);
 		}
 		assert.equal(evaluate(c, { cwd }).deny, false, `the scheduler may: ${c}`);
 	}
-	// naming the file is not running it
-	for (const role of FACTORY) assert.equal(evaluate('git log --oneline -- scripts/automerge.mjs', { role, cwd }).deny, false, role);
+});
+
+test('the auto-merge refusal sees case, brace lists, globs and built words', () => {
+	const cwd = AUTO_MERGE_CWD;
+	const run = 'run --pr 7 --key APP-1 --labels auto-merge --worktree /w';
+	const names = [
+		'AutoMerge.mjs',
+		'AUTOMERGE.MJS',
+		'{automerge,x}.mjs',
+		'{x,automerge}.mjs',
+		'automerg?.mjs',
+		'automerge.m[j]s',
+		'auto*.mjs',
+		'*merge.mjs',
+	];
+	for (const n of names) {
+		for (const quote of ['', '"']) {
+			const c = `node ${quote}/p/scripts/${n}${quote} ${run}`;
+			for (const role of WRITING_ROLES) {
+				const r = evaluate(c, { role, cwd });
+				assert.equal(r.deny, true, `${role}: ${c}`);
+				assert.match(r.reason, AUTO_MERGE_REASON, `${role}: ${c}`);
+			}
+			for (const role of ['reviewer', 'debugger', 'researcher']) assert.equal(evaluate(c, { role, cwd }).deny, true, `${role}: ${c}`);
+			assert.equal(evaluate(c, { cwd }).deny, false, `the scheduler may: ${c}`);
+		}
+	}
+	// a script path built at run time, where the script goes, could be any of them
+	for (const c of [
+		`node $SCRIPT ${run}`,
+		`node "$SCRIPT" ${run}`,
+		`node "$ROOT/scripts/x.mjs" ${run}`,
+		'node `which automerge` --dry-run',
+		'node $(find / -name automerge.mjs) --dry-run',
+		`node --no-warnings $SCRIPT ${run}`,
+		`npx tsx $SCRIPT ${run}`,
+	]) {
+		for (const role of WRITING_ROLES) {
+			const r = evaluate(c, { role, cwd });
+			assert.equal(r.deny, true, `${role}: ${c}`);
+			assert.match(r.reason, AUTO_MERGE_REASON, `${role}: ${c}`);
+		}
+		assert.equal(evaluate(c, { cwd }).deny, false, `the scheduler may: ${c}`);
+	}
+});
+
+test('ordinary node, git and echo are not mistaken for auto-merge', () => {
+	const cwd = AUTO_MERGE_CWD;
+	for (const c of [
+		'node scripts/other.mjs',
+		'node scripts/other.mjs --name "auto*.mjs" "$X"',
+		'node ./scripts/other.mjs $SCRIPT_ARG',
+		'node --test test/x.test.mjs',
+		'node --test test/*.test.mjs',
+		'node --test test/automerge.test.mjs',
+		'node -e "console.log(process.argv[1])" $X',
+		'node -p "1+1"',
+		'git log --oneline -- scripts/automerge.mjs',
+		'echo automerge.mjs',
+		'echo $SCRIPT',
+		'grep -n merge scripts/tick.sh',
+		'npx tsx scripts/other.mjs',
+	]) {
+		for (const role of WRITING_ROLES) {
+			const r = evaluate(c, { role, cwd });
+			assert.equal(r.deny && AUTO_MERGE_REASON.test(r.reason ?? ''), false, `${role}: ${c} is not an auto-merge run`);
+		}
+	}
+	for (const c of ['node scripts/other.mjs', 'node --test test/x.test.mjs', 'git log --oneline -- scripts/automerge.mjs', 'echo automerge.mjs'])
+		for (const role of WRITING_ROLES) assert.equal(evaluate(c, { role, cwd }).deny, false, `${role}: ${c}`);
 });
 
 test('stopping other processes, containers and simulators is the takeover toggle’s', () => {

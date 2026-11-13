@@ -13,6 +13,8 @@ import {
 	budget,
 	candidates,
 	envOf,
+	globMatch,
+	hasGlob,
 	namesEnvFile,
 	protectedPlace,
 	realPath,
@@ -808,6 +810,35 @@ function factoryScript(word, st) {
 	return fs.existsSync(path.join(root, 'bin', 'qa.mjs')) || fs.existsSync(path.join(root, '.claude-plugin', 'plugin.json'));
 }
 
+// Launchers of a script. Like gh pr merge, the refusal of automerge.mjs is a guard against the ordinary ways to start it: a copy under
+// another name, a symlink, `find -exec` or a program the agent writes are stopped by the real separation, not here.
+const SCRIPT_RUNNERS = new Set(['node', 'nodejs', 'bun', 'bunx', 'deno', 'npx', 'tsx', 'ts-node']);
+const RUNNER_SKIPPED = new Set([...SCRIPT_RUNNERS, 'run', 'exec']);
+const RUNNER_VALUE_OPTS = new Set(['-r', '--require', '--import', '--loader', '--experimental-loader']);
+const AUTO_MERGE = 'automerge.mjs';
+
+// The word where the script goes: the first that is not an option (or an option's value) or another launcher (npx tsx x.mjs). None
+// when the command carries code or test patterns instead (-e, -p, --eval, --print, --test), where a glob or a variable is data.
+function scriptWord(args) {
+	for (let i = 0; i < args.length; i++) {
+		const a = args[i];
+		if (a === '-e' || a === '-p' || /^--(eval|print|test)\b/.test(a)) return null;
+		if (RUNNER_VALUE_OPTS.has(a)) i++;
+		else if (!a.startsWith('-') && !RUNNER_SKIPPED.has(base(a))) return a;
+	}
+	return null;
+}
+
+// Whether a launcher of scripts runs automerge.mjs: any word that names it, whatever the case or brace list or variable it is written
+// with, and, where the script goes, a glob that matches it and a word built at run time that could be it.
+function runsAutoMerge({ cmd, args }, vars) {
+	if (!SCRIPT_RUNNERS.has(cmd)) return false;
+	const names = (word) => candidates(word, vars);
+	if (args.some((a) => names(a).some((c) => base(c).toLowerCase() === AUTO_MERGE))) return true;
+	const script = scriptWord(args);
+	return script !== null && names(script).some((c) => /[$`]/.test(c) || (hasGlob(base(c)) && globMatch(base(c), AUTO_MERGE)));
+}
+
 function denyFactoryWrite(inv, st) {
 	const { cmd, args } = inv;
 	let script;
@@ -931,9 +962,8 @@ function judge(command, ctx) {
 			reason = 'direct task-tracker access is reserved for the scheduler, which sends only QA screenshots to a Notion upload URL';
 		if (!reason && FACTORY_ROLES.has(ctx.role) && /^node\s+\S*tasks\.mjs"?\s+(set-state|comment|label|link|block|create|init)\b/.test(seg))
 			reason = 'the task tracker is written only by the scheduler, not by a factory agent (tasks.mjs ' + seg.split(/\s+/)[2] + ')';
-		// merging is the scheduler's: automerge.mjs calls gh itself, where no hook sees it, so the one door is closed here. Judged on
-		// the invocation (past wrappers and options, whatever way the path is written), not on the segment's first word.
-		if (!reason && FACTORY_ROLES.has(ctx.role) && /^(node|nodejs|bun|deno)$/.test(cmd) && args.some((a) => base(a) === 'automerge.mjs'))
+		// merging is the scheduler's: automerge.mjs calls gh itself, where no hook sees it, so the one door is closed here
+		if (!reason && FACTORY_ROLES.has(ctx.role) && runsAutoMerge(inv, st.vars))
 			reason = "merging is the scheduler's alone, not a factory agent's (automerge.mjs)";
 		// run.json records the role and limits a run is judged by: a factory agent does not rewrite its own
 		if (!reason && FACTORY_ROLES.has(ctx.role) && /^node\s+\S*run-context\.mjs"?\s+write\b/.test(seg))
