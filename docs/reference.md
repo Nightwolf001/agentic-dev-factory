@@ -8,7 +8,7 @@ The loop is the same whatever the size of the work, and whatever you track it in
 
 **plan → implement → evidence → review → ship → repeat**
 
-It is kept in your repository. There is no database and no service: the task source holds task state, GitHub holds pull requests, git holds the code, and `.dev-factory/` inside each worktree holds run state. A person approves and merges every PR; the factory never does.
+It is kept in your repository. There is no database and no service: the task source holds task state, GitHub holds pull requests, git holds the code, and `.dev-factory/` inside each worktree holds run state. A person approves and merges every PR, unless you turn on [Auto-merge](#auto-merge), which lets the scheduler merge the small ones; a builder never merges.
 
 ## Contents
 
@@ -18,13 +18,13 @@ The flow at a glance: [docs/dev-factory-flow.svg](dev-factory-flow.svg).
 
 ## At a glance
 
-|           |                                                                                                                                                                               |
-| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **In**    | A task: an idea typed to `/dev-factory:quick`, a markdown file, a GitHub issue, a Notion page or a Jira issue, with acceptance criteria.                                      |
-| **Out**   | A draft pull request on its own branch, with the tests that drove it, QA screenshots tied to the exact commit, two independent reviews, and a root-cause note for bugs.       |
-| **Never** | Merges, approves, marks a PR ready, force-pushes, pushes any branch but the task's own, or writes to your task tracker from the builder. A person always decides what merges. |
-| **Needs** | Claude Code, git, the GitHub CLI and Node 20. Docker only if your tests need a container; a tracker and MCP servers only if you want them.                                    |
-| **Runs**  | In your own session (`/dev-factory:build`, `quick`, `plan`) or unattended on a schedule, every 5 minutes by default (`tick`), the same agents either way.                     |
+|           |                                                                                                                                                                                                                                        |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **In**    | A task: an idea typed to `/dev-factory:quick`, a markdown file, a GitHub issue, a Notion page or a Jira issue, with acceptance criteria.                                                                                               |
+| **Out**   | A draft pull request on its own branch, with the tests that drove it, QA screenshots tied to the exact commit, two independent reviews, and a root-cause note for bugs.                                                                |
+| **Never** | From the builder: merges, approves, marks a PR ready, force-pushes, pushes any branch but the task's own, or writes to your task tracker. A person decides what merges, unless you turn on [Auto-merge](#auto-merge) (off by default). |
+| **Needs** | Claude Code, git, the GitHub CLI and Node 20. Docker only if your tests need a container; a tracker and MCP servers only if you want them.                                                                                             |
+| **Runs**  | In your own session (`/dev-factory:build`, `quick`, `plan`) or unattended on a schedule, every 5 minutes by default (`tick`), the same agents either way.                                                                              |
 
 ## Concepts
 
@@ -95,7 +95,7 @@ Claude interviews you one question at a time, sizes the work, drafts each task w
 
 You see the worktree and branch being created, the test written first, the QA walk, both reviews, and a draft PR at the end. The task moves `ready` → `inProgress` → `inReview` as it goes.
 
-**5. Review the PR like any other.** Request changes and the next pass fixes them on the same branch; approve and merge when you are happy.
+**5. Review the PR like any other.** Request changes and the next pass fixes them on the same branch; approve and merge when you are happy (or let the scheduler merge the small ones: [Auto-merge](#auto-merge)).
 
 **6. When you trust it, let it run.** On a Mac, `dev-factory install --apply --load` schedules `tick` every `scheduler.intervalMinutes` (5 by default); in the cloud use GitHub Actions or a Claude Code routine (see [Unattended passes](#set-up-for-unattended-passes) and [Cloud and Claude environments](#cloud-and-claude-environments)).
 
@@ -277,7 +277,7 @@ OAuth servers need one login that no script can do for you: start `claude` and r
 4. The `factory-builder` agent works test-first, then QA walks each case and records it with `bin/qa.mjs`.
 5. Two fresh-context reviewers run in order: **spec** (does it do what the task asks, nothing more) and **standards** (does it follow the repository's rules and is it safe). Critical or High findings send the builder back; QA runs again and review restarts, at most `caps.maxFixRounds` times. Triggered `data`, `infra` and `security` steps follow.
 6. The builder ships: pushes the branch, opens the draft PR with the evidence attached. The pass then records where the work is on the task (`LINK`): the branch and PR links, the QA verdict and the screenshots, as properties and files in Notion, remote links in Jira, a comment on a GitHub issue, or frontmatter and a copy of the images in the local task files. The pass re-verifies the QA manifest and both review records against the PR head, comments on the task, sets it `inReview`, and tears the environment down.
-7. You review the PR. Two optional settings shape what comes next: `pr.reviewedOnMergeInto` / `pr.doneOnMergeInto` say which merge makes a task reviewed and which makes it done (for a develop-then-main flow, `"develop"` and `"main"`), and `review.bugbot` has Bugbot review each push and the factory fix what it finds. A comment starting `dev-factory fix` (no slash needed), followed by what to change, asks for a fix pass on any PR. A change request (not a plain comment) from someone other than the PR author sends the task back for a fix pass; an approval or merge sets it `reviewed`. After that, QA, release and anything else belong to people.
+7. You review the PR. Two optional settings shape what comes next: `pr.reviewedOnMergeInto` / `pr.doneOnMergeInto` say which merge makes a task reviewed and which makes it done (for a develop-then-main flow, `"develop"` and `"main"`), and `review.bugbot` has Bugbot review each push and the factory fix what it finds. A comment starting `dev-factory fix` (no slash needed), followed by what to change, asks for a fix pass on any PR. A change request (not a plain comment) from someone other than the PR author sends the task back for a fix pass; an approval or merge sets it `reviewed`. With [Auto-merge](#auto-merge) on, the scheduler may merge a small or labelled PR itself once it passes every check. After that, QA, release and anything else belong to people.
 
 When the factory cannot continue it labels the task `factory-blocked`, comments the reason and the decision it needs, and returns it to `ready` (the label keeps it out of the queue). Answer in a comment: the next pass sees a reply to a question and removes the labels itself, and for a block that is not a question you remove the label. If `caps.breakerThreshold` tasks were blocked within `caps.breakerWindowHours` the pass stops claiming until you look.
 
@@ -399,7 +399,7 @@ A list setting such as `DF_JIRA_PROJECTS` takes a comma-separated value. Other v
 | Agents may stop whatever blocks a run      | `DF_TAKEOVER=1` in `~/.dev-factory/.env.local` (see [Clean-up after every run](#clean-up-after-every-run)) |
 | Where and how it is scheduled              | `runtime.scheduler`; `dev-factory scheduler on` and `off`                                                  |
 
-What config cannot change: the guards, the hooks, the stop gate, the base sandbox and permissions, and the rule that a person merges. Those live in the plugin's code on purpose, so a repository's file cannot loosen them. To change one, change the plugin itself (see [Improving the factory itself](#improving-the-factory-itself)).
+What config cannot change: the guards, the hooks, the stop gate, the base sandbox and permissions, and the rule that a factory agent never merges. Only the scheduler can, through `scripts/automerge.mjs`, and only when the owner turned `autoMerge.enabled` on in a settings file a ticket cannot edit. Those live in the plugin's code on purpose, so a repository's file cannot loosen them. To change one, change the plugin itself (see [Improving the factory itself](#improving-the-factory-itself)).
 
 ### Complete reference
 
@@ -841,6 +841,7 @@ The Atlassian MCP server signs in with OAuth, which does not survive an unattend
 | Ask for changes                   | Submit a **Request changes** review on the PR, or comment `/dev-factory fix <what to change>` on the task |
 | Unblock                           | Answer the factory's comment, then remove the `factory-blocked` label                                     |
 | Keep a task out of the queue      | Remove `tasks.label` or add `factory-blocked`                                                             |
+| Let the scheduler merge PRs       | `dev-factory settings set autoMerge.enabled true --project`, see [Auto-merge](#auto-merge)                |
 
 ### Tick or inline?
 
@@ -861,7 +862,7 @@ Every run builds on a branch and opens its PR into it. The base is the first of:
 
 ### Stacked PRs
 
-Off by default (`tasks.unblockOnPr`). Without it a task waits in `ready` until every blocker is merged and `done`, which means a person merges each PR by hand before the next can start. With it on, a task whose blockers are not `done` but are in `inReview` (or `reviewed`) with an open PR on `origin` is built on the blocker's branch, and its draft PR targets that branch.
+Off by default (`tasks.unblockOnPr`). Without it a task waits in `ready` until every blocker is merged and `done`, which means each PR has to be merged (by a person, or by [Auto-merge](#auto-merge)) before the next can start. With it on, a task whose blockers are not `done` but are in `inReview` (or `reviewed`) with an open PR on `origin` is built on the blocker's branch, and its draft PR targets that branch.
 
 **Which tasks stack.** Every blocker must be `done`, or in review with an open PR whose branch is on `origin` (a fork's branch is not). A blocker still `ready` or `inProgress`, with no PR, or whose PR is closed keeps the task in `ready`. The task must also depend on the blocker's code: its description has a `Blocked by:` line naming the blocker, or mentions a file the blocker's PR changes. A blocker that only orders the work (a native link, nothing shared) does not stack. A `Base branch:` line naming the blocker's branch is an explicit choice and skips that check.
 
@@ -881,7 +882,39 @@ The update is a merge, not a rebase. After a squash merge the blocker's original
 
 **Reviewed and done stay tied to a real merge.** A stacked PR that is merged into its blocker's branch is not `reviewed` and not `done`, whatever `pr.reviewedOnMergeInto` is: nothing has reached the base yet. Once the PR is retargeted, or a merge of it reaches `pr.doneOnMergeInto`, the usual rules apply. When both are unset, a person moves a task whose PR was merged into a blocker's branch.
 
-Open design questions: independent sibling blockers (above); whether a long-lived stack should ever be merged bottom-up by the factory (it does not: a person merges); and a stack whose middle PR is closed (its dependents block, and a person rewires them).
+Open design questions: independent sibling blockers (above); whether a long-lived stack should ever be merged bottom-up by the factory (it does not, with one exception: with `autoMerge.enabled` on, each small or labelled PR is merged into whatever it targets as it becomes eligible, and the merge comment names it as stacked; otherwise a person merges); and a stack whose middle PR is closed (its dependents block, and a person rewires them).
+
+### Auto-merge
+
+Off by default. With `autoMerge.enabled` on, the scheduled pass merges a finished PR itself, so small changes do not wait for a person. Nothing else about the flow changes: the factory still opens a draft, runs QA and both reviews, and a person can still review anything before it merges.
+
+**The rule.** A PR is eligible when it is **small** or its task carries the **label**, whatever its size.
+
+-   Small: the real added plus deleted lines of the PR, as GitHub counts them, at or below `pr.sizeLabels[autoMerge.maxSize]` (100 with the defaults). The PR's size label is not read, because it is set once when the PR opens and a fix pass can change the diff. A small PR needs no label.
+-   Labelled: the task carries `autoMerge.label` (default `auto-merge`, compared without regard to case). It is the engineer's authorisation for a task bigger than small; removing it later stops only a larger PR, never a small one.
+
+A PR that is neither is left for a person, silently.
+
+**The gates.** These are fixed and none of them is a setting. Every one must hold, or the PR is not merged:
+
+-   The PR is open, and its branch is not under `ai-tooling/`: the factory's own changes, including improver and promoter PRs, always go to a person.
+-   QA verify and both review steps are clean at the PR's current head commit, and no specialist review step (data, infra, security) was triggered for it.
+-   No review asked for changes, and the task is not parked (`tasks.blockedLabel` or `tasks.questionLabel`).
+-   With `review.bugbot` on, Bugbot has no unresolved thread and no check still running. When its state cannot be read, the PR waits.
+-   GitHub reports the merge state `CLEAN`. That is what makes branch protection, required checks and required approvals count: a PR that still needs an approval is `BLOCKED` and waits until a person approves it, because the factory never approves. A repository that requires an approval therefore never merges a PR a person has not approved.
+-   The PR is not empty.
+
+A stacked PR, and a PR with a "Decisions made without a person" section, are allowed, because blocking them would defeat the setting. Nobody read those before the merge, so the merge comment names each one.
+
+**What it runs.** `node "${CLAUDE_PLUGIN_ROOT}/scripts/automerge.mjs" run --pr <N> --key <KEY> --labels <csv> --worktree <dir> [--readied-head <sha>]`, which the tick calls for each task in review while `autoMerge.enabled` is on. It prints one JSON line, `{action, via, pr, head, lines, reasons, notes}`, and exits `0` for `ready` and `merged` (so read `action`), `10` for `wait`, `11` for `refused`, `12` for `off` and `21` for `failed`. It makes at most one write per run, never passes `--admin` or `--auto`, and pins the merge to the commit it checked (`--match-head-commit`), so a push that lands in between makes the merge fail instead of merging unchecked code. `autoMerge.method` picks `squash`, `merge` or `rebase`.
+
+**Two passes.** The factory opens draft PRs, and GitHub never reports a draft as `CLEAN`. The first pass that finds an eligible draft marks it ready for review and comments `[dev-factory] phase: auto-merge ready head=<sha>`. The next pass (5 minutes later by default) merges it once GitHub says `CLEAN`, and comments `[dev-factory] phase: auto-merged pr=<url> head=<sha> lines=<n> via=<small|label>` with a line for each note. A refusal is commented once as `[dev-factory] phase: auto-merge skipped: <reasons>`, and again only when the reasons change. Marking a PR ready can start checks that do not run on a draft, so the PR sits ready for one pass before it can merge.
+
+**Turn it on.** `dev-factory settings set autoMerge.enabled true --project` (or `--user` for every project), and for a task bigger than small add the label `auto-merge` to it. A ticket cannot change this setting, so the switch is the owner's.
+
+**Stop it.** Any one of these: turn `autoMerge.enabled` off; add `tasks.blockedLabel` to the task; turn the PR back into a draft (a person's draft is respected: the PR is not marked ready again for the same head). Removing the label stops a larger PR but not a small one.
+
+**Who can merge.** `gh pr merge` and `gh pr ready` stay refused to every agent of a run, and so does `automerge.mjs`; only the scheduled pass runs it. A builder, reviewer, debugger, researcher, improver or promoter can therefore never merge, whatever a task or a PR body says.
 
 ### `/dev-factory:quick`
 
@@ -976,6 +1009,7 @@ A verdict is about the ticket's own change against its base, so it survives the 
 
 -   The debugger and researcher cannot edit code; the improver cannot edit what enforces the factory's own limits.
 -   The builder has no task-tracker or GitHub write tools. The scheduled pass is the only holder of them, so a task cannot approve itself.
+-   No agent of a run can merge or mark a PR ready: the shell guard refuses `gh pr merge`, `gh pr ready` and `scripts/automerge.mjs` to the builder, reviewer, debugger, researcher, improver and promoter, whatever the spelling. Only the scheduled pass runs `automerge.mjs`, and only when the owner turned `autoMerge.enabled` on; it never passes `--admin` or `--auto`, never takes an `ai-tooling/` branch, and merges only the commit it checked.
 -   Commits and PRs are always the person's own. While `git.agentAttribution` is `false` (the default) the shell guard refuses `Co-Authored-By`, `--author`, identity set through `git config` or `GIT_AUTHOR_*`, and "generated with" text in a commit or PR; `qa.mjs verify` refuses a branch with an agent as author, committer or co-author; the scheduled pass runs with Claude Code's own commit and PR attribution switched off. In your own interactive sessions set `"attribution": {"commit": "", "pr": ""}` in your Claude Code settings so Claude Code adds none either.
 -   Only the task's own branch may be pushed, never forced. The shell guard reads git past global options, wrappers and `sh -c` or `$(...)` payloads, and treats `gh api` with a body field as a write.
 -   When the environment is a container, dependencies are installed and tests run inside it, never on the host.
@@ -1040,7 +1074,7 @@ The evidence comes from the machine you run it on: every pass appends a record t
 2. It clusters recurring causes from the run records, and files an improvement task for each in **that project's** task source (so the project's tracker shows the factory's own backlog).
 3. For each finding that qualifies, up to `improvement.maxPrsPerScan`, it fetches your clone and adds a worktree of it (under `git.worktreeRoot`, beside the project, not inside your clone) on a new `ai-tooling/<KEY>-<slug>` branch cut from the clone's default branch.
 4. The `factory-improver` agent writes the failing test first and then the change, and runs the tests, Prettier, the vocabulary lint and `claude plugin validate` on that worktree. Two fresh reviewers then check the commit.
-5. It opens a **draft PR on the plugin's own repository** (the clone's `origin`). It never merges, and it never touches the installed copy or your clone's working tree.
+5. It opens a **draft PR on the plugin's own repository** (the clone's `origin`). It never merges, [Auto-merge](#auto-merge) never takes a branch under `ai-tooling/`, and it never touches the installed copy or your clone's working tree.
 
 #### After you merge an improvement
 
@@ -1066,6 +1100,7 @@ The improver cannot edit what enforces the factory's own limits (the guards, the
 | `skills/`                                                                                                  | `task-source`, `implement`, `qa`, `review`, `ship`, `environment`, `diagnose`, `telemetry`, `improve`                                                                     |
 | `scripts/sources/`                                                                                         | One file per task source (`local`, `github`, `jira`, `notion`) and their shared model                                                                                     |
 | `scripts/tasks.mjs`                                                                                        | List, read, create and move tasks for the sources a script can drive                                                                                                      |
+| `scripts/automerge.mjs`, `scripts/automerge-lib.mjs`                                                       | Auto-merge: the facts and the one write (`automerge.mjs`), and the rule that decides (`automerge-lib.mjs`)                                                                |
 | `scripts/stack.mjs`                                                                                        | Stacked PRs: plan a base, write the PR note, merge a moved blocker (rules in `stack-lib.mjs`)                                                                             |
 | `scripts/mcp.mjs`, `scripts/mcp-scope.mjs`, `mcp/`                                                         | The optional MCP catalog, the commands that enable it and the planning that applies it to Claude                                                                          |
 | `scripts/plugins.mjs`                                                                                      | The companion plugins: which are on at which scope, and `dev-factory plugins sync`                                                                                        |
@@ -1127,7 +1162,7 @@ Adding a tracker: a new file under `scripts/sources/` that answers `list({ state
 -   In the cloud there is no simulator and usually no Docker, so the mobile lane and compose environments need your own runner.
 -   Web QA needs canonical ports, so only one task builds with a browser walk at a time; concurrent builds have isolated stacks a host browser cannot reach. Dispatch into one worktree at a time.
 -   Review is two steps by separate fresh-context sessions with a read-only shell, but the same model family as the builder: a second look, not an independent one.
--   The shell guard reads command strings. It stops mistakes and the ordinary ways round a rule, not an agent that writes and runs its own program. The separation that holds is that the builder has no tracker or GitHub tools, the scheduler holds the credentials, drafts are never merged by the factory, and a person reads the diff before merging.
+-   The shell guard reads command strings. It stops mistakes and the ordinary ways round a rule, not an agent that writes and runs its own program. The separation that holds is that the builder has no tracker or GitHub tools, the scheduler holds the credentials, only the scheduler can merge, and only when you turned [Auto-merge](#auto-merge) on, and without it a person reads the diff before merging.
 -   GitHub dependencies are read from `Blocked by:` lines in the issue body, not from GitHub's native issue dependencies.
 -   Notion and Jira writes go through their MCP servers, so an unattended pass for those sources needs that server logged in or an API-token alternative.
 -   One build per pass by default. Increase `DF_MAX_CONCURRENT` only after checking your plan's usage limits. The Mac must be awake and online for scheduled passes.

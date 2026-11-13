@@ -121,3 +121,16 @@ test('no command, skill or agent points at the old settings files except to call
 			.filter((l) => /dev-factory\.(config\.json|qa\.yaml)/.test(l)))
 			assert.match(line, /legacy|old location|migrate/i, `${f}: ${line.slice(0, 120)}`);
 });
+
+// The scheduler is the only thing that may merge, and only through automerge.mjs; if the tick stopped calling it, or the reference stopped
+// describing it, a person who turned `autoMerge.enabled` on would get nothing, or would not know what it does.
+test('the tick runs auto-merge only when it is on, and the reference documents the section and every autoMerge setting', () => {
+	const tick = read('tick.md');
+	assert.ok(tick.includes('scripts/automerge.mjs" run'), 'the tick runs the auto-merge script');
+	assert.ok(tick.includes('get autoMerge.enabled'), 'the tick reads the master switch first');
+	const config = JSON.parse(fs.readFileSync(new URL('../config.json', import.meta.url), 'utf8'));
+	const reference = fs.readFileSync(new URL('../docs/reference.md', import.meta.url), 'utf8');
+	assert.match(reference, /^### Auto-merge$/m);
+	const section = reference.slice(reference.indexOf('### Auto-merge'));
+	for (const key of Object.keys(config.autoMerge)) assert.ok(section.includes(`autoMerge.${key}`), `the Auto-merge section names autoMerge.${key}`);
+});

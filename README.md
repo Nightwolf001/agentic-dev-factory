@@ -1,6 +1,6 @@
 # dev-factory
 
-A Claude Code plugin that takes a task, builds it test-first in an isolated git worktree, records QA evidence, has it reviewed by fresh-context agents, and opens a **draft pull request**. Then it takes the next one. A person reviews and merges every PR; the factory never does.
+A Claude Code plugin that takes a task, builds it test-first in an isolated git worktree, records QA evidence, has it reviewed by fresh-context agents, and opens a **draft pull request**. Then it takes the next one. A person reviews and merges every PR unless you switch on auto-merge, which lets the scheduler merge the small ones (`scripts/automerge.mjs`, off by default); a builder never merges.
 
 **plan → build → QA → review → draft PR → repeat**
 
@@ -45,7 +45,7 @@ Then start `claude` in your repository. If it was already running, type `/reload
 /dev-factory:build TASK-1
 ```
 
-**5. Review the PR like any other.** Request changes and the next pass fixes them on the same branch. Merge when you are happy.
+**5. Review the PR like any other.** Request changes and the next pass fixes them on the same branch. Merge when you are happy, or turn on auto-merge for the small ones ([Auto-merge](docs/reference.md#auto-merge)).
 
 **6. Let it run on its own** once you trust it. On a Mac:
 
