@@ -902,9 +902,12 @@ A PR that is neither is left for a person, silently.
 -   No review asked for changes, and the task is not parked (`tasks.blockedLabel` or `tasks.questionLabel`).
 -   With `review.bugbot` on, Bugbot has no unresolved thread and no check still running. When its state cannot be read, the PR waits.
 -   GitHub reports the merge state `CLEAN`. That is what makes branch protection, required checks and required approvals count: a PR that still needs an approval is `BLOCKED` and waits until a person approves it, because the factory never approves. A repository that requires an approval therefore never merges a PR a person has not approved.
+-   The branch has no conflicts (merge state `DIRTY` is refused with "the branch has conflicts"), and a person has not turned the PR back into a draft for the head that was marked ready.
 -   The PR is not empty.
 
 A stacked PR, and a PR with a "Decisions made without a person" section, are allowed, because blocking them would defeat the setting. Nobody read those before the merge, so the merge comment names each one.
+
+A task whose worktree and QA record were cleaned up cannot show that QA passed at the head, so it is refused (the comment reads "QA has not passed") and a person merges it.
 
 **What it runs.** `node "${CLAUDE_PLUGIN_ROOT}/scripts/automerge.mjs" run --pr <N> --key <KEY> --labels <csv> --worktree <dir> [--readied-head <sha>]`, which the tick calls for each task in review while `autoMerge.enabled` is on. It prints one JSON line, `{action, via, pr, head, lines, reasons, notes}`, and exits `0` for `ready` and `merged` (so read `action`), `10` for `wait`, `11` for `refused`, `12` for `off` and `21` for `failed`. It makes at most one write per run, never passes `--admin` or `--auto`, and pins the merge to the commit it checked (`--match-head-commit`), so a push that lands in between makes the merge fail instead of merging unchecked code. `autoMerge.method` picks `squash`, `merge` or `rebase`.
 

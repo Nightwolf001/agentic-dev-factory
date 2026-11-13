@@ -47,4 +47,4 @@ Fix every Critical and High finding, commit, then run QA again from `start` (a n
 
 ## What this review is and is not
 
-The reviewers are separate sessions with their own context and a read-only shell, run by the scheduler, but they are the same model family as the builder. It catches what the builder's own context hid; it does not replace the human review of the PR.
+The reviewers are separate sessions with their own context and a read-only shell, run by the scheduler, but they are the same model family as the builder. It catches what the builder's own context hid; it does not replace a person's review of the PR. Under `autoMerge` the scheduler may merge a small or labelled PR before a person reads it, so these reviews and the QA record are all the checking such a PR gets.

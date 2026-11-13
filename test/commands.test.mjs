@@ -131,6 +131,24 @@ test('the tick runs auto-merge only when it is on, and the reference documents t
 	const config = JSON.parse(fs.readFileSync(new URL('../config.json', import.meta.url), 'utf8'));
 	const reference = fs.readFileSync(new URL('../docs/reference.md', import.meta.url), 'utf8');
 	assert.match(reference, /^### Auto-merge$/m);
-	const section = reference.slice(reference.indexOf('### Auto-merge'));
-	for (const key of Object.keys(config.autoMerge)) assert.ok(section.includes(`autoMerge.${key}`), `the Auto-merge section names autoMerge.${key}`);
+	// the section only, up to the next heading of its level, so a mention elsewhere does not count
+	const from = reference.indexOf('\n### Auto-merge\n');
+	const section = reference.slice(from + 1, reference.indexOf('\n### ', from + 1) === -1 ? undefined : reference.indexOf('\n### ', from + 1));
+	for (const key of Object.keys(config.autoMerge)) {
+		assert.ok(section.includes(`autoMerge.${key}`), `the Auto-merge section names autoMerge.${key}`);
+		assert.match(reference, new RegExp(`^\\|\\s*\`autoMerge\\.${key}\`\\s*\\|`, 'm'), `the Pull requests table has a row for autoMerge.${key}`);
+	}
+	assert.match(fs.readFileSync(new URL('../README.md', import.meta.url), 'utf8'), /scripts\/automerge\.mjs/, 'the README names the script');
+});
+
+// A task is `reviewed` as soon as its PR is approved, which can be a pass before the PR can merge; the tick must still offer it to the script.
+test('the auto-merge step also considers reviewed tasks whose PR is still open', () => {
+	const tick = read('tick.md');
+	const start = tick.indexOf('-   Auto-merge:');
+	const end = tick.indexOf('-   Reviewed:');
+	assert.ok(start !== -1 && end > start, 'the Auto-merge bullet sits before the Reviewed bullet');
+	const bullet = tick.slice(start, end);
+	assert.match(bullet, /`reviewed`/, 'the bullet names reviewed tasks');
+	assert.match(bullet, /still OPEN/, 'only while the PR is open');
+	assert.match(bullet, /do not move it back/i, 'the task keeps its state');
 });

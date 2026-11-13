@@ -35,4 +35,4 @@ Every agent you dispatch with the Agent tool runs with the model and effort the 
 5. Post one comment `[dev-factory] improve scan <ISO date>: findings=<n> filed=<n> prs=<n> seen_again=<n>` on the first task filed, or on the most recent open improvement task; this is the next scan's watermark.
 6. Print the same summary as one line and end the turn.
 
-A person reviews and merges every PR. The factory never merges or approves.
+A person reviews and merges every PR. The improve pass never merges or approves, and auto-merge never takes its `ai-tooling/` branches.
