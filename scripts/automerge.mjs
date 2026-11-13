@@ -28,8 +28,11 @@ export function parseArgs(argv) {
 	for (let i = 0; i < list.length; i++) {
 		const a = list[i];
 		if (a === '--dry-run') out.dryRun = true;
-		else if (a.startsWith('--') && VALUE_FLAGS.includes(a.slice(2))) out[a.slice(2)] = list[++i];
-		else throw new Error(`unknown argument ${a}`);
+		else if (a.startsWith('--') && VALUE_FLAGS.includes(a.slice(2))) {
+			const v = list[++i];
+			if (v === undefined || v.startsWith('--')) throw new Error(`${a} needs a value`);
+			out[a.slice(2)] = v;
+		} else throw new Error(`unknown argument ${a}`);
 	}
 	return out;
 }
@@ -39,33 +42,47 @@ const failed = (message, extra = {}) => ({
 	result: { action: 'failed', via: null, pr: null, head: null, lines: 0, reasons: [String(message).split('\n')[0]], notes: [], ...extra },
 });
 
+// GraphQL may name a bot with or without its `[bot]` suffix, and a person may configure either: compare on the bare, lower-case name.
+const botName = (login) =>
+	String(login ?? '')
+		.trim()
+		.replace(/\[bot\]$/i, '')
+		.toLowerCase();
+
 // Bugbot's open threads and whether its check is still running. Anything unexpected throws, so the caller reports "unknown"
 // rather than a count that was never read.
 function bugbotFacts(gh, pr, number, author) {
 	const rollup = pr.statusCheckRollup;
 	if (!Array.isArray(rollup)) throw new Error('no check rollup');
+	const want = botName(author);
+	if (want === '') throw new Error('no Bugbot author is configured');
+	// A check run is pending until its status is COMPLETED; a status context until it is SUCCESS, FAILURE or ERROR. A Bugbot check
+	// that reports neither is not known to be finished, so it counts as pending.
 	const pending = rollup.some((c) => {
 		if (!/bugbot/i.test(String(c?.name ?? c?.context ?? ''))) return false;
-		return c.status ? String(c.status).toLowerCase() !== 'completed' : /^(pending|expected)$/i.test(String(c.state ?? ''));
+		if (c.status) return String(c.status).toLowerCase() !== 'completed';
+		return !/^(success|failure|error)$/i.test(String(c.state ?? ''));
 	});
 	const repo = JSON.parse(gh(['repo', 'view', '--json', 'owner,name']));
 	const reply = JSON.parse(
-		gh(['api', 'graphql', '-f', `query=${THREADS_QUERY}`, '-F', `owner=${repo.owner.login}`, '-F', `name=${repo.name}`, '-F', `n=${number}`]),
+		gh(['api', 'graphql', '-f', `query=${THREADS_QUERY}`, '-f', `owner=${repo.owner.login}`, '-f', `name=${repo.name}`, '-F', `n=${number}`]),
 	);
 	const threads = reply?.data?.repository?.pullRequest?.reviewThreads;
 	if (!Array.isArray(threads?.nodes) || threads.pageInfo?.hasNextPage !== false) throw new Error('unexpected review thread shape');
-	return { unresolved: threads.nodes.filter((t) => !t.isResolved && t.comments?.nodes?.[0]?.author?.login === author).length, pending };
+	return { unresolved: threads.nodes.filter((t) => !t.isResolved && botName(t.comments?.nodes?.[0]?.author?.login) === want).length, pending };
 }
 
 export async function run(argv, deps = {}) {
 	let number = null;
 	try {
 		const a = parseArgs(argv);
-		number = Number(a.pr);
-		if (!Number.isInteger(number) || number < 1) return failed('--pr must be a positive integer');
+		// digits only: Number() would accept 1e1, 0x10 and the like
+		number = /^\d+$/.test(String(a.pr ?? '')) ? Number(a.pr) : NaN;
+		if (!Number.isSafeInteger(number) || number < 1) return failed('--pr must be a positive integer');
 		if (!a.key) return failed('--key is required', { pr: number });
 		if (!a.worktree) return failed('--worktree is required', { pr: number });
-		const { gh, qa, cfg } = deps;
+		const { gh, qa } = deps;
+		const cfg = typeof deps.cfg === 'function' ? deps.cfg() : deps.cfg; // a loader runs here, inside the try: a broken config is a failed line
 		const labels = String(a.labels ?? '')
 			.split(',')
 			.map((s) => s.trim())
@@ -91,9 +108,11 @@ export async function run(argv, deps = {}) {
 			decision = decide({ cfg, labels, pr });
 		} else {
 			const verified = qa(['verify', '--head', head, '--key', a.key, '--require-review', 'true', '--worktree', a.worktree]).status === 0;
-			const status = qa(['review', 'status', '--worktree', a.worktree]);
+			// at the PR's own head: without --head qa reads the worktree's HEAD, which may be another commit
+			const status = qa(['review', 'status', '--head', head, '--worktree', a.worktree]);
 			if (status.status !== 0) throw new Error(`qa review status exited ${status.status}`);
 			const review = JSON.parse(status.stdout);
+			if (String(review?.head ?? '').toLowerCase() !== String(head).toLowerCase()) throw new Error('qa review status describes another commit');
 			let bugbot;
 			if (cfg.review?.bugbot !== true) bugbot = { unresolved: 0, pending: false };
 			else {
@@ -140,7 +159,7 @@ const defaultQa = (argv) => {
 };
 
 if (isMain(import.meta.url)) {
-	const { code, result } = await run(process.argv.slice(2), { gh: defaultGh, qa: defaultQa, cfg: load() });
+	const { code, result } = await run(process.argv.slice(2), { gh: defaultGh, qa: defaultQa, cfg: load });
 	console.log(JSON.stringify(result));
 	process.exit(code);
 }

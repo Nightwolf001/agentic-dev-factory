@@ -30,7 +30,16 @@ const view = (over = {}) => ({
 });
 
 // Fake gh and qa that record every argv. Nothing here can reach a real gh or qa.
-function harness({ pr = view(), threads, graphql, ghThrows = {}, verifyStatus = 0, review = { clean: true, triggered: [] }, config = cfg } = {}) {
+function harness({
+	pr = view(),
+	threads,
+	graphql,
+	ghThrows = {},
+	verifyStatus = 0,
+	review = { clean: true, triggered: [] },
+	reviewedHead = null,
+	config = cfg,
+} = {}) {
 	const ghCalls = [];
 	const qaCalls = [];
 	const gh = (argv) => {
@@ -54,7 +63,13 @@ function harness({ pr = view(), threads, graphql, ghThrows = {}, verifyStatus = 
 	const qa = (argv) => {
 		qaCalls.push(argv);
 		if (argv[0] === 'verify') return { status: verifyStatus, stdout: '' };
-		if (argv[0] === 'review' && argv[1] === 'status') return { status: 0, stdout: JSON.stringify(review) };
+		if (argv[0] === 'review' && argv[1] === 'status') {
+			// like qa: the head asked for is the one described; with no --head it is the worktree's own HEAD, here a stale commit
+			const i = argv.indexOf('--head');
+			const asked = i === -1 ? 'stale000' : argv[i + 1];
+			const known = reviewedHead === null || reviewedHead === asked;
+			return { status: 0, stdout: JSON.stringify({ head: asked, ...(known ? review : { clean: false, triggered: [] }) }) };
+		}
 		throw new Error(`unexpected qa call: ${argv.join(' ')}`);
 	};
 	const writes = () => ghCalls.filter((a) => a[0] === 'pr' && (a[1] === 'ready' || a[1] === 'merge'));
@@ -217,6 +232,10 @@ test('bad input is failed/21 before anything is asked or written', async () => {
 		['run', '--pr', '0', '--key', 'K', '--worktree', '/w'],
 		['run', '--pr', '7', '--worktree', '/w'],
 		['run', '--pr', '7', '--key', 'K'],
+		...['1e1', '0x10', '-3', '07x', '', ' 7', '7.0', '99999999999999999999'].map((pr) => ['run', '--pr', pr, '--key', 'K', '--worktree', '/w']),
+		['run', '--pr', '7', '--key', 'K', '--worktree', '/w', '--merge-now'],
+		['run', '--key', 'K', '--worktree', '/w', '--pr'],
+		['run', '--pr', '--key', 'K', '--worktree', '/w'],
 	]) {
 		const h = harness();
 		const { code, result } = await run(bad, h.deps);
@@ -231,12 +250,33 @@ test('verified is qa verify at the viewed head, and review is the JSON of qa rev
 	const h = harness();
 	await run(args(), h.deps);
 	assert.deepEqual(h.qaCalls[0], ['verify', '--head', 'abc123', '--key', 'APP-1', '--require-review', 'true', '--worktree', '/tmp/wt']);
-	assert.deepEqual(h.qaCalls[1], ['review', 'status', '--worktree', '/tmp/wt']);
+	assert.deepEqual(h.qaCalls[1], ['review', 'status', '--head', 'abc123', '--worktree', '/tmp/wt']);
 
 	const dirty = harness({ review: { clean: false, triggered: [] } });
 	assert.equal((await run(args(), dirty.deps)).result.reasons[0], 'review not clean');
 	const triggered = harness({ review: { clean: true, triggered: ['security'] } });
 	assert.match((await run(args(), triggered.deps)).result.reasons[0], /specialist review step is required \(security\)/);
+});
+
+test('the review is read at the PR head: no records for that head is refused, and a reply about another commit is failed/21', async () => {
+	const none = harness({ reviewedHead: 'old111' });
+	const r = await run(args(), none.deps);
+	assert.equal(r.code, EXIT.REFUSED);
+	assert.equal(r.result.reasons[0], 'review not clean');
+	assert.deepEqual(none.writes(), []);
+
+	for (const reply of [
+		{ head: 'old111', clean: true, triggered: [] },
+		{ clean: true, triggered: [] },
+	]) {
+		const h = harness();
+		const deps = { ...h.deps, qa: (argv) => (argv[0] === 'verify' ? { status: 0, stdout: '' } : { status: 0, stdout: JSON.stringify(reply) }) };
+		const { code, result } = await run(args(), deps);
+		assert.equal(code, EXIT.UNKNOWN, JSON.stringify(reply));
+		assert.equal(result.action, 'failed');
+		assert.match(result.reasons.join(' '), /another commit/);
+		assert.deepEqual(h.writes(), []);
+	}
 });
 
 test('qa review status that fails or prints no JSON is failed/21, never a clean review', async () => {
@@ -277,7 +317,12 @@ test('with Bugbot on, unresolved threads by the bot author come from a graphql q
 	const text = q.join(' ');
 	assert.match(text, /query=query\(/);
 	assert.doesNotMatch(text, /mutation/i);
-	assert.ok(q.includes('owner=acme') && q.includes('name=shop') && q.includes('n=7'));
+	const pairs = (a) => a.slice(2).reduce((o, x, i, all) => (i % 2 === 0 ? [...o, [x, all[i + 1]]] : o), []);
+	assert.deepEqual(pairs(q).slice(1), [
+		['-f', 'owner=acme'],
+		['-f', 'name=shop'],
+		['-F', 'n=7'],
+	]);
 });
 
 test('with Bugbot on and nothing open or pending, the PR merges', async () => {
@@ -326,4 +371,92 @@ test('a Bugbot fetch that fails or has an unexpected shape waits as unknown, nev
 test('automerge.mjs runs outside the agents sandbox, where gh can reach the network and its credentials', () => {
 	const settings = JSON.parse(fs.readFileSync(new URL('../settings.factory.json', import.meta.url), 'utf8'));
 	assert.ok(settings.sandbox.excludedCommands.includes('node *automerge.mjs*'));
+});
+
+test('a broken config is a failed line with no gh or qa call, not a stack trace', async () => {
+	const h = harness();
+	const { code, result } = await run(args(), {
+		...h.deps,
+		cfg: () => {
+			throw new Error('config.json: bad JSON');
+		},
+	});
+	assert.equal(code, EXIT.UNKNOWN);
+	assert.equal(result.action, 'failed');
+	assert.match(result.reasons.join(' '), /bad JSON/);
+	assert.deepEqual(
+		h.ghCalls.filter((a) => a[1] !== 'view'),
+		[],
+	);
+	assert.deepEqual(h.writes(), []);
+});
+
+test('a merge method that mergeArgs refuses (admin) is failed/21 and nothing is written', async () => {
+	for (const method of ['admin', 'auto', undefined]) {
+		const h = harness({ config: withCfg({ autoMerge: { ...cfg.autoMerge, method } }) });
+		const { code, result } = await run(args(), h.deps);
+		assert.equal(code, EXIT.UNKNOWN, String(method));
+		assert.equal(result.action, 'failed');
+		assert.deepEqual(h.writes(), []);
+	}
+});
+
+test('the Bugbot author matches with or without [bot] and in any case, on either side', async () => {
+	for (const [configured, login] of [
+		['cursor[bot]', 'cursor'],
+		['cursor', 'cursor[bot]'],
+		['Cursor[BOT]', 'cursor[bot]'],
+		['cursor[bot]', 'cursor[bot]'],
+	]) {
+		const h = harness({
+			config: withCfg({ review: { bugbot: true, bugbotAuthor: configured } }),
+			threads: [thread(false, login)],
+		});
+		const { code, result } = await run(args(), h.deps);
+		assert.equal(code, EXIT.WAIT, `${configured} vs ${login}`);
+		assert.match(result.reasons.join(' '), /1 bot review thread\(s\) unresolved/);
+		assert.deepEqual(h.writes(), []);
+	}
+	const other = harness({ config: bugbotCfg, threads: [thread(false, 'cursor-fan[bot]'), thread(false, 'dependabot[bot]')] });
+	assert.equal((await run(args(), other.deps)).result.action, 'merged', 'a different bot is not Bugbot');
+});
+
+test('a blank Bugbot author with Bugbot on is unknown, not a match for threads without an author', async () => {
+	const h = harness({
+		config: withCfg({ review: { bugbot: true, bugbotAuthor: '' } }),
+		threads: [{ isResolved: false, comments: { nodes: [{ author: null }] } }],
+	});
+	const { code, result } = await run(args(), h.deps);
+	assert.equal(code, EXIT.WAIT);
+	assert.match(result.reasons.join(' '), /bot review state unknown/);
+});
+
+test('a Bugbot check that reports no status or state is pending, never assumed finished', async () => {
+	for (const check of [
+		{ name: 'Cursor Bugbot' },
+		{ name: 'Cursor Bugbot', status: '' },
+		{ context: 'bugbot' },
+		{ context: 'bugbot', state: 'WHATEVER' },
+	]) {
+		const h = harness({ config: bugbotCfg, pr: view({ statusCheckRollup: [check] }) });
+		const { code, result } = await run(args(), h.deps);
+		assert.equal(code, EXIT.WAIT, JSON.stringify(check));
+		assert.match(result.reasons.join(' '), /still running/);
+		assert.deepEqual(h.writes(), []);
+	}
+});
+
+test('a status context from Bugbot is pending until it is SUCCESS, FAILURE or ERROR', async () => {
+	for (const state of ['PENDING', 'EXPECTED']) {
+		const h = harness({ config: bugbotCfg, pr: view({ statusCheckRollup: [{ context: 'cursor/bugbot', state }] }) });
+		const { code } = await run(args(), h.deps);
+		assert.equal(code, EXIT.WAIT, state);
+		assert.deepEqual(h.writes(), []);
+	}
+	for (const state of ['SUCCESS', 'FAILURE', 'ERROR']) {
+		const h = harness({ config: bugbotCfg, pr: view({ statusCheckRollup: [{ context: 'cursor/bugbot', state }] }) });
+		const { code, result } = await run(args(), h.deps);
+		assert.equal(code, EXIT.DONE, state);
+		assert.equal(result.action, 'merged');
+	}
 });
