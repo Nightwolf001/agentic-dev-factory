@@ -1,7 +1,7 @@
 import './isolate-state.mjs';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { EXIT, changedLines, decide, mergeArgs, sizeBound } from '../scripts/automerge-lib.mjs';
+import { EXIT, changedLines, decide, mergeArgs, scope, sizeBound } from '../scripts/automerge-lib.mjs';
 
 const cfg = {
 	autoMerge: { enabled: true, label: 'auto-merge', maxSize: 'small', method: 'squash' },
@@ -141,13 +141,76 @@ test('a bound below 1 makes nothing small, but a labelled task is still eligible
 	assert.equal(decide(withPr({ additions: 0, deletions: 0 }, { cfg: none })).action, 'off');
 });
 
-test('a stacked PR still merges, with a note', () => {
-	const r = decide(withPr({ body: 'This PR is stacked on PR #5 (branch `task/APP-1-x`): review only the commits after it.' }));
+test('a stacked PR still merges once its blocker merged, with a note', () => {
+	const r = decide(
+		withPr(
+			{ body: 'This PR is stacked on PR #5 (branch `task/APP-1-x`): review only the commits after it.' },
+			{ blocker: { pr: 5, state: 'MERGED' } },
+		),
+	);
 	assert.equal(r.action, 'merge');
 	assert.ok(
 		r.notes.some((n) => n.includes('stacked on PR #5')),
 		r.notes.join('|'),
 	);
+});
+
+test('a stacked PR waits while its blocker is open, closed or unknown, so it never lands on the blocker branch', () => {
+	const body = 'This PR is stacked on PR #5 (branch `task/APP-1-x`): review only the commits after it.';
+	for (const [blocker, reason] of [
+		[{ pr: 5, state: 'OPEN' }, 'its blocker PR #5 is not merged yet'],
+		[{ pr: 5, state: 'CLOSED' }, 'its blocker PR #5 was closed without merging'],
+		[undefined, 'its blocker PR #5 state is unknown'],
+		[null, 'its blocker PR #5 state is unknown'],
+		[{ pr: 5 }, 'its blocker PR #5 state is unknown'],
+		[{ pr: 5, state: 'WHATEVER' }, 'its blocker PR #5 state is unknown'],
+		[{ pr: 6, state: 'MERGED' }, 'its blocker PR #5 state is unknown'],
+	]) {
+		for (const isDraft of [false, true]) {
+			const r = decide(withPr({ body, isDraft }, { blocker }));
+			assert.equal(r.action, 'wait', JSON.stringify(blocker));
+			assert.deepEqual(r.reasons, [reason], JSON.stringify(blocker));
+		}
+	}
+	// a permanent reason still wins
+	assert.equal(decide(withPr({ body }, { blocker: { pr: 5, state: 'OPEN' }, verified: false })).action, 'refused');
+});
+
+test('a PR that is not stacked needs no blocker fact', () => {
+	assert.equal(decide(base({ blocker: undefined })).action, 'merge');
+	assert.equal(decide(base({ blocker: { pr: 5, state: 'OPEN' } })).action, 'merge');
+});
+
+test('with Bugbot on but not yet run at this commit, the PR waits', () => {
+	for (const bugbot of [
+		{ unresolved: 0, pending: false, notRun: true },
+		{ unresolved: 0, pending: true, notRun: true },
+	]) {
+		const r = decide(base({ bugbot }));
+		assert.equal(r.action, 'wait');
+		assert.ok(r.reasons.includes('the bot review has not run at this commit'), r.reasons.join('|'));
+		assert.ok(!r.reasons.includes('the bot review is still running'), r.reasons.join('|'));
+	}
+	assert.equal(decide(base({ bugbot: { unresolved: 0, pending: false } })).action, 'merge', 'Bugbot off is unchanged');
+});
+
+test('an autoMerge.label equal to tasks.label authorises nothing, since every factory task carries it', () => {
+	for (const label of ['dev-factory', ' Dev-Factory ']) {
+		const c = { ...withCfg({ label }), tasks: { ...cfg.tasks, label: 'dev-factory' } };
+		const r = decide(withPr({ additions: 4000, deletions: 1000 }, { cfg: c, labels: ['dev-factory'] }));
+		assert.equal(r.action, 'off', label);
+		// a small PR still merges, by size
+		assert.equal(decide(base({ cfg: c, labels: ['dev-factory'] })).via, 'small');
+	}
+});
+
+test('scope answers small, label or null from the config, the labels and the PR alone', () => {
+	assert.equal(scope({ cfg, labels: [], pr: { additions: 40 } }), 'small');
+	assert.equal(scope({ cfg, labels: ['auto-merge'], pr: { additions: 4000 } }), 'label');
+	assert.equal(scope({ cfg, labels: ['auto-merge'], pr: { additions: 4 } }), 'label');
+	assert.equal(scope({ cfg, labels: [], pr: { additions: 4000 } }), null);
+	assert.equal(scope({ cfg: withCfg({ enabled: false }), labels: ['auto-merge'], pr: { additions: 4 } }), null);
+	assert.equal(scope({}), null);
 });
 
 test('a PR with decisions made without a person still merges, with a note', () => {

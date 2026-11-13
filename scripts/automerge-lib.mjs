@@ -8,7 +8,8 @@
 //   ready    eligible, but still a draft: mark it ready for review first
 //   merge    eligible and ready: merge it at exactly this commit
 //
-// Stacked PRs and PRs with a "Decisions made without a person" section are never refused for that; they only produce `notes`.
+// Stacked PRs and PRs with a "Decisions made without a person" section are never refused for that; they produce `notes`, and a
+// stacked PR waits until its blocker PR is merged (the caller passes the blocker's state as `blocker: { pr, state }`).
 
 export const EXIT = { DONE: 0, WAIT: 10, REFUSED: 11, OFF: 12, UNKNOWN: 21 };
 
@@ -25,6 +26,21 @@ export function sizeBound(cfg) {
 	return Number.isFinite(n) && n >= 1 ? n : 0;
 }
 
+const labelSet = (labels) => new Set((Array.isArray(labels) ? labels : []).map(norm));
+
+// Whether the PR is the scheduler's to merge at all, from the config, the labels and the PR's size alone: 'label', 'small' or null
+// (off). It needs no evidence, so the caller can answer `off` before asking qa or GitHub anything more.
+export function scope({ cfg, labels, pr } = {}) {
+	if (cfg?.autoMerge?.enabled !== true) return null;
+	const want = norm(cfg.autoMerge.label);
+	// a blank label authorises nothing, and neither does the factory's own task label, which every factory task carries
+	const labelled = want !== '' && want !== norm(cfg.tasks?.label) && labelSet(labels).has(want);
+	const bound = sizeBound(cfg);
+	// at or below the bound, 0 included: an empty PR must reach the refusal in `decide` instead of being ignored
+	const small = bound > 0 && changedLines(pr) <= bound;
+	return labelled ? 'label' : small ? 'small' : null;
+}
+
 export function decide(input = {}) {
 	const { cfg, labels, verified, readiedHead = null } = input;
 	// a fact that is missing or null is treated as missing, never as a throw: unknown input must fail closed
@@ -32,17 +48,15 @@ export function decide(input = {}) {
 	const review = input.review ?? {};
 	const bugbot = input.bugbot ?? null;
 	const result = (action, via = null, reasons = [], notes = []) => ({ action, via, reasons, notes });
-	if (cfg?.autoMerge?.enabled !== true) return result('off');
+	const via = scope({ cfg, labels, pr });
+	if (via === null) return result('off');
 
-	const have = new Set((Array.isArray(labels) ? labels : []).map(norm));
+	const have = labelSet(labels);
 	const lines = changedLines(pr);
 	const bound = sizeBound(cfg);
-	const want = norm(cfg.autoMerge.label);
-	const labelled = want !== '' && have.has(want); // a blank label authorises nothing
-	// at or below the bound, 0 included: an empty PR must reach the refusal below instead of being ignored
-	const small = bound > 0 && lines <= bound;
-	if (!small && !labelled) return result('off');
-	const via = labelled ? 'label' : 'small';
+	const labelled = via === 'label';
+	const body = String(pr.body ?? '');
+	const stack = /stacked on PR #(\d+)/i.exec(body);
 
 	const refused = [];
 	if (lines === 0) refused.push('no changed lines');
@@ -59,16 +73,27 @@ export function decide(input = {}) {
 	if (refused.length > 0) return result('refused', via, refused);
 
 	const waiting = [];
-	// With Bugbot off the caller passes { unresolved: 0, pending: false }; only a missing or non-numeric count is unknown.
+	// With Bugbot off the caller passes { unresolved: 0, pending: false }; only a missing or non-numeric count is unknown. With it on
+	// and no Bugbot check at this commit yet (the trigger failed, the bot has not started, its quota ran out), `notRun` is set: a
+	// person who turned Bugbot on expects it to have looked at the head, so that waits too.
 	if (!Number.isFinite(bugbot?.unresolved)) waiting.push('bot review state unknown');
-	if (bugbot?.pending) waiting.push('the bot review is still running');
+	if (bugbot?.notRun) waiting.push('the bot review has not run at this commit');
+	else if (bugbot?.pending) waiting.push('the bot review is still running');
 	if (bugbot?.unresolved > 0) waiting.push(`${bugbot.unresolved} bot review thread(s) unresolved`);
+	// A stacked PR targets its blocker's branch: merged now, it would land there and change the blocker's head, so its QA and review
+	// would no longer match. It waits for the blocker to merge; the tick's retarget then moves it onto the real base.
+	if (stack) {
+		const m = Number(stack[1]);
+		const b = input.blocker;
+		const state = b && b.pr === m ? b.state : null;
+		if (state === 'OPEN') waiting.push(`its blocker PR #${m} is not merged yet`);
+		else if (state === 'CLOSED') waiting.push(`its blocker PR #${m} was closed without merging`);
+		else if (state !== 'MERGED') waiting.push(`its blocker PR #${m} state is unknown`);
+	}
 	if (!pr.isDraft && pr.mergeStateStatus !== 'CLEAN') waiting.push(`the merge state is ${pr.mergeStateStatus || 'unknown'}, not CLEAN`);
 	if (waiting.length > 0) return result('wait', via, waiting);
 
 	const notes = [];
-	const body = String(pr.body ?? '');
-	const stack = /stacked on PR #(\d+)/i.exec(body);
 	if (stack) notes.push(`stacked on PR #${stack[1]}`);
 	if (/^#{1,6}\s*decisions made without a person\b/im.test(body)) notes.push('carries decisions made without a person');
 	if (labelled && lines > bound) notes.push(`labelled task, ${lines} changed lines`);

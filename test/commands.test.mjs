@@ -152,3 +152,18 @@ test('the auto-merge step also considers reviewed tasks whose PR is still open',
 	assert.match(bullet, /still OPEN/, 'only while the PR is open');
 	assert.match(bullet, /do not move it back/i, 'the task keeps its state');
 });
+
+// The command runs outside the sandbox, so no text a person or a tracker supplies is pasted into it: the labels go through a file the
+// tick writes, and the readied head is the script's own record, never read from a comment.
+test('the auto-merge step passes labels in a file and nothing taken from a comment', () => {
+	const tick = read('tick.md');
+	const bullet = tick.slice(tick.indexOf('-   Auto-merge:'), tick.indexOf('-   Reviewed:'));
+	assert.match(bullet, /--labels-file <file>/);
+	assert.match(bullet, /Write tool/);
+	assert.doesNotMatch(bullet, /--readied-head|--labels </);
+	assert.match(bullet, /blocker/i, 'the stacked wait is described');
+	assert.match(bullet, /Never run `gh pr merge` or `gh pr ready` yourself/);
+	const reference = fs.readFileSync(new URL('../docs/reference.md', import.meta.url), 'utf8');
+	for (const text of [tick, reference]) assert.doesNotMatch(text, /--readied-head|automerge\.mjs" run [^\n]*--labels </);
+	assert.match(reference, /--labels-file <file>/);
+});

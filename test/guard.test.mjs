@@ -659,7 +659,7 @@ const AUTO_MERGE_CWD = '/work'; // not under a .claude/ path, which the shell gu
 
 test('auto-merge is the scheduler’s alone and gh pr merge stays reserved for people', () => {
 	const cwd = AUTO_MERGE_CWD;
-	const cmd = 'node "/p/scripts/automerge.mjs" run --pr 7 --key APP-1 --labels auto-merge --worktree /w';
+	const cmd = 'node "/p/scripts/automerge.mjs" run --pr 7 --key APP-1 --labels-file /w/labels.txt --worktree /w';
 	for (const role of FACTORY_ROLES) {
 		const r = evaluate(cmd, { role, cwd });
 		assert.equal(r.deny, true, role);
@@ -674,7 +674,7 @@ test('auto-merge is the scheduler’s alone and gh pr merge stays reserved for p
 
 test('every way a factory agent could start automerge.mjs is refused, and the scheduler may', () => {
 	const cwd = AUTO_MERGE_CWD;
-	const run = 'run --pr 7 --key APP-1 --labels auto-merge --worktree /w';
+	const run = 'run --pr 7 --key APP-1 --labels-file /w/labels.txt --worktree /w';
 	const forms = [
 		`node /p/scripts/automerge.mjs --dry-run`,
 		`node "/p/scripts/automerge.mjs" --dry-run`,
@@ -713,7 +713,7 @@ test('every way a factory agent could start automerge.mjs is refused, and the sc
 
 test('the auto-merge refusal sees case, brace lists, globs and built words', () => {
 	const cwd = AUTO_MERGE_CWD;
-	const run = 'run --pr 7 --key APP-1 --labels auto-merge --worktree /w';
+	const run = 'run --pr 7 --key APP-1 --labels-file /w/labels.txt --worktree /w';
 	const names = [
 		'AutoMerge.mjs',
 		'AUTOMERGE.MJS',
@@ -761,7 +761,7 @@ test('the auto-merge refusal sees case, brace lists, globs and built words', () 
 
 test('node options that only look like --test or -e do not hide the script from the auto-merge refusal', () => {
 	const cwd = AUTO_MERGE_CWD;
-	const run = 'run --pr 7 --key APP-1 --labels auto-merge --worktree /w';
+	const run = 'run --pr 7 --key APP-1 --labels-file /w/labels.txt --worktree /w';
 	for (const c of [
 		`node --test-only /p/scripts/automerg?.mjs ${run}`,
 		`node --test-reporter=spec /p/scripts/auto*.mjs ${run}`,
@@ -784,6 +784,44 @@ test('node options that only look like --test or -e do not hide the script from 
 			const r = evaluate(c, { role, cwd });
 			assert.equal(r.deny && /scheduler's alone|built at run time/.test(r.reason), false, `${role}: ${c}`);
 		}
+});
+
+// settings.factory.json runs `node *automerge.mjs*` outside the sandbox, so a factory agent's own program with that text anywhere in its
+// command would run with the network and the credentials: a launcher with the name inside any word is refused, as is one whose command
+// line names it anywhere.
+test('a launcher with automerge.mjs anywhere in its command is refused to a factory agent, since the sandbox lets it out', () => {
+	const cwd = AUTO_MERGE_CWD;
+	for (const c of [
+		'node mytool.mjs --x=automerge.mjs',
+		'node mytool.mjs xautomerge.mjs',
+		'node mytool.mjs AUTOMERGE.MJS=1',
+		'node mytool.mjs "--x=automerge.mjs"',
+		"node mytool.mjs 'xautomerge.mjs'",
+		'node mytool.mjs "AUTOMERGE.MJS=1"',
+		'node mytool.mjs --x=auto{merge,y}.mjs',
+		'node mytool.mjs automerge.mjs.bak',
+		'X=automerge.mjs node mytool.mjs',
+		'node mytool.mjs; echo automerge.mjs',
+		'npx tsx mytool.ts --x=automerge.mjs',
+		'bun mytool.mjs xautomerge.mjs',
+	]) {
+		for (const role of WRITING_ROLES) {
+			const r = evaluate(c, { role, cwd });
+			assert.equal(r.deny, true, `${role}: ${c}`);
+			assert.match(r.reason, AUTO_MERGE_REASON, `${role}: ${c}`);
+		}
+		for (const role of ['reviewer', 'debugger', 'researcher']) assert.equal(evaluate(c, { role, cwd }).deny, true, `${role}: ${c}`);
+		assert.equal(evaluate(c, { cwd }).deny, false, `the scheduler may: ${c}`);
+	}
+	for (const c of [
+		'node --test test/automerge.test.mjs',
+		'node --test test/automerge-cli.test.mjs',
+		'node scripts/automerge-lib.mjs',
+		'git log -- scripts/automerge.mjs',
+		'grep automerge.mjs x',
+		'cat scripts/automerge.mjs',
+	])
+		for (const role of WRITING_ROLES) assert.equal(evaluate(c, { role, cwd }).deny, false, `${role}: ${c}`);
 });
 
 test('ordinary node, git and echo are not mistaken for auto-merge', () => {

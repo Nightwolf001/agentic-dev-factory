@@ -833,13 +833,16 @@ function scriptWord(cmd, args) {
 	return null;
 }
 
-// How a launcher of scripts runs automerge.mjs: 'named' when a word names it, whatever the case or brace list or variable it is
-// written with, or, where the script goes, is a glob that matches it; 'built' when the script word is made at run time ($x, a
-// backtick) and could be it; null otherwise.
-function runsAutoMerge({ cmd, args }, vars) {
+// How a launcher of scripts runs automerge.mjs: 'named' when any of its words holds the name, whatever the case or brace list or
+// variable it is written with, or when the command line holds it anywhere, or, where the script goes, is a glob that matches it;
+// 'built' when the script word is made at run time ($x, a backtick) and could be it; null otherwise. The name anywhere, not only as
+// the script: settings.factory.json runs `node *automerge.mjs*` outside the sandbox, so `node mine.mjs --x=automerge.mjs` would run
+// the agent's own program with the network and the credentials.
+function runsAutoMerge({ cmd, args }, vars, command) {
 	if (!SCRIPT_RUNNERS.has(cmd)) return null;
 	const names = (word) => candidates(word, vars);
-	if (args.some((a) => names(a).some((c) => base(c).toLowerCase() === AUTO_MERGE))) return 'named';
+	if (String(command).toLowerCase().includes(AUTO_MERGE)) return 'named';
+	if (args.some((a) => names(a).some((c) => c.toLowerCase().includes(AUTO_MERGE)))) return 'named';
 	const script = scriptWord(cmd, args);
 	if (script === null) return null;
 	const found = names(script);
@@ -971,7 +974,7 @@ function judge(command, ctx) {
 		if (!reason && FACTORY_ROLES.has(ctx.role) && /^node\s+\S*tasks\.mjs"?\s+(set-state|comment|label|link|block|create|init)\b/.test(seg))
 			reason = 'the task tracker is written only by the scheduler, not by a factory agent (tasks.mjs ' + seg.split(/\s+/)[2] + ')';
 		// merging is the scheduler's: automerge.mjs calls gh itself, where no hook sees it, so the one door is closed here
-		const merge = !reason && FACTORY_ROLES.has(ctx.role) ? runsAutoMerge(inv, st.vars) : null;
+		const merge = !reason && FACTORY_ROLES.has(ctx.role) ? runsAutoMerge(inv, st.vars, command) : null;
 		if (merge === 'named') reason = "merging is the scheduler's alone, not a factory agent's (automerge.mjs)";
 		else if (merge === 'built')
 			reason =
