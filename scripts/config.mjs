@@ -382,6 +382,23 @@ export function validate(config) {
 		const v = dig(config, k);
 		if (v != null && (typeof v !== 'string' || !v)) problems.push(`${k} must be a name or null`);
 	}
+	const autoMergeOn = dig(config, 'autoMerge.enabled');
+	if (autoMergeOn !== undefined && typeof autoMergeOn !== 'boolean') problems.push('autoMerge.enabled must be true or false');
+	const autoMergeLabel = dig(config, 'autoMerge.label');
+	if (autoMergeLabel !== undefined && (typeof autoMergeLabel !== 'string' || !/^[A-Za-z0-9._:-]+$/.test(autoMergeLabel)))
+		problems.push('autoMerge.label must be a label name (letters, digits, . _ : -)');
+	if (autoMergeLabel !== undefined && ['tasks.label', 'tasks.blockedLabel', 'tasks.questionLabel'].some((k) => autoMergeLabel === dig(config, k)))
+		problems.push('autoMerge.label must be a label name that differs from tasks.label, tasks.blockedLabel and tasks.questionLabel');
+	const autoMergeMethod = dig(config, 'autoMerge.method');
+	if (autoMergeMethod !== undefined && !['squash', 'merge', 'rebase'].includes(autoMergeMethod))
+		problems.push('autoMerge.method must be one of squash, merge, rebase');
+	const autoMergeSize = dig(config, 'autoMerge.maxSize');
+	if (autoMergeSize !== undefined) {
+		const buckets = dig(config, 'pr.sizeLabels') ?? {};
+		if (typeof autoMergeSize !== 'string' || !Object.hasOwn(buckets, autoMergeSize))
+			problems.push('autoMerge.maxSize must name a pr.sizeLabels bucket');
+		else if (typeof buckets[autoMergeSize] !== 'number') problems.push(`autoMerge.maxSize ${autoMergeSize} needs a line bound in pr.sizeLabels`);
+	}
 	const bugbot = dig(config, 'review.bugbot');
 	if (bugbot !== undefined && typeof bugbot !== 'boolean') problems.push('review.bugbot must be true or false');
 	if (bugbot === true)
