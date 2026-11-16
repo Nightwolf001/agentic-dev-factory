@@ -751,3 +751,39 @@ test('write-from-env reports a file it wrote on stdout even when another one was
 	assert.match(r.stdout, /config: wrote .*qa\.yaml/);
 	assert.doesNotMatch(r.stderr, /wrote/);
 });
+
+test('autoMerge defaults to off, the auto-merge label, the small bucket and squash', () => {
+	const c = load();
+	assert.deepEqual(c.autoMerge, { enabled: false, label: 'auto-merge', maxSize: 'small', method: 'squash' });
+	assert.deepEqual(validate(c), []);
+});
+
+test('autoMerge settings are validated', () => {
+	assert.ok(withSetting('autoMerge.enabled', 'yes').some((p) => /autoMerge\.enabled must be true or false/.test(p)));
+	assert.ok(withSetting('autoMerge.method', 'fast-forward').some((p) => /autoMerge\.method must be one of squash, merge, rebase/.test(p)));
+	assert.ok(withSetting('autoMerge.maxSize', 'huge').some((p) => /autoMerge\.maxSize must name a pr\.sizeLabels bucket/.test(p)));
+	assert.ok(
+		withSetting('autoMerge.maxSize', 'large').some((p) => /needs a line bound/.test(p)),
+		'the unbounded bucket is refused',
+	);
+	for (const bad of ['', 'dev-factory', 'factory-blocked', 'factory-question', 'Dev-Factory', 'FACTORY-BLOCKED'])
+		assert.ok(
+			withSetting('autoMerge.label', bad).some((p) => /autoMerge\.label must be a label name/.test(p)),
+			bad,
+		);
+});
+
+test('autoMerge accepts every method, and any bounded bucket of a custom pr.sizeLabels', () => {
+	const mine = (p) => /^autoMerge\./.test(p);
+	const c = structuredClone(load());
+	for (const method of ['merge', 'rebase']) {
+		Object.assign(c.autoMerge, { maxSize: 'medium', method });
+		assert.deepEqual(validate(c).filter(mine), [], method);
+	}
+	c.autoMerge.method = 'squash';
+	c.pr.sizeLabels = { tiny: 20, big: null };
+	c.autoMerge.maxSize = 'tiny';
+	assert.deepEqual(validate(c).filter(mine), []);
+	c.autoMerge.maxSize = 'big';
+	assert.ok(validate(c).some((p) => /needs a line bound/.test(p)));
+});

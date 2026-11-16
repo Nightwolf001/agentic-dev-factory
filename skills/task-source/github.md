@@ -18,4 +18,4 @@ LINK: one issue comment `[dev-factory] links: branch <url>, PR <url>, QA <verdic
 
 Plans: `/dev-factory:plan` creates one issue per slice with `gh issue create`, blockers first, and links each to its parent with a `Parent: GH-<n>` line (a parent issue is a tracking issue; the factory builds the slices, not the parent).
 
-Link PRs to issues with `Closes #<n>` in the PR body only when the repository wants merges to close issues; the factory moves state labels itself and closes the issue when a person merges.
+Link PRs to issues with `Closes #<n>` in the PR body only when the repository wants merges to close issues; the factory moves state labels itself and closes the issue when the PR is merged.

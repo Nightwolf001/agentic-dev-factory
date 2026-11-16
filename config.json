@@ -110,6 +110,12 @@
 			"ai-tooling": "ai-tooling"
 		}
 	},
+	"autoMerge": {
+		"enabled": false,
+		"label": "auto-merge",
+		"maxSize": "small",
+		"method": "squash"
+	},
 	"blocked": {
 		"agentDecides": false
 	},

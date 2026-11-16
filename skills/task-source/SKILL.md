@@ -17,7 +17,7 @@ A task has a **key** (`PREFIX-<number>`: `TASK-3` local, `GH-12` GitHub, `APP-12
 | ------------ | ------------------------------------------------------------------------------- |
 | `ready`      | Labelled for the factory, unblocked, nobody working on it. The queue.           |
 | `inProgress` | Claimed by a pass or a person running `/dev-factory:build`.                     |
-| `inReview`   | A draft PR exists and waits for a person.                                       |
+| `inReview`   | A PR exists and waits for a person, or for the scheduler under `autoMerge`.     |
 | `reviewed`   | The PR was approved or merged; QA, release and anything after belong to people. |
 | `done`       | Finished. A task that blocks another must be `done` before the other is built.  |
 

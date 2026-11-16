@@ -383,6 +383,30 @@
 			"type": "map",
 			"scopeHint": "project"
 		},
+		"autoMerge.enabled": {
+			"group": "Git and pull requests",
+			"title": "Auto-merge small PRs",
+			"type": "boolean",
+			"scopeHint": "project"
+		},
+		"autoMerge.label": {
+			"group": "Git and pull requests",
+			"title": "Auto-merge task label",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"autoMerge.maxSize": {
+			"group": "Git and pull requests",
+			"title": "Largest PR size that auto-merges",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"autoMerge.method": {
+			"group": "Git and pull requests",
+			"title": "Auto-merge method",
+			"type": "string",
+			"scopeHint": "project"
+		},
 		"environment.type": {
 			"group": "Environment",
 			"title": "Environment type",

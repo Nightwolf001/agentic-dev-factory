@@ -2,7 +2,8 @@
 // the PreToolUse hook input. A hook sees command strings only, so this is a guard against mistakes
 // and against ordinary bypasses (wrappers, global options, substitutions, inline interpreters), not a
 // sandbox: an agent that writes and runs its own program is stopped by the real separation, which is that
-// the builder has no task-tracker or GitHub tools, the scheduler holds the credentials, and a person merges.
+// the builder has no task-tracker or GitHub tools, the scheduler holds the credentials, and the scheduler merges only through
+// automerge.mjs, which a factory agent is refused (gh pr merge stays denied for everyone).
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -12,6 +13,8 @@ import {
 	budget,
 	candidates,
 	envOf,
+	globMatch,
+	hasGlob,
 	namesEnvFile,
 	protectedPlace,
 	realPath,
@@ -807,6 +810,46 @@ function factoryScript(word, st) {
 	return fs.existsSync(path.join(root, 'bin', 'qa.mjs')) || fs.existsSync(path.join(root, '.claude-plugin', 'plugin.json'));
 }
 
+// Launchers of a script. Like gh pr merge, the refusal of automerge.mjs is a guard against the ordinary ways to start it: a copy under
+// another name, a symlink, `find -exec` or a program the agent writes are stopped by the real separation, not here.
+const SCRIPT_RUNNERS = new Set(['node', 'nodejs', 'bun', 'bunx', 'deno', 'npx', 'tsx', 'ts-node']);
+const RUNNER_SKIPPED = new Set([...SCRIPT_RUNNERS, 'run', 'exec']);
+const RUNNER_VALUE_OPTS = new Set(['-r', '--require', '--import', '--loader', '--experimental-loader']);
+// npx and its kin take the package a command comes from, where node's -p prints
+const LAUNCHER_VALUE_OPTS = new Set(['-p', '--package']);
+const AUTO_MERGE = 'automerge.mjs';
+
+// The word where the script goes: the first that is not an option (or an option's value) or another launcher (npx tsx x.mjs). None
+// when node carries code or test patterns instead (-e, -p, -pe, --eval, --print, --test), where a glob or a variable is data. An
+// option that only starts like those (--test-only, --test-reporter=spec) leaves the script where it was.
+function scriptWord(cmd, args) {
+	const isNode = cmd === 'node' || cmd === 'nodejs';
+	for (let i = 0; i < args.length; i++) {
+		const a = args[i];
+		if (isNode && (/^-(e|p|pe|ep)$/.test(a) || /^--(eval|print|test)(=|$)/.test(a))) return null;
+		if (RUNNER_VALUE_OPTS.has(a) || (!isNode && LAUNCHER_VALUE_OPTS.has(a))) i++;
+		else if (!a.startsWith('-') && !RUNNER_SKIPPED.has(base(a))) return a;
+	}
+	return null;
+}
+
+// How a launcher of scripts runs automerge.mjs: 'named' when any of its words holds the name, whatever the case or brace list or
+// variable it is written with, or when the command line holds it anywhere, or, where the script goes, is a glob that matches it;
+// 'built' when the script word is made at run time ($x, a backtick) and could be it; null otherwise. The name anywhere, not only as
+// the script: settings.factory.json runs `node *automerge.mjs*` outside the sandbox, so `node mine.mjs --x=automerge.mjs` would run
+// the agent's own program with the network and the credentials.
+function runsAutoMerge({ cmd, args }, vars, command) {
+	if (!SCRIPT_RUNNERS.has(cmd)) return null;
+	const names = (word) => candidates(word, vars);
+	if (String(command).toLowerCase().includes(AUTO_MERGE)) return 'named';
+	if (args.some((a) => names(a).some((c) => c.toLowerCase().includes(AUTO_MERGE)))) return 'named';
+	const script = scriptWord(cmd, args);
+	if (script === null) return null;
+	const found = names(script);
+	if (found.some((c) => hasGlob(base(c)) && globMatch(base(c), AUTO_MERGE))) return 'named';
+	return found.some((c) => /[$`]/.test(c)) ? 'built' : null;
+}
+
 function denyFactoryWrite(inv, st) {
 	const { cmd, args } = inv;
 	let script;
@@ -930,6 +973,12 @@ function judge(command, ctx) {
 			reason = 'direct task-tracker access is reserved for the scheduler, which sends only QA screenshots to a Notion upload URL';
 		if (!reason && FACTORY_ROLES.has(ctx.role) && /^node\s+\S*tasks\.mjs"?\s+(set-state|comment|label|link|block|create|init)\b/.test(seg))
 			reason = 'the task tracker is written only by the scheduler, not by a factory agent (tasks.mjs ' + seg.split(/\s+/)[2] + ')';
+		// merging is the scheduler's: automerge.mjs calls gh itself, where no hook sees it, so the one door is closed here
+		const merge = !reason && FACTORY_ROLES.has(ctx.role) ? runsAutoMerge(inv, st.vars, command) : null;
+		if (merge === 'named') reason = "merging is the scheduler's alone, not a factory agent's (automerge.mjs)";
+		else if (merge === 'built')
+			reason =
+				"the script is built at run time, so it cannot be told from automerge.mjs, which only the scheduler runs; write the script's path out";
 		// run.json records the role and limits a run is judged by: a factory agent does not rewrite its own
 		if (!reason && FACTORY_ROLES.has(ctx.role) && /^node\s+\S*run-context\.mjs"?\s+write\b/.test(seg))
 			reason = 'run state is written only by the scheduler, not by a factory agent (run-context.mjs write)';

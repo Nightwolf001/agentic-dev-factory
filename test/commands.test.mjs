@@ -121,3 +121,49 @@ test('no command, skill or agent points at the old settings files except to call
 			.filter((l) => /dev-factory\.(config\.json|qa\.yaml)/.test(l)))
 			assert.match(line, /legacy|old location|migrate/i, `${f}: ${line.slice(0, 120)}`);
 });
+
+// The scheduler is the only thing that may merge, and only through automerge.mjs; if the tick stopped calling it, or the reference stopped
+// describing it, a person who turned `autoMerge.enabled` on would get nothing, or would not know what it does.
+test('the tick runs auto-merge only when it is on, and the reference documents the section and every autoMerge setting', () => {
+	const tick = read('tick.md');
+	assert.ok(tick.includes('scripts/automerge.mjs" run'), 'the tick runs the auto-merge script');
+	assert.ok(tick.includes('get autoMerge.enabled'), 'the tick reads the master switch first');
+	const config = JSON.parse(fs.readFileSync(new URL('../config.json', import.meta.url), 'utf8'));
+	const reference = fs.readFileSync(new URL('../docs/reference.md', import.meta.url), 'utf8');
+	assert.match(reference, /^### Auto-merge$/m);
+	// the section only, up to the next heading of its level, so a mention elsewhere does not count
+	const from = reference.indexOf('\n### Auto-merge\n');
+	const section = reference.slice(from + 1, reference.indexOf('\n### ', from + 1) === -1 ? undefined : reference.indexOf('\n### ', from + 1));
+	for (const key of Object.keys(config.autoMerge)) {
+		assert.ok(section.includes(`autoMerge.${key}`), `the Auto-merge section names autoMerge.${key}`);
+		assert.match(reference, new RegExp(`^\\|\\s*\`autoMerge\\.${key}\`\\s*\\|`, 'm'), `the Pull requests table has a row for autoMerge.${key}`);
+	}
+	assert.match(fs.readFileSync(new URL('../README.md', import.meta.url), 'utf8'), /scripts\/automerge\.mjs/, 'the README names the script');
+});
+
+// A task is `reviewed` as soon as its PR is approved, which can be a pass before the PR can merge; the tick must still offer it to the script.
+test('the auto-merge step also considers reviewed tasks whose PR is still open', () => {
+	const tick = read('tick.md');
+	const start = tick.indexOf('-   Auto-merge:');
+	const end = tick.indexOf('-   Reviewed:');
+	assert.ok(start !== -1 && end > start, 'the Auto-merge bullet sits before the Reviewed bullet');
+	const bullet = tick.slice(start, end);
+	assert.match(bullet, /`reviewed`/, 'the bullet names reviewed tasks');
+	assert.match(bullet, /still OPEN/, 'only while the PR is open');
+	assert.match(bullet, /do not move it back/i, 'the task keeps its state');
+});
+
+// The command runs outside the sandbox, so no text a person or a tracker supplies is pasted into it: the labels go through a file the
+// tick writes, and the readied head is the script's own record, never read from a comment.
+test('the auto-merge step passes labels in a file and nothing taken from a comment', () => {
+	const tick = read('tick.md');
+	const bullet = tick.slice(tick.indexOf('-   Auto-merge:'), tick.indexOf('-   Reviewed:'));
+	assert.match(bullet, /--labels-file <file>/);
+	assert.match(bullet, /Write tool/);
+	assert.doesNotMatch(bullet, /--readied-head|--labels </);
+	assert.match(bullet, /blocker/i, 'the stacked wait is described');
+	assert.match(bullet, /Never run `gh pr merge` or `gh pr ready` yourself/);
+	const reference = fs.readFileSync(new URL('../docs/reference.md', import.meta.url), 'utf8');
+	for (const text of [tick, reference]) assert.doesNotMatch(text, /--readied-head|automerge\.mjs" run [^\n]*--labels </);
+	assert.match(reference, /--labels-file <file>/);
+});
