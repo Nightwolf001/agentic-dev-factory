@@ -3,12 +3,13 @@
 // thing that turns that walk into a verdict, and it refuses anything that is not fresh evidence
 // for this run at this commit.
 //
-//   qa.mjs start   --key KEY --profile web|mobile|service
+//   qa.mjs start   --key KEY --profile web|mobile|service   refused (exit 4) once the ticket's failed runs pass caps.maxQaFixAttempts
 //   qa.mjs record  --run N --case SLUG --status pass|fail --assertion TEXT [--screenshot FILE] [--video FILE] [--log FILE] [--kind worker --evidence-file FILE] [--step N]
 //   qa.mjs probe   --run N --case SLUG --url URL [--method GET] [--header 'Name: value']... [--body-file F | --body TEXT] [--expect-status 200] [--step N]   send an API request, keep the answer as evidence
 //   qa.mjs done    --run N
 //   qa.mjs mark-na --key KEY --profile web|mobile|service --reason TEXT   only when every changed file is documentation, a test or a formatting rule (noBehaviourGlobs)
 //   qa.mjs verify  --head SHA (--key KEY | --run N) [--require-review true]   --key finds the run made at that head, or the not-applicable record
+//   qa.mjs build-ready   exit 0 only when .dev-factory/build.done is a hand-off the stop gate accepts; prints one JSON line {ready, head|problems}
 //   qa.mjs show    --run N
 //   qa.mjs review record --axis spec|standards --head SHA --summary TEXT --findings JSON   only as the reviewer run.json names for that axis
 //   qa.mjs review status [--head SHA]
@@ -244,8 +245,57 @@ export function caseSummary(cases) {
 	return out;
 }
 
-export function start({ root, key, profile }) {
+// How many runs of this ticket found a failure: closed as a fail, or left open with a case recorded as failed. The second kind is
+// the usual one, because after a failed case the builder fixes the code or the case and starts a new run, and the old run can then
+// never be closed (HEAD moved, or its cases changed). Each such run is followed by one fix attempt, so this is also the number of
+// fix attempts the next run would be checking. A run file that cannot be read is skipped: it is no evidence of a failure, and a
+// corrupt file must not stop every later start.
+function failedRunCount(root, key) {
+	const dir = stateDir(root);
+	if (!fs.existsSync(dir)) return 0;
+	let failed = 0;
+	for (const f of fs.readdirSync(dir).filter((name) => /^run-\d+\.json$/.test(name))) {
+		let m;
+		try {
+			m = readJson(path.join(dir, f));
+		} catch {
+			continue;
+		}
+		if (m?.key !== key) continue;
+		if (m.verdict === 'fail' || (Array.isArray(m.cases) && m.cases.some((c) => c?.status === 'fail'))) failed++;
+	}
+	return failed;
+}
+
+const SHIPPED_CONFIG = fileURLToPath(new URL('../config.json', import.meta.url));
+
+// caps.maxQaFixAttempts as start may use it: a non-negative integer. Anything else (-1 refused even the first walk, "five" turned the
+// budget off) is replaced by the shipped default, and the person is told on stderr.
+export function fixBudget(value, warn = (m) => process.stderr.write(m)) {
+	if (Number.isInteger(value) && value >= 0) return value;
+	let fallback = 5;
+	try {
+		const shipped = loadConfig(SHIPPED_CONFIG).caps?.maxQaFixAttempts;
+		if (Number.isInteger(shipped) && shipped >= 0) fallback = shipped;
+	} catch {
+		/* the constant above */
+	}
+	warn(`qa: caps.maxQaFixAttempts is ${JSON.stringify(value) ?? 'unset'}, not a non-negative integer; using the shipped default ${fallback}.\n`);
+	return fallback;
+}
+
+// maxFixAttempts is caps.maxQaFixAttempts: the first walk is free, then that many fixes may be walked. Past it the builder must
+// block for a person, so a ticket QA keeps failing cannot spend the whole pass.
+export function start({ root, key, profile, maxFixAttempts = null }) {
 	if (!key || !profile) throw new QaError('start needs --key and --profile');
+	if (maxFixAttempts != null) {
+		const failed = failedRunCount(root, key);
+		if (failed > maxFixAttempts)
+			throw new QaError(
+				`QA fix budget spent: ${failed} failed QA run(s) for ${key} (closed as a fail, or left open with a failed case) and caps.maxQaFixAttempts is ${maxFixAttempts}. Do not start another run: write .dev-factory/blocked.json with a reason starting "QA fix budget spent" and naming the case, step and evidence of the last failure, and a decision saying that a person grants more attempts by raising caps.maxQaFixAttempts or by clearing this ticket's old runs (.dev-factory/qa/run-*.json); the count is per worktree.`,
+				4,
+			);
+	}
 	const dirty = dirtyFiles(root);
 	if (dirty.length) throw new QaError(`working tree is not clean (commit first): ${dirty.slice(0, 5).join(', ')}`);
 	ensureProjectDir(root); // the folder the cases are written in keeps itself out of git, whoever made it
@@ -780,6 +830,61 @@ export function runForKey(root, key, head, base = null) {
 	return older ? { ...older.m, carriedFrom: older.m.head } : null;
 }
 
+// What stands between a builder's .dev-factory/build.done and a hand-off a reviewer can start on: the tree is committed, QA passed at
+// HEAD (or the change is recorded as not applicable), and the file names the commit QA was made at. The file existing proves none of
+// that, and a premature one costs review rounds and is caught only at ship. Returns the problems, empty when the build is ready.
+// noAttribution is what ship checks too (git.agentAttribution off): a commit ship would refuse is not ready for review either.
+export function buildReadiness({ root, key, doneText = '', base = baseFor(root), noAttribution = false }) {
+	const problems = [];
+	const dirty = dirtyFiles(root);
+	if (dirty.length) problems.push(`working tree is not clean (commit first): ${dirty.slice(0, 5).join(', ')}`);
+	const full = git(root, 'rev-parse', 'HEAD');
+	let qaHead = null;
+	if (key) {
+		try {
+			qaHead = verify({ root, head: full, key, base, noAttribution, headName: 'HEAD' }).head;
+		} catch (e) {
+			if (!(e instanceof QaError)) throw e;
+			problems.push(e.message);
+		}
+	}
+	const named = (String(doneText).match(/\b[0-9a-f]{7,40}\b/gi) ?? []).map((s) => s.toLowerCase());
+	if (!named.length) problems.push('build.done names no commit: write the QA head (a commit sha) into it');
+	else if (!named.some((s) => full.startsWith(s) || (qaHead && qaHead.startsWith(s))))
+		problems.push(`build.done names ${named[0]}, which is not the QA head${qaHead ? ` ${qaHead.slice(0, 9)}` : ''} or HEAD ${full.slice(0, 9)}`);
+	return problems;
+}
+
+// Whether the worktree's .dev-factory/build.done is a hand-off the stop gate accepts: the file exists, buildReadiness (with the key
+// and base of run.json, and the attribution rule ship applies) finds nothing, and a bug ticket has a recorded root cause. The stop
+// gate and `qa.mjs build-ready` (which the scheduler's wait loops run) both ask this, so the two cannot disagree. A check that
+// breaks is a problem, never a pass. Returns the problems, empty when the build is ready.
+export function buildReadyProblems({ root }) {
+	const file = path.join(root, '.dev-factory', 'build.done');
+	if (!fs.existsSync(file)) return ['no .dev-factory/build.done'];
+	try {
+		const run = readJson(path.join(root, '.dev-factory', 'run.json'));
+		if (!run?.key) return ['.dev-factory/run.json names no ticket key, so the QA run behind build.done cannot be found'];
+		let config = {};
+		try {
+			config = loadConfig(undefined, { from: root });
+		} catch {
+			/* unreadable settings: the strict default below */
+		}
+		const problems = buildReadiness({
+			root,
+			key: run.key,
+			doneText: fs.readFileSync(file, 'utf8'),
+			noAttribution: config.git?.agentAttribution !== true,
+		});
+		if (run.kind === 'bug' && !debugLib.status(root).hasRootCause)
+			problems.push('this is a bug ticket and no root cause is recorded (qa.mjs debug status)');
+		return problems;
+	} catch (e) {
+		return [`build.done could not be checked: ${e.message}`];
+	}
+}
+
 // Commits of a run belong to the person who ran it: an author, committer or trailer naming an agent is refused.
 export function attributionProblems(root, head, base) {
 	let log = '';
@@ -802,7 +907,18 @@ export function attributionProblems(root, head, base) {
 	return out;
 }
 
-export function verify({ root, head, run, key, requireReview = false, specialistAxes = {}, base = baseFor(root), noAttribution = false }) {
+// headName says what `head` is in a problem: the PR head at ship, HEAD at build time (there is no PR yet).
+export function verify({
+	root,
+	head,
+	run,
+	key,
+	requireReview = false,
+	specialistAxes = {},
+	base = baseFor(root),
+	noAttribution = false,
+	headName = 'the PR head',
+}) {
 	if (!head) throw new QaError('verify needs --head');
 	if (run == null && !key) throw new QaError('verify needs --run or --key');
 	const problems = [];
@@ -826,7 +942,12 @@ export function verify({ root, head, run, key, requireReview = false, specialist
 	let carriedFrom = manifest.carriedFrom ?? null;
 	if (!manifest.head.startsWith(head) && !head.startsWith(manifest.head)) {
 		if (!carriedFrom && carried(root, manifest, full, base)) carriedFrom = manifest.head;
-		if (!carriedFrom) problems.push(`manifest head ${manifest.head.slice(0, 9)} is not the PR head ${head.slice(0, 9)}`);
+		if (!carriedFrom)
+			problems.push(
+				headName === 'the PR head'
+					? `manifest head ${manifest.head.slice(0, 9)} is not the PR head ${head.slice(0, 9)}`
+					: `QA was run at ${manifest.head.slice(0, 9)}, not at ${headName} ${head.slice(0, 9)}`,
+			);
 	}
 	if (manifest.verdict !== 'pass' && manifest.verdict !== 'not_applicable') problems.push(`verdict is ${manifest.verdict ?? 'open'}`);
 	try {
@@ -1013,8 +1134,18 @@ async function main() {
 		let result;
 		switch (cmd) {
 			case 'start':
-				result = start({ root, key: a.key, profile: a.profile });
+				result = start({ root, key: a.key, profile: a.profile, maxFixAttempts: fixBudget(cfg().caps?.maxQaFixAttempts) });
 				break;
+			case 'build-ready': {
+				// read-only; one JSON line, exit 0 only when the hand-off is ready
+				const problems = buildReadyProblems({ root });
+				if (problems.length) {
+					console.log(JSON.stringify({ ready: false, problems }));
+					process.exit(1);
+				}
+				console.log(JSON.stringify({ ready: true, head: git(root, 'rev-parse', 'HEAD') }));
+				process.exit(0);
+			}
 			case 'record':
 				result = record({
 					root,
@@ -1121,7 +1252,7 @@ async function main() {
 				break;
 			default:
 				console.error(
-					'usage: qa.mjs start|record|done|mark-na|verify|show|review|learnings|promote|scrub|debug|ticket (see header of this file)',
+					'usage: qa.mjs start|record|done|mark-na|verify|build-ready|show|review|learnings|promote|scrub|debug|ticket (see header of this file)',
 				);
 				process.exit(3);
 		}

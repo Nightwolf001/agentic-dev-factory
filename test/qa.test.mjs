@@ -6,7 +6,20 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { QaError, baseFor, done, globToRegExp, markNa, noBehaviourGlobsFor, nonUiGlobsFor, record, start, uiGlobsFor, verify } from '../bin/qa.mjs';
+import {
+	QaError,
+	baseFor,
+	buildReadiness,
+	done,
+	globToRegExp,
+	markNa,
+	noBehaviourGlobsFor,
+	nonUiGlobsFor,
+	record,
+	start,
+	uiGlobsFor,
+	verify,
+} from '../bin/qa.mjs';
 
 const QA = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'qa.mjs');
 const PROFILES = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'qa', 'profiles.yaml');
@@ -1444,4 +1457,269 @@ test('a manifest with caseDigests but no casesDir is judged against the legacy f
 	assert.equal(verify({ root, head, run: m.run }).ok, true);
 	fs.appendFileSync(path.join(root, '.factory/qa/cases/APP-1/login.yaml'), '# x\n');
 	refused(() => verify({ root, head, run: m.run }), /cases_changed: .*\.factory\/qa\/cases\/APP-1\/login\.yaml/);
+});
+
+// A walk that fails one case, so the run closes as a fail.
+let failSeed = 40;
+function failedRun(root, key, maxFixAttempts) {
+	const m = start({ root, key, profile: 'web', maxFixAttempts });
+	record({ root, run: m.run, caseSlug: 'login', status: 'fail', assertion: 'arm button missing on screen' });
+	record({
+		root,
+		run: m.run,
+		caseSlug: 'arm',
+		status: 'pass',
+		assertion: 'armed banner visible',
+		screenshot: png(root, `f${failSeed}`, failSeed++),
+	});
+	assert.equal(done({ root, run: m.run }).verdict, 'fail');
+}
+
+test('start refuses a new run once the failed runs of the ticket pass the fix budget', () => {
+	const root = makeRepo();
+	failedRun(root, 'APP-1', 1); // the first walk fails: no fix has been tried yet
+	failedRun(root, 'APP-1', 1); // fix attempt 1 is walked and fails too
+	assert.throws(
+		() => start({ root, key: 'APP-1', profile: 'web', maxFixAttempts: 1 }),
+		(e) => e instanceof QaError && e.code === 4 && /fix budget/.test(e.message) && /2 failed/.test(e.message) && /blocked\.json/.test(e.message),
+	);
+	// with no budget given the run starts, and a budget of 2 still has room for one more fix attempt
+	assert.equal(start({ root, key: 'APP-1', profile: 'web' }).run, 3);
+	assert.equal(start({ root, key: 'APP-1', profile: 'web', maxFixAttempts: 2 }).run, 4);
+});
+
+test('a budget of zero allows the first walk and no fix after it', () => {
+	const root = makeRepo();
+	failedRun(root, 'APP-1', 0);
+	refused(() => start({ root, key: 'APP-1', profile: 'web', maxFixAttempts: 0 }), /fix budget/);
+});
+
+test('failed runs of another ticket, and runs that passed, do not use up the budget', () => {
+	const root = makeRepo();
+	fs.mkdirSync(path.join(root, '.factory/qa/cases/APP-2'), { recursive: true });
+	for (const slug of ['login', 'arm']) fs.writeFileSync(path.join(root, `.factory/qa/cases/APP-2/${slug}.yaml`), 'appId: x\n');
+	g(root, 'add', '-A');
+	g(root, 'commit', '-qm', 'second ticket cases');
+	failedRun(root, 'APP-2', 0);
+	failedRun(root, 'APP-2', 5);
+	const m = start({ root, key: 'APP-1', profile: 'web', maxFixAttempts: 0 });
+	record({ root, run: m.run, caseSlug: 'login', status: 'pass', assertion: 'login screen shows the arm button', screenshot: png(root, 'p1', 1) });
+	record({ root, run: m.run, caseSlug: 'arm', status: 'pass', assertion: 'armed banner visible after tap', screenshot: png(root, 'p2', 2) });
+	assert.equal(done({ root, run: m.run }).verdict, 'pass');
+	assert.equal(start({ root, key: 'APP-1', profile: 'web', maxFixAttempts: 0 }).run, m.run + 1);
+});
+
+test('the CLI takes the fix budget from caps.maxQaFixAttempts', () => {
+	const root = makeRepo();
+	failedRun(root, 'APP-1');
+	const cli = () =>
+		spawnSync('node', [QA, 'start', '--worktree', root, '--key', 'APP-1', '--profile', 'web'], {
+			cwd: root,
+			encoding: 'utf8',
+			env: { ...process.env, DF_STATE_DIR: `${root}-state` },
+		});
+	assert.equal(cli().status, 0, 'the default budget of five leaves room');
+	fs.mkdirSync(path.join(root, '.devfactory'), { recursive: true });
+	fs.writeFileSync(path.join(root, '.devfactory/config.json'), JSON.stringify({ caps: { maxQaFixAttempts: 0 } }));
+	const refusedRun = cli();
+	assert.equal(refusedRun.status, 4);
+	assert.match(refusedRun.stderr, /fix budget/);
+});
+
+// A ticket with a passing QA run at HEAD, and the sha a builder writes into build.done.
+function passedBuild() {
+	const root = makeRepo();
+	const m = start({ root, key: 'APP-1', profile: 'web' });
+	record({ root, run: m.run, caseSlug: 'login', status: 'pass', assertion: 'login screen shows the arm button', screenshot: png(root, 'r1', 21) });
+	record({ root, run: m.run, caseSlug: 'arm', status: 'pass', assertion: 'armed banner visible after tap', screenshot: png(root, 'r2', 22) });
+	assert.equal(done({ root, run: m.run }).verdict, 'pass');
+	return root;
+}
+
+test('a build is ready when the tree is clean, QA passed at HEAD and build.done names that commit', () => {
+	const root = passedBuild();
+	const h = head(root);
+	const ready = (doneText) => buildReadiness({ root, key: 'APP-1', doneText });
+	assert.deepEqual(ready(`${h}\n`), []);
+	assert.deepEqual(ready(`QA head ${h.slice(0, 9)}, all cases pass`), []);
+});
+
+test('build.done must name a commit: an empty file, prose, or another commit is not enough', () => {
+	const root = passedBuild();
+	const ready = (doneText) => buildReadiness({ root, key: 'APP-1', doneText });
+	assert.match(ready('')[0], /names no commit/);
+	assert.match(ready('done, all green')[0], /names no commit/);
+	assert.match(ready('0123456789abcdef')[0], /not the QA head .* or HEAD/);
+});
+
+test('a dirty tree, a HEAD with no QA run, and a failed run each keep a build from being ready', () => {
+	const root = passedBuild();
+	fs.writeFileSync(path.join(root, 'stray.txt'), 'x');
+	assert.ok(buildReadiness({ root, key: 'APP-1', doneText: head(root) }).some((p) => /not clean.*stray\.txt/.test(p)));
+	g(root, 'add', '-A');
+	g(root, 'commit', '-qm', 'a change QA never walked');
+	assert.ok(buildReadiness({ root, key: 'APP-1', doneText: head(root) }).some((p) => /no QA run at/.test(p)));
+
+	const failing = makeRepo();
+	failedRun(failing, 'APP-1');
+	assert.ok(buildReadiness({ root: failing, key: 'APP-1', doneText: head(failing) }).some((p) => /verdict is fail/.test(p)));
+});
+
+// ---- the fix budget counts every walk that found a failure ----
+
+// skills/qa says: on a failed case fix the code (or the case) and start a new run. The old run can then never be closed (HEAD moved,
+// or its cases changed), so it keeps no verdict; counting verdicts alone would let a builder fail, fix and restart for ever.
+test('a run that recorded a failed case and was never closed counts against the fix budget', () => {
+	const root = makeRepo();
+	const m = start({ root, key: 'APP-1', profile: 'web', maxFixAttempts: 0 });
+	record({ root, run: m.run, caseSlug: 'login', status: 'fail', assertion: 'arm button missing on screen' });
+	fs.writeFileSync(path.join(root, 'fix.txt'), 'x');
+	g(root, 'add', '-A');
+	g(root, 'commit', '-qm', 'fix the arm button');
+	refused(() => done({ root, run: m.run }), /cases not recorded|HEAD moved/); // it stays open with no verdict
+	refused(() => start({ root, key: 'APP-1', profile: 'web', maxFixAttempts: 0 }), /fix budget spent: 1 failed/);
+	assert.equal(start({ root, key: 'APP-1', profile: 'web', maxFixAttempts: 1 }).run, m.run + 1, 'a run counts once, a budget of one has room');
+});
+
+test('a corrupt run file neither breaks start nor counts against the budget', () => {
+	const root = makeRepo();
+	fs.mkdirSync(path.join(root, '.dev-factory/qa'), { recursive: true });
+	fs.writeFileSync(path.join(root, '.dev-factory/qa/run-7.json'), '{ not json');
+	assert.equal(start({ root, key: 'APP-1', profile: 'web', maxFixAttempts: 0 }).run, 8);
+});
+
+test('a fix budget that is not a non-negative integer is not trusted: the shipped default is used and the person is told', async () => {
+	const { fixBudget } = await import('../bin/qa.mjs');
+	for (const bad of [-1, 'five', 2.5, '3', undefined, null]) {
+		const notes = [];
+		assert.equal(
+			fixBudget(bad, (m) => notes.push(m)),
+			5,
+			String(bad),
+		);
+		assert.match(notes.join(''), /caps\.maxQaFixAttempts .* not a non-negative integer.*shipped default 5/, String(bad));
+	}
+	for (const good of [0, 3]) {
+		const notes = [];
+		assert.equal(
+			fixBudget(good, (m) => notes.push(m)),
+			good,
+		);
+		assert.deepEqual(notes, []);
+	}
+	// -1 used to refuse even the first walk
+	const root = makeRepo();
+	fs.mkdirSync(path.join(root, '.devfactory'), { recursive: true });
+	fs.writeFileSync(path.join(root, '.devfactory/config.json'), JSON.stringify({ caps: { maxQaFixAttempts: -1 } }));
+	const r = spawnSync(process.execPath, [QA, 'start', '--worktree', root, '--key', 'APP-1', '--profile', 'web'], {
+		cwd: root,
+		encoding: 'utf8',
+		env: { ...process.env, DF_STATE_DIR: `${root}-state` },
+	});
+	assert.equal(r.status, 0, r.stderr);
+	assert.match(r.stderr, /shipped default 5/);
+});
+
+test('the budget refusal tells the builder what to block with and the person how to grant more', () => {
+	const root = makeRepo();
+	failedRun(root, 'APP-1', 0);
+	refused(
+		() => start({ root, key: 'APP-1', profile: 'web', maxFixAttempts: 0 }),
+		/QA fix budget spent.*raising caps\.maxQaFixAttempts.*per worktree/s,
+	);
+});
+
+// ---- build-ready: the scheduler's view of a hand-off is the stop gate's ----
+
+const GIT_ENV = { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
+function handOffRepo(run = { key: 'APP-1', role: 'builder', until: 'build', kind: 'story' }) {
+	const root = makeRepo();
+	g(root, 'update-ref', 'refs/remotes/origin/develop', 'HEAD');
+	fs.mkdirSync(path.join(root, '.dev-factory'), { recursive: true });
+	fs.writeFileSync(path.join(root, '.dev-factory/run.json'), JSON.stringify(run));
+	return root;
+}
+const buildReadyCli = (root) => {
+	const r = spawnSync(process.execPath, [QA, 'build-ready', '--worktree', root], {
+		cwd: root,
+		encoding: 'utf8',
+		env: { ...process.env, ...GIT_ENV, DF_STATE_DIR: `${root}-state` },
+	});
+	assert.equal(r.stdout.trim().split('\n').length, 1, `one JSON line: ${r.stdout}${r.stderr}`);
+	return { status: r.status, out: JSON.parse(r.stdout) };
+};
+const writeDone = (root, text) => fs.writeFileSync(path.join(root, '.dev-factory/build.done'), text);
+
+test('build-ready exits 0 only for a build.done the stop gate would accept', () => {
+	const root = handOffRepo();
+	let r = buildReadyCli(root);
+	assert.equal(r.status, 1, 'no file');
+	assert.equal(r.out.ready, false);
+	assert.match(r.out.problems.join(' '), /no \.dev-factory\/build\.done/);
+
+	writeDone(root, head(root));
+	r = buildReadyCli(root);
+	assert.equal(r.status, 1, 'a file no QA run backs');
+	assert.match(r.out.problems.join(' '), /no QA run at/);
+
+	const m = start({ root, key: 'APP-1', profile: 'web' });
+	record({ root, run: m.run, caseSlug: 'login', status: 'pass', assertion: 'login screen shows the arm button', screenshot: png(root, 'b1', 31) });
+	record({ root, run: m.run, caseSlug: 'arm', status: 'pass', assertion: 'armed banner visible after tap', screenshot: png(root, 'b2', 32) });
+	assert.equal(done({ root, run: m.run }).verdict, 'pass');
+	r = buildReadyCli(root);
+	assert.equal(r.status, 0, JSON.stringify(r.out));
+	assert.deepEqual(r.out, { ready: true, head: head(root) });
+
+	writeDone(root, '0123456789abcdef');
+	r = buildReadyCli(root);
+	assert.equal(r.status, 1, 'a sha that is neither the QA head nor HEAD');
+	assert.match(r.out.problems.join(' '), /not the QA head/);
+
+	writeDone(root, head(root));
+	fs.writeFileSync(path.join(root, 'stray.txt'), 'x');
+	r = buildReadyCli(root);
+	assert.equal(r.status, 1, 'a dirty tree');
+	assert.match(r.out.problems.join(' '), /not clean.*stray\.txt/);
+});
+
+test('build-ready refuses a bug ticket with no recorded root cause, as the stop gate does', () => {
+	const root = handOffRepo({ key: 'APP-1', role: 'builder', until: 'build', kind: 'bug' });
+	const m = start({ root, key: 'APP-1', profile: 'web' });
+	record({ root, run: m.run, caseSlug: 'login', status: 'pass', assertion: 'login screen shows the arm button', screenshot: png(root, 'c1', 41) });
+	record({ root, run: m.run, caseSlug: 'arm', status: 'pass', assertion: 'armed banner visible after tap', screenshot: png(root, 'c2', 42) });
+	done({ root, run: m.run });
+	writeDone(root, head(root));
+	const r = buildReadyCli(root);
+	assert.equal(r.status, 1);
+	assert.match(r.out.problems.join(' '), /root cause/);
+});
+
+test('build-ready refuses when the check itself breaks, and says so', () => {
+	const root = handOffRepo();
+	writeDone(root, head(root));
+	fs.mkdirSync(path.join(root, '.dev-factory/qa'), { recursive: true });
+	fs.writeFileSync(path.join(root, '.dev-factory/qa/run-1.json'), '{ not json');
+	const r = buildReadyCli(root);
+	assert.equal(r.status, 1);
+	assert.match(r.out.problems.join(' '), /could not be checked/);
+});
+
+// verify is shared with ship, where the head is the PR's; at build time there is no PR yet.
+test('at build time a not-applicable record made at another commit is reported against HEAD, not a PR', () => {
+	const root = makeRepo();
+	g(root, 'update-ref', 'refs/remotes/origin/develop', 'HEAD');
+	g(root, 'checkout', '-qb', 'task/APP-1-docs');
+	fs.writeFileSync(path.join(root, 'README.md'), 'one\n');
+	g(root, 'add', '-A');
+	g(root, 'commit', '-qm', 'docs');
+	markNa({ root, key: 'APP-1', profile: 'web', reason: 'documentation only, nothing runs differently', base: 'origin/develop' });
+	fs.writeFileSync(path.join(root, 'README.md'), 'two\n');
+	g(root, 'add', '-A');
+	g(root, 'commit', '-qm', 'more docs');
+	const problems = buildReadiness({ root, key: 'APP-1', doneText: head(root), base: 'origin/develop' });
+	assert.ok(
+		problems.some((p) => /QA was run at [0-9a-f]{9}, not at HEAD [0-9a-f]{9}/.test(p)),
+		problems.join(' | '),
+	);
+	assert.ok(!problems.some((p) => /PR head/.test(p)), problems.join(' | '));
 });

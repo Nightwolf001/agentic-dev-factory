@@ -171,6 +171,18 @@ test('the keys the scheduler scripts read are required, and the stall window mus
 	assert.deepEqual(validate(bad), ['caps.stallMinutes must be a non-negative integer']);
 });
 
+test('the QA fix budget ships as five and must be a non-negative integer', () => {
+	const c = structuredClone(load());
+	assert.equal(c.caps.maxQaFixAttempts, 5);
+	assert.deepEqual(validate(c), []);
+	c.caps.maxQaFixAttempts = 0;
+	assert.deepEqual(validate(c), [], 'zero is a budget: the first walk and no fix after it');
+	for (const bad of ['five', -1, 2.5]) {
+		c.caps.maxQaFixAttempts = bad;
+		assert.deepEqual(validate(c), ['caps.maxQaFixAttempts must be a non-negative integer'], String(bad));
+	}
+});
+
 test('git.agentAttribution defaults to false and must be a boolean', () => {
 	const c = load();
 	assert.equal(c.git.agentAttribution, false);
