@@ -3,7 +3,7 @@
 // thing that turns that walk into a verdict, and it refuses anything that is not fresh evidence
 // for this run at this commit.
 //
-//   qa.mjs start   --key KEY --profile web|mobile|service
+//   qa.mjs start   --key KEY --profile web|mobile|service   refused (exit 4) once the ticket's failed runs pass caps.maxQaFixAttempts
 //   qa.mjs record  --run N --case SLUG --status pass|fail --assertion TEXT [--screenshot FILE] [--video FILE] [--log FILE] [--kind worker --evidence-file FILE] [--step N]
 //   qa.mjs probe   --run N --case SLUG --url URL [--method GET] [--header 'Name: value']... [--body-file F | --body TEXT] [--expect-status 200] [--step N]   send an API request, keep the answer as evidence
 //   qa.mjs done    --run N
@@ -244,8 +244,32 @@ export function caseSummary(cases) {
 	return out;
 }
 
-export function start({ root, key, profile }) {
+// How many runs of this ticket closed as a fail. Each failed run is followed by one fix attempt before the next start, so this is
+// also the number of fix attempts the next run would be checking.
+function failedRunCount(root, key) {
+	const dir = stateDir(root);
+	if (!fs.existsSync(dir)) return 0;
+	return fs
+		.readdirSync(dir)
+		.filter((f) => /^run-\d+\.json$/.test(f))
+		.filter((f) => {
+			const m = readJson(path.join(dir, f));
+			return m.key === key && m.verdict === 'fail';
+		}).length;
+}
+
+// maxFixAttempts is caps.maxQaFixAttempts: the first walk is free, then that many fixes may be walked. Past it the builder must
+// block for a person, so a ticket QA keeps failing cannot spend the whole pass.
+export function start({ root, key, profile, maxFixAttempts = null }) {
 	if (!key || !profile) throw new QaError('start needs --key and --profile');
+	if (maxFixAttempts != null) {
+		const failed = failedRunCount(root, key);
+		if (failed > maxFixAttempts)
+			throw new QaError(
+				`fix budget spent: ${failed} failed QA run(s) for ${key} and caps.maxQaFixAttempts is ${maxFixAttempts}. Do not start another run: write .dev-factory/blocked.json naming the case, step and evidence of the last failure, and the decision a person has to make.`,
+				4,
+			);
+	}
 	const dirty = dirtyFiles(root);
 	if (dirty.length) throw new QaError(`working tree is not clean (commit first): ${dirty.slice(0, 5).join(', ')}`);
 	ensureProjectDir(root); // the folder the cases are written in keeps itself out of git, whoever made it
@@ -780,6 +804,30 @@ export function runForKey(root, key, head, base = null) {
 	return older ? { ...older.m, carriedFrom: older.m.head } : null;
 }
 
+// What stands between a builder's .dev-factory/build.done and a hand-off a reviewer can start on: the tree is committed, QA passed at
+// HEAD (or the change is recorded as not applicable), and the file names the commit QA was made at. The file existing proves none of
+// that, and a premature one costs review rounds and is caught only at ship. Returns the problems, empty when the build is ready.
+export function buildReadiness({ root, key, doneText = '', base = baseFor(root) }) {
+	const problems = [];
+	const dirty = dirtyFiles(root);
+	if (dirty.length) problems.push(`working tree is not clean (commit first): ${dirty.slice(0, 5).join(', ')}`);
+	const full = git(root, 'rev-parse', 'HEAD');
+	let qaHead = null;
+	if (key) {
+		try {
+			qaHead = verify({ root, head: full, key, base }).head;
+		} catch (e) {
+			if (!(e instanceof QaError)) throw e;
+			problems.push(e.message);
+		}
+	}
+	const named = (String(doneText).match(/\b[0-9a-f]{7,40}\b/gi) ?? []).map((s) => s.toLowerCase());
+	if (!named.length) problems.push('build.done names no commit: write the QA head (a commit sha) into it');
+	else if (!named.some((s) => full.startsWith(s) || (qaHead && qaHead.startsWith(s))))
+		problems.push(`build.done names ${named[0]}, which is not the QA head${qaHead ? ` ${qaHead.slice(0, 9)}` : ''} or HEAD ${full.slice(0, 9)}`);
+	return problems;
+}
+
 // Commits of a run belong to the person who ran it: an author, committer or trailer naming an agent is refused.
 export function attributionProblems(root, head, base) {
 	let log = '';
@@ -1013,7 +1061,7 @@ async function main() {
 		let result;
 		switch (cmd) {
 			case 'start':
-				result = start({ root, key: a.key, profile: a.profile });
+				result = start({ root, key: a.key, profile: a.profile, maxFixAttempts: cfg().caps?.maxQaFixAttempts ?? null });
 				break;
 			case 'record':
 				result = record({

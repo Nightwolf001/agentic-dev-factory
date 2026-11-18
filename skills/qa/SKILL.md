@@ -42,4 +42,4 @@ Each case names its assertions up front (a testID, a text, an element). The walk
 -   App bug: fix the code, commit, start a new run.
 -   Case bug (wrong selector, stale assertion): fix the case (no commit), start a new run.
 -   Environment (device or browser unreachable, expired login, stale build): `bash "${CLAUDE_PLUGIN_ROOT}/scripts/e2e-env.sh" verify --worktree <worktree>`; one restart of the MCP server or service is allowed; then block.
--   Five fix attempts per ticket at most, then `.dev-factory/blocked.json` naming the case, step and evidence.
+-   At most `caps.maxQaFixAttempts` fix attempts per ticket (five unless the project sets another): `qa.mjs start` refuses a run past that, and you write `.dev-factory/blocked.json` naming the case, step and evidence.

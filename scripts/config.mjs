@@ -108,6 +108,7 @@ const STATE_KEYS = ['ready', 'inProgress', 'inReview', 'reviewed', 'done'];
 const AXES = ['data', 'infra', 'security'];
 const NUMERIC = [
 	'caps.maxBugbotRounds',
+	'caps.maxQaFixAttempts',
 	'caps.maxResumes',
 	'caps.maxDecisions',
 	'caps.stallMinutes',

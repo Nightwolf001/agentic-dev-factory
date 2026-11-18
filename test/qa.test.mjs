@@ -6,7 +6,20 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { QaError, baseFor, done, globToRegExp, markNa, noBehaviourGlobsFor, nonUiGlobsFor, record, start, uiGlobsFor, verify } from '../bin/qa.mjs';
+import {
+	QaError,
+	baseFor,
+	buildReadiness,
+	done,
+	globToRegExp,
+	markNa,
+	noBehaviourGlobsFor,
+	nonUiGlobsFor,
+	record,
+	start,
+	uiGlobsFor,
+	verify,
+} from '../bin/qa.mjs';
 
 const QA = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'qa.mjs');
 const PROFILES = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'qa', 'profiles.yaml');
@@ -1444,4 +1457,103 @@ test('a manifest with caseDigests but no casesDir is judged against the legacy f
 	assert.equal(verify({ root, head, run: m.run }).ok, true);
 	fs.appendFileSync(path.join(root, '.factory/qa/cases/APP-1/login.yaml'), '# x\n');
 	refused(() => verify({ root, head, run: m.run }), /cases_changed: .*\.factory\/qa\/cases\/APP-1\/login\.yaml/);
+});
+
+// A walk that fails one case, so the run closes as a fail.
+let failSeed = 40;
+function failedRun(root, key, maxFixAttempts) {
+	const m = start({ root, key, profile: 'web', maxFixAttempts });
+	record({ root, run: m.run, caseSlug: 'login', status: 'fail', assertion: 'arm button missing on screen' });
+	record({ root, run: m.run, caseSlug: 'arm', status: 'pass', assertion: 'armed banner visible', screenshot: png(root, `f${failSeed}`, failSeed++) });
+	assert.equal(done({ root, run: m.run }).verdict, 'fail');
+}
+
+test('start refuses a new run once the failed runs of the ticket pass the fix budget', () => {
+	const root = makeRepo();
+	failedRun(root, 'APP-1', 1); // the first walk fails: no fix has been tried yet
+	failedRun(root, 'APP-1', 1); // fix attempt 1 is walked and fails too
+	assert.throws(
+		() => start({ root, key: 'APP-1', profile: 'web', maxFixAttempts: 1 }),
+		(e) => e instanceof QaError && e.code === 4 && /fix budget/.test(e.message) && /2 failed/.test(e.message) && /blocked\.json/.test(e.message),
+	);
+	// with no budget given the run starts, and a budget of 2 still has room for one more fix attempt
+	assert.equal(start({ root, key: 'APP-1', profile: 'web' }).run, 3);
+	assert.equal(start({ root, key: 'APP-1', profile: 'web', maxFixAttempts: 2 }).run, 4);
+});
+
+test('a budget of zero allows the first walk and no fix after it', () => {
+	const root = makeRepo();
+	failedRun(root, 'APP-1', 0);
+	refused(() => start({ root, key: 'APP-1', profile: 'web', maxFixAttempts: 0 }), /fix budget/);
+});
+
+test('failed runs of another ticket, and runs that passed, do not use up the budget', () => {
+	const root = makeRepo();
+	fs.mkdirSync(path.join(root, '.factory/qa/cases/APP-2'), { recursive: true });
+	fs.writeFileSync(path.join(root, '.factory/qa/cases/APP-2/login.yaml'), 'appId: x\n');
+	g(root, 'add', '-A');
+	g(root, 'commit', '-qm', 'second ticket cases');
+	failedRun(root, 'APP-2', 0);
+	failedRun(root, 'APP-2', 5);
+	const m = start({ root, key: 'APP-1', profile: 'web', maxFixAttempts: 0 });
+	record({ root, run: m.run, caseSlug: 'login', status: 'pass', assertion: 'login screen shows the arm button', screenshot: png(root, 'p1', 1) });
+	record({ root, run: m.run, caseSlug: 'arm', status: 'pass', assertion: 'armed banner visible after tap', screenshot: png(root, 'p2', 2) });
+	assert.equal(done({ root, run: m.run }).verdict, 'pass');
+	assert.equal(start({ root, key: 'APP-1', profile: 'web', maxFixAttempts: 0 }).run, m.run + 1);
+});
+
+test('the CLI takes the fix budget from caps.maxQaFixAttempts', () => {
+	const root = makeRepo();
+	failedRun(root, 'APP-1');
+	const cli = () =>
+		spawnSync('node', [QA, 'start', '--worktree', root, '--key', 'APP-1', '--profile', 'web'], {
+			cwd: root,
+			encoding: 'utf8',
+			env: { ...process.env, DF_STATE_DIR: `${root}-state` },
+		});
+	assert.equal(cli().status, 0, 'the default budget of five leaves room');
+	fs.mkdirSync(path.join(root, '.devfactory'), { recursive: true });
+	fs.writeFileSync(path.join(root, '.devfactory/config.json'), JSON.stringify({ caps: { maxQaFixAttempts: 0 } }));
+	const refusedRun = cli();
+	assert.equal(refusedRun.status, 4);
+	assert.match(refusedRun.stderr, /fix budget/);
+});
+
+// A ticket with a passing QA run at HEAD, and the sha a builder writes into build.done.
+function passedBuild() {
+	const root = makeRepo();
+	const m = start({ root, key: 'APP-1', profile: 'web' });
+	record({ root, run: m.run, caseSlug: 'login', status: 'pass', assertion: 'login screen shows the arm button', screenshot: png(root, 'r1', 21) });
+	record({ root, run: m.run, caseSlug: 'arm', status: 'pass', assertion: 'armed banner visible after tap', screenshot: png(root, 'r2', 22) });
+	assert.equal(done({ root, run: m.run }).verdict, 'pass');
+	return root;
+}
+
+test('a build is ready when the tree is clean, QA passed at HEAD and build.done names that commit', () => {
+	const root = passedBuild();
+	const h = head(root);
+	const ready = (doneText) => buildReadiness({ root, key: 'APP-1', doneText });
+	assert.deepEqual(ready(`${h}\n`), []);
+	assert.deepEqual(ready(`QA head ${h.slice(0, 9)}, all cases pass`), []);
+});
+
+test('build.done must name a commit: an empty file, prose, or another commit is not enough', () => {
+	const root = passedBuild();
+	const ready = (doneText) => buildReadiness({ root, key: 'APP-1', doneText });
+	assert.match(ready('')[0], /names no commit/);
+	assert.match(ready('done, all green')[0], /names no commit/);
+	assert.match(ready('0123456789abcdef')[0], /not the QA head .* or HEAD/);
+});
+
+test('a dirty tree, a HEAD with no QA run, and a failed run each keep a build from being ready', () => {
+	const root = passedBuild();
+	fs.writeFileSync(path.join(root, 'stray.txt'), 'x');
+	assert.ok(buildReadiness({ root, key: 'APP-1', doneText: head(root) }).some((p) => /not clean.*stray\.txt/.test(p)));
+	g(root, 'add', '-A');
+	g(root, 'commit', '-qm', 'a change QA never walked');
+	assert.ok(buildReadiness({ root, key: 'APP-1', doneText: head(root) }).some((p) => /no QA run at/.test(p)));
+
+	const failing = makeRepo();
+	failedRun(failing, 'APP-1');
+	assert.ok(buildReadiness({ root: failing, key: 'APP-1', doneText: head(failing) }).some((p) => /verdict is fail/.test(p)));
 });
