@@ -51,7 +51,8 @@ export function decide({ run, has, head = '', debug = { rounds: 0, open: [], has
 		const bugNeedsCause = run.kind === 'bug' && !debug.hasRootCause;
 		const problems = build?.problems ?? [];
 		const buildDone = has('build.done') && !bugNeedsCause && problems.length === 0;
-		let next = 'Finish the environment, implement and qa phases, commit, then write .dev-factory/build.done containing the QA head, or write .dev-factory/needs_debug.json (stuck, bug ticket) or .dev-factory/blocked.json {"reason","decision"}.';
+		let next =
+			'Finish the environment, implement and qa phases, commit, then write .dev-factory/build.done containing the QA head, or write .dev-factory/needs_debug.json (stuck, bug ticket) or .dev-factory/blocked.json {"reason","decision"}.';
 		if (bugNeedsCause && has('build.done'))
 			next =
 				'This is a bug ticket: build.done is not accepted until a root cause is recorded (qa.mjs debug status). Write .dev-factory/needs_debug.json {"test","attempts","lastError"} so the scheduler can run the debugger, or write blocked.json.';

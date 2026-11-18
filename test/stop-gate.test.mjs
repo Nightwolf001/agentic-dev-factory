@@ -72,7 +72,14 @@ test('decide: blocked.json and needs_debug.json still let a builder stop whateve
 });
 
 test('only the roles whose stop condition accepts blocked.json may be given one by the gate', () => {
-	for (const run of [build, { role: 'debugger' }, { role: 'researcher' }, { role: 'improver' }, { role: 'promoter' }, { role: 'builder', until: 'ship' }])
+	for (const run of [
+		build,
+		{ role: 'debugger' },
+		{ role: 'researcher' },
+		{ role: 'improver' },
+		{ role: 'promoter' },
+		{ role: 'builder', until: 'ship' },
+	])
 		assert.equal(mayRecordBlock(run), true, JSON.stringify(run));
 	assert.equal(mayRecordBlock({ role: 'reviewer', axis: 'spec' }), false);
 });

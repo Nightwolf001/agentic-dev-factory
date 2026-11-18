@@ -1464,7 +1464,14 @@ let failSeed = 40;
 function failedRun(root, key, maxFixAttempts) {
 	const m = start({ root, key, profile: 'web', maxFixAttempts });
 	record({ root, run: m.run, caseSlug: 'login', status: 'fail', assertion: 'arm button missing on screen' });
-	record({ root, run: m.run, caseSlug: 'arm', status: 'pass', assertion: 'armed banner visible', screenshot: png(root, `f${failSeed}`, failSeed++) });
+	record({
+		root,
+		run: m.run,
+		caseSlug: 'arm',
+		status: 'pass',
+		assertion: 'armed banner visible',
+		screenshot: png(root, `f${failSeed}`, failSeed++),
+	});
 	assert.equal(done({ root, run: m.run }).verdict, 'fail');
 }
 
@@ -1490,7 +1497,7 @@ test('a budget of zero allows the first walk and no fix after it', () => {
 test('failed runs of another ticket, and runs that passed, do not use up the budget', () => {
 	const root = makeRepo();
 	fs.mkdirSync(path.join(root, '.factory/qa/cases/APP-2'), { recursive: true });
-	fs.writeFileSync(path.join(root, '.factory/qa/cases/APP-2/login.yaml'), 'appId: x\n');
+	for (const slug of ['login', 'arm']) fs.writeFileSync(path.join(root, `.factory/qa/cases/APP-2/${slug}.yaml`), 'appId: x\n');
 	g(root, 'add', '-A');
 	g(root, 'commit', '-qm', 'second ticket cases');
 	failedRun(root, 'APP-2', 0);
