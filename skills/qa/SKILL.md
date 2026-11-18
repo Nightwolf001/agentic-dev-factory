@@ -42,4 +42,8 @@ Each case names its assertions up front (a testID, a text, an element). The walk
 -   App bug: fix the code, commit, start a new run.
 -   Case bug (wrong selector, stale assertion): fix the case (no commit), start a new run.
 -   Environment (device or browser unreachable, expired login, stale build): `bash "${CLAUDE_PLUGIN_ROOT}/scripts/e2e-env.sh" verify --worktree <worktree>`; one restart of the MCP server or service is allowed; then block.
--   At most `caps.maxQaFixAttempts` fix attempts per ticket (five unless the project sets another): `qa.mjs start` refuses a run past that, and you write `.dev-factory/blocked.json` naming the case, step and evidence.
+-   At most `caps.maxQaFixAttempts` fix attempts per ticket (five unless the project sets another). Every run that found a failure counts, whether it closed as a fail or was left open when you fixed and started again; the count is per worktree. `qa.mjs start` refuses a run past that (exit 4), and you write `.dev-factory/blocked.json` with a reason starting `QA fix budget spent` that names the case, step and evidence. A person grants more attempts by raising `caps.maxQaFixAttempts` or by clearing the ticket's old runs.
+
+## 5. Hand-off
+
+Once the run passed (or `mark-na` was accepted) and everything is committed, write `.dev-factory/build.done` with the QA head and run `node "${CLAUDE_PLUGIN_ROOT}/bin/qa.mjs" build-ready --worktree <worktree>`. It exits 0 only for a hand-off the stop gate accepts; otherwise it prints what is missing. The gate moves a refused `build.done` to `build.refused`, so fix what it names and write the file again.

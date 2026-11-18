@@ -167,3 +167,42 @@ test('the auto-merge step passes labels in a file and nothing taken from a comme
 	for (const text of [tick, reference]) assert.doesNotMatch(text, /--readied-head|automerge\.mjs" run [^\n]*--labels </);
 	assert.match(reference, /--labels-file <file>/);
 });
+
+// The gate refuses a premature build.done, but the scheduler's wait loop sees files: a loop that took the file's existence as the
+// hand-off sent a ticket to review while the builder was still told to work. Every wait treats build.done as done only once
+// `qa.mjs build-ready` (the gate's own check) agrees, and a block wins over a hand-off.
+test('every build wait counts build.done only when qa.mjs build-ready agrees, and a block wins', () => {
+	const READY = 'bin/qa.mjs" build-ready --worktree <worktree>';
+	const tick = read('tick.md');
+	const step5 = tick.slice(tick.indexOf('5. Build:'), tick.indexOf('6. Review, two steps'));
+	const loop = step5.slice(step5.indexOf('```bash'), step5.indexOf('```', step5.indexOf('```bash') + 7));
+	assert.ok(loop.includes(READY), 'the build wait runs build-ready');
+	assert.doesNotMatch(loop, /until \[ -f \$W\/build\.done \] \|\|/, 'the file alone does not end the wait');
+	assert.ok(loop.indexOf('blocked.json') < loop.indexOf('build.done'), 'blocked.json is looked at first');
+	assert.match(loop, /needs_debug\.json/);
+	assert.match(step5, /`blocked\.json` wins/);
+	const fix = tick.slice(tick.indexOf('4. Fix step:'), tick.indexOf('7. Ship:'));
+	assert.match(fix, /build-ready/, 'the fix-round wait is the same loop');
+	for (const f of ['build.md', 'quick.md']) {
+		const text = read(f);
+		assert.ok(text.includes(READY), `${f} waits with build-ready`);
+		assert.doesNotMatch(text, /Wait for `\.dev-factory\/build\.done` or `blocked\.json`/, f);
+	}
+	for (const f of ['../agents/factory-builder.md', '../skills/qa/SKILL.md'])
+		assert.match(
+			fs.readFileSync(new URL(f, import.meta.url), 'utf8'),
+			/build-ready/,
+			`${f} tells the builder to check before writing build.done`,
+		);
+});
+
+// Neither block is a question an agent could answer: a person decides, so neither goes to the researcher.
+test('a block the stop gate wrote and a spent QA fix budget are factory blocks, never settled by an agent', () => {
+	const tick = read('tick.md');
+	const section6 = tick.slice(tick.indexOf('## 6. Blocked path'), tick.indexOf('## 7. Exit'));
+	const exclusions = section6.slice(0, section6.indexOf('settle it instead of blocking'));
+	for (const kind of ['the stop gate let the run go', 'QA fix budget spent']) {
+		assert.ok(exclusions.includes(kind), `${kind} is excluded from blocked.agentDecides`);
+		assert.match(section6, new RegExp(`${kind}[^\\n]*--kind factory|--kind factory[^\\n]*${kind}`), `${kind} is a factory block`);
+	}
+});

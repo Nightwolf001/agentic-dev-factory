@@ -614,6 +614,18 @@ test('the plugin qa.mjs is recognised by its own installed path, quoted or not, 
 	);
 });
 
+// A builder checks its own hand-off before writing build.done, and the scheduler's wait loop runs the same read-only check.
+test('a builder and the scheduler may run qa.mjs build-ready; the read-only roles keep the commands they had', () => {
+	const ready = `node "${PLUGIN_ROOT}/bin/qa.mjs" build-ready --worktree /w/APP-1`;
+	assert.equal(evaluate(ready, { role: 'builder', branch: 'task/APP-1-x', cwd: '/w/APP-1' }).deny, false, ready);
+	assert.equal(evaluate(`node dev-factory/bin/qa.mjs build-ready`, { role: 'builder', branch: 'task/APP-1-x' }).deny, false);
+	const loop = `W=/w/APP-1/.dev-factory; end=$((SECONDS+540))
+until [ -f $W/blocked.json ] || [ -f $W/needs_debug.json ] || { [ -f $W/build.done ] && node "${PLUGIN_ROOT}/bin/qa.mjs" build-ready --worktree /w/APP-1 >/dev/null 2>&1; } || [ $SECONDS -ge $end ]; do sleep 5; done`;
+	assert.equal(evaluate(loop, {}).deny, false, 'the tick wait loop');
+	for (const role of ['reviewer', 'researcher']) assert.equal(evaluate(ready, { role }).deny, true, `${role}: not on its list`);
+	assert.equal(evaluate(`node "${PLUGIN_ROOT}/bin/qa.mjs" review status`, { role: 'reviewer' }).deny, false);
+});
+
 test('a factory agent cannot write the task tracker, but the scheduler can', () => {
 	for (const role of ['builder', 'reviewer', 'debugger', 'researcher', 'improver', 'promoter']) {
 		for (const c of [
