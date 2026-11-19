@@ -241,3 +241,31 @@ test('the improve fix round sets role improver and clears the stale improve.done
 		/before each re-dispatch of the improver, rewrite `role` `improver` in run\.json[^\n]*? and delete `improve\.done`/,
 	);
 });
+
+// A wiki token can arrive as literal text through an MCP server that renders HTML, so the tick points a session at the HTML form there and
+// keeps the ADF and token forms for the token server. It names the condition (a comment tool that takes HTML), never claims what a product accepts.
+test('the tick composes a question with real mentions for an MCP server that takes HTML, and keeps compose-adf for the token server', () => {
+	const tick = read('tick.md');
+	const line = tick.split('\n').find((l) => l.includes('compose --kind question|factory'));
+	assert.ok(line, 'the compose line');
+	assert.ok(line.includes('compose --format html'), 'the HTML form');
+	assert.match(line, /--assignee-id <id> --assignee-name <name> --reporter-id <id> --reporter-name <name>/);
+	assert.match(line, /contentFormat/);
+	assert.ok(line.includes('compose-adf'), 'the token server keeps compose-adf');
+	assert.match(line, /MCP server whose comment tool takes HTML/);
+	assert.doesNotMatch(line, /accepts only|takes only|only accepts|only takes/i, 'no claim about what a named product accepts');
+	assert.match(fs.readFileSync(new URL('../skills/task-source/jira.md', import.meta.url), 'utf8'), /compose --format html/);
+	assert.match(fs.readFileSync(new URL('../docs/reference.md', import.meta.url), 'utf8'), /compose --format html/);
+});
+
+// Whether the tracker's server turns a mention element into a real mention is the server's doing, so no document says it always does.
+test('no document claims a mention element always notifies', () => {
+	for (const f of ['commands/tick.md', 'skills/task-source/jira.md', 'docs/reference.md', 'scripts/comment-lib.mjs'])
+		assert.doesNotMatch(fs.readFileSync(new URL(`../${f}`, import.meta.url), 'utf8'), /mention element always notifies/i, f);
+	assert.ok(
+		fs
+			.readFileSync(new URL('../skills/task-source/jira.md', import.meta.url), 'utf8')
+			.includes('node "${CLAUDE_PLUGIN_ROOT}/scripts/comment.mjs" compose --format html'),
+		'jira.md writes the command with the plugin-root prefix',
+	);
+});
