@@ -511,6 +511,15 @@ const PROTECTED_NAMES =
 	/(^|[\s/'"])(-?(zsh|bash|fish|sh)|claude|anthropic|launchd|sshd|WindowServer|loginwindow|Finder|Dock|SystemUIServer|Terminal|iTerm2?|tmux|screen|node)(['"]|$)/i;
 const DOCKER_STOPS = new Set(['stop', 'kill', 'rm', 'restart', 'pause', 'rmi']);
 
+// The container engine is the machine's, for every role: stopping or deleting it takes down every df-* stack, a live pass's
+// included, and its Linux machines (orb run, orb -m, limactl shell) see the person's files, so they would get round the path rules.
+const ENGINE_CONTROLS = new Set(['orb', 'orbctl', 'colima', 'limactl']);
+
+function denyEngineControl(cmd, args) {
+	const engine = ENGINE_CONTROLS.has(cmd) || (cmd === 'docker' && args.find((a) => !a.startsWith('-')) === 'desktop');
+	return engine ? `the container engine is not controlled from a run (${cmd === 'docker' ? 'docker desktop' : cmd})` : null;
+}
+
 function denyProcessControl(seg, cmd, args, ctx) {
 	const tokens = args.filter((a) => !a.startsWith('-'));
 	const kill = (hard, soft) => (hard ? `${hard} (never allowed)` : ctx.takeover ? null : soft);
@@ -947,6 +956,8 @@ function judge(command, ctx) {
 		}
 		const machine = denyMachinePaths(seg, inv, ctx, st);
 		if (machine) return deny(machine);
+		const engine = denyEngineControl(cmd, args);
+		if (engine) return deny(engine);
 		if (cmd === 'cd' || cmd === 'pushd') {
 			const target = args.find((a) => !a.startsWith('-'));
 			const to = target ? candidates(target, st.vars)[0] : home;

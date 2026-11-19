@@ -435,3 +435,63 @@ test('the machine folder stays protected when a repository keeps its run state i
 	assert.equal(protectedPlace('/srv/df/x', { home: HOME, stateDir: '/srv/df' }), 'state');
 	assert.equal(protectedPlace(`${HOME}/projects/app`, { home: HOME, stateDir: own }), null);
 });
+
+// ---- the container engine is not controlled from a run ----
+
+test('engine control is refused', () => {
+	for (const c of [
+		'orbctl stop',
+		'orb stop docker',
+		'orbctl delete docker',
+		'orb delete ubuntu',
+		'orb -m ubuntu rm -rf /tmp/x',
+		'orb run rm -rf ~/work',
+		'colima stop',
+		'limactl stop default',
+		'docker desktop stop',
+		'env orbctl stop',
+		'(orbctl stop)',
+	])
+		denied(c);
+	for (const c of ['docker ps', 'docker compose ps', 'git status']) allowed(c);
+});
+
+test('engine control is refused however the command is written or wrapped, and for every role', () => {
+	for (const c of [
+		'/Applications/OrbStack.app/Contents/MacOS/bin/orb stop docker',
+		'~/.orbstack/bin/orbctl stop',
+		'/opt/homebrew/bin/colima stop',
+		'sudo orbctl stop',
+		'nice orb stop',
+		'xargs orb',
+		'"orbctl" stop',
+		"'colima' stop",
+		'docker desktop status',
+		'docker desktop start',
+		'ls && orbctl stop',
+		'echo $(orbctl stop)',
+	])
+		denied(c);
+	for (const c of ['orbctl stop', 'orb run rm -rf ~/work', 'colima stop', 'docker desktop stop', 'sudo limactl stop default']) {
+		assert.equal(evaluate(c, {}).deny, true, `should be refused with no role: ${c}`);
+		for (const role of ['reviewer', 'debugger', 'researcher', 'promoter', 'improver'])
+			assert.equal(run(c, { role }).deny, true, `should be refused for ${role}: ${c}`);
+	}
+	assert.match(run('orbctl stop').reason, /the container engine is not controlled from a run \(orbctl\)/);
+	assert.match(run('/opt/homebrew/bin/colima stop').reason, /\(colima\)/);
+	assert.match(run('docker desktop stop').reason, /\(docker desktop\)/);
+});
+
+test('words that merely contain an engine name are arguments, not the command', () => {
+	for (const c of [
+		'echo orbctl',
+		'grep orb README.md',
+		'cat orb.txt',
+		'ls colima',
+		'npm run orb',
+		'docker compose logs web',
+		'docker compose exec web ls',
+		'docker ps -a',
+	])
+		allowed(c);
+});
