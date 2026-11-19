@@ -1,4 +1,5 @@
 import { qaCommand } from './plugin-root.mjs';
+import { FACTORY_AGENT } from './run-context.mjs';
 
 // Whether the stop is the end of a build phase, the one that hands over to review: build.done is then checked against the
 // repository (checksBuild), not just for existing.
@@ -11,6 +12,18 @@ export const mayRecordBlock = (run) => run.role !== 'reviewer';
 // Where the gate moves a build.done it refuses. The scheduler's wait loop looks for build.done, so a refused one left in place
 // could be read as a hand-off while the builder is still told to work.
 export const REFUSED = 'build.refused';
+
+// The role a dispatched factory agent works as, from its agent type ('dev-factory:factory-builder' is a builder), or null for any
+// other type, including none.
+export const agentRoleOf = (agentType) => (typeof agentType === 'string' ? FACTORY_AGENT.exec(agentType)?.[2] ?? null : null);
+
+// Whether this agent's stop is the run's. The scheduler takes a hand-off and then moves the run to another role in run.json, so a
+// builder stopping after that must not be judged by, counted against or given a block for the new role's finish line. An agent
+// whose role cannot be told (no type, or not a factory agent) is gated exactly as before.
+export const ownsRun = (agentType, run) => {
+	const role = agentRoleOf(agentType);
+	return role === null || role === (run.role ?? 'builder');
+};
 
 // Decides whether a factory agent may stop. Pure: the caller supplies what exists on disk.
 //   has(file)        whether .dev-factory/<file> exists

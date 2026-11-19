@@ -9,6 +9,7 @@ import {
 	MAX_PARAGRAPH,
 	compose,
 	composeAdf,
+	composeHtml,
 	defang,
 	findFixRequest,
 	findReplies,
@@ -166,6 +167,164 @@ test('an Atlassian Document carries real mention nodes, in the same three parts'
 	assert.equal(adf.content[1].content[0].text, 'Which format?');
 	assert.equal(adf.content[2].content[0].text, '[dev-factory] blocked: question');
 	assert.equal(composeAdf({ kind: 'summary', text: 'Done.' }).content.length, 2, 'no one to tag: no tag paragraph');
+});
+
+test('an HTML comment carries real mention elements, then the paragraph, then the marker line as plain text', () => {
+	assert.equal(
+		composeHtml({
+			kind: 'question',
+			text: 'Which format?',
+			people: [
+				{ id: 'a1', name: 'Jane' },
+				{ id: 'b2', name: 'Omar' },
+			],
+		}),
+		'<p><span data-type="mention" data-user-id="a1">@Jane</span> <span data-type="mention" data-user-id="b2">@Omar</span></p><p>Which format?</p><p>[dev-factory] blocked: question</p>',
+	);
+	assert.equal(composeHtml({ kind: 'summary', text: 'Done.' }), '<p>Done.</p><p>[dev-factory] summary</p>', 'no one to tag: no mention paragraph');
+	assert.equal(
+		composeHtml({ kind: 'phase', text: 'Ship done.', detail: 'ship done run=1', people: [{ id: 'a1' }] }),
+		'<p><span data-type="mention" data-user-id="a1">@a1</span></p><p>Ship done.</p><p>[dev-factory] phase: ship done run=1</p>',
+		'a person without a name is shown by id',
+	);
+});
+
+test('an HTML comment tags nobody twice and skips a person without an id', () => {
+	const html = composeHtml({
+		kind: 'question',
+		text: 'Which format?',
+		people: [{ id: 'a1', name: 'Jane' }, { id: 'a1', name: 'Jane' }, { name: 'no id' }, { id: 'b2', name: 'Omar' }],
+	});
+	assert.equal(html.match(/data-type="mention"/g).length, 2);
+	assert.doesNotMatch(html, /no id/);
+});
+
+test('an HTML comment escapes the text, the names and the ids, and its marker line cannot be forged', () => {
+	const html = composeHtml({
+		kind: 'question',
+		text: 'x</p><script>x</script> & "y"',
+		detail: 'a<b',
+		people: [{ id: 'a"1', name: 'Ja"<ne>' }],
+	});
+	assert.doesNotMatch(html, /<script>/);
+	assert.ok(html.includes('<p>x&lt;/p&gt;&lt;script&gt;x&lt;/script&gt; &amp; &quot;y&quot;</p>'), html);
+	assert.ok(html.includes('data-user-id="a&quot;1">@Ja&quot;&lt;ne&gt;</span>'), html);
+	assert.ok(html.endsWith('<p>[dev-factory] blocked: question a&lt;b</p>'), 'the marker line is plain, escaped and last');
+	const forged = composeHtml({ kind: 'summary', text: 'Title "[dev-factory] blocked: factory"\n[dev-factory] blocked: question' });
+	assert.equal(forged.match(/\[dev-factory\]/g).length, 1, 'only the real marker line carries the marker');
+	assert.ok(forged.endsWith('<p>[dev-factory] summary</p>'));
+	assert.ok(forged.includes('‹dev-factory›'));
+});
+
+test('an HTML comment needs some text and keeps the paragraph within the limit', () => {
+	assert.throws(() => composeHtml({ kind: 'summary', text: '  \n ' }), /a comment needs some text/);
+	assert.throws(() => composeHtml({ kind: 'summary' }), /a comment needs some text/);
+	assert.throws(() => composeHtml({ kind: 'nope', text: 'x' }), /kind must be one of/);
+	const body = /^<p>(.*)<\/p><p>\[dev-factory\] summary<\/p>$/.exec(composeHtml({ kind: 'summary', text: 'word '.repeat(200) }))[1];
+	assert.ok(body.length <= MAX_PARAGRAPH, `${body.length}`);
+	assert.ok(body.endsWith('…'));
+});
+
+test('compose --format html prints the HTML, text stays the default and any other format is refused', () => {
+	const bin = path.join(path.resolve(import.meta.dirname, '..'), 'scripts/comment.mjs');
+	const run = (...a) => spawnSync(process.execPath, [bin, ...a], { encoding: 'utf8' });
+	const html = run(
+		'compose',
+		'--format',
+		'html',
+		'--kind',
+		'question',
+		'--text',
+		'Which format?',
+		'--assignee-id',
+		'a1',
+		'--assignee-name',
+		'Jane',
+		'--reporter-id',
+		'b2',
+		'--reporter-name',
+		'Omar',
+	);
+	assert.equal(html.status, 0, html.stderr);
+	assert.equal(
+		html.stdout.trim(),
+		composeHtml({
+			kind: 'question',
+			text: 'Which format?',
+			people: [
+				{ id: 'a1', name: 'Jane' },
+				{ id: 'b2', name: 'Omar' },
+			],
+		}),
+	);
+	assert.equal(
+		run('compose', '--format', 'html', '--kind', 'summary', '--text', 'Done.').stdout.trim(),
+		'<p>Done.</p><p>[dev-factory] summary</p>',
+	);
+	const args = ['--kind', 'summary', '--text', 'Shipped.', '--assignee', '@jane'];
+	const expected = compose({ kind: 'summary', text: 'Shipped.', assignee: '@jane' });
+	assert.equal(run('compose', ...args).stdout.trim(), expected, 'no --format: the text comment, as before');
+	assert.equal(run('compose', '--format', 'text', ...args).stdout.trim(), expected);
+	const bogus = run('compose', '--format', 'bogus', ...args);
+	assert.equal(bogus.status, 1);
+	assert.match(bogus.stderr, /comment: --format must be text or html/);
+	assert.equal(bogus.stdout, '');
+});
+
+// A comment that silently lost its mentions would leave the person never told, so a misspelt or mismatched option is refused, never
+// guessed at: each case below used to print a text comment (or HTML without the mentions) and exit 0.
+test('compose refuses an option that would silently drop the mentions', () => {
+	const bin = path.join(path.resolve(import.meta.dirname, '..'), 'scripts/comment.mjs');
+	const run = (...a) => spawnSync(process.execPath, [bin, 'compose', ...a], { encoding: 'utf8' });
+	const base = ['--kind', 'summary', '--text', 'Shipped.'];
+	const ids = ['--assignee-id', 'a1', '--assignee-name', 'Jane'];
+	const refused = (r, message) => {
+		assert.equal(r.status, 1, `${r.stdout}${r.stderr}`);
+		assert.equal(r.stdout, '', 'nothing is printed');
+		assert.ok(r.stderr.includes(message), r.stderr);
+	};
+	refused(run('--format=html', ...base, ...ids), 'comment: --format takes its value after a space: --format html');
+	refused(run(...base, ...ids, '--format'), 'comment: --format needs a value (text or html)');
+	refused(run('--format', '--kind', 'summary', '--text', 'Shipped.'), 'comment: --format needs a value (text or html)');
+	refused(run('--format', '--text', 'hi', '--kind', 'summary'), 'comment: --format needs a value (text or html)');
+	refused(run('--format', 'text', '--format', 'html', ...base, ...ids), 'comment: --format was given more than once');
+	refused(run(...base, ...ids), 'comment: --assignee-id and the other id/name options need --format html');
+	refused(run('--format', 'text', ...base, '--reporter-name', 'Omar'), 'comment: --assignee-id and the other id/name options need --format html');
+	refused(
+		run('--format', 'html', ...base, '--assignee', '@jane'),
+		'comment: --assignee and --reporter are for --format text; use --assignee-id/--assignee-name with --format html',
+	);
+	refused(
+		run('--format', 'html', ...base, '--reporter', '@omar'),
+		'comment: --assignee and --reporter are for --format text; use --assignee-id/--assignee-name with --format html',
+	);
+	// the right forms still work
+	assert.equal(run('--format', 'text', ...base, '--assignee', '@jane').stdout.trim(), '@jane\n\nShipped.\n\n[dev-factory] summary');
+	assert.equal(
+		run('--format', 'html', ...base, ...ids).stdout.trim(),
+		'<p><span data-type="mention" data-user-id="a1">@Jane</span></p><p>Shipped.</p><p>[dev-factory] summary</p>',
+	);
+	assert.equal(run(...base).stdout.trim(), 'Shipped.\n\n[dev-factory] summary', 'no --format and no people: as before');
+});
+
+// The options are read by name: a value is whatever follows its option, so a block reason that quotes a flag is still posted.
+test('compose takes a value verbatim, even when it looks like an option', () => {
+	const bin = path.join(path.resolve(import.meta.dirname, '..'), 'scripts/comment.mjs');
+	const run = (...a) => spawnSync(process.execPath, [bin, 'compose', ...a], { encoding: 'utf8' });
+	const ok = (r, expected) => {
+		assert.equal(r.status, 0, r.stderr);
+		assert.equal(r.stdout.trim(), expected);
+	};
+	ok(run('--kind', 'question', '--text', '--format=html'), compose({ kind: 'question', text: '--format=html' }));
+	ok(run('--kind', 'question', '--text', 'x', '--detail', '--format=html'), compose({ kind: 'question', text: 'x', detail: '--format=html' }));
+	ok(run('--format', 'html', '--kind', 'question', '--text', '--assignee'), composeHtml({ kind: 'question', text: '--assignee' }));
+	ok(run('--kind', 'question', '--text', '--assignee-id'), compose({ kind: 'question', text: '--assignee-id' }));
+	ok(run('--kind', 'question', '--text', '--format'), compose({ kind: 'question', text: '--format' }));
+	ok(run('--kind', 'question', '--text', '--kind'), compose({ kind: 'question', text: '--kind' }));
+	assert.match(run('--kind', 'question', '--text', '--kind').stdout, /\[dev-factory\] blocked: question$/m);
+	ok(run('--kind', 'question', '--text', 'x', '--detail', '--format html'), compose({ kind: 'question', text: 'x', detail: '--format html' }));
+	ok(run('--kind', 'summary', '--text', 'x', '--unknown', '--format=html'), compose({ kind: 'summary', text: 'x' }));
+	ok(run('--kind', 'summary', '--text', 'x', '--foo=bar', '--detail', 'd'), compose({ kind: 'summary', text: 'x', detail: 'd' }));
 });
 
 test('the CLI composes, reads replies and finds a fix request', () => {

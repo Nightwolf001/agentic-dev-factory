@@ -325,14 +325,18 @@ const ghPositionals = (args) => {
 	return out;
 };
 
-// `gh api` is a POST as soon as it carries a body field or input, with no -X at all.
+// `gh api` is a POST as soon as it carries a body field or input, with no -X at all; -X may carry its method attached.
+// -i is its only boolean short flag, so a value-taking flag can follow it in one cluster (-iXPOST, -iftitle=x).
 function ghApiWrites(args) {
 	for (let i = 0; i < args.length; i++) {
-		const a = args[i];
+		const a = args[i].replace(/^-i+(?=[XfF])/, '-');
 		if (/^(-X|--method)(=|$)/.test(a)) {
 			const value = a.includes('=') ? a.split('=')[1] : args[i + 1];
 			if (!/^GET$/i.test(value ?? '')) return true;
 		}
+		// the method may be attached to the flag: -XPOST, -XDELETE
+		const attached = /^-X(?!=)(.+)$/.exec(a);
+		if (attached && !/^GET$/i.test(attached[1])) return true;
 		if (/^-[fF]/.test(a) || /^--(field|raw-field|input)(=|$)/.test(a)) return true;
 	}
 	return false;
@@ -506,6 +510,33 @@ function denyForReadOnly(seg, extra = []) {
 const PROTECTED_NAMES =
 	/(^|[\s/'"])(-?(zsh|bash|fish|sh)|claude|anthropic|launchd|sshd|WindowServer|loginwindow|Finder|Dock|SystemUIServer|Terminal|iTerm2?|tmux|screen|node)(['"]|$)/i;
 const DOCKER_STOPS = new Set(['stop', 'kill', 'rm', 'restart', 'pause', 'rmi']);
+
+// The container engine is the machine's, for every role: stopping or deleting it takes down every df-* stack, a live pass's
+// included, and its Linux machines see the person's files, so a command run there would get round the path rules. Closed here:
+// the engine's own commands (orb, orbctl, colima, limactl, docker desktop) and ssh, scp, sftp and rsync to OrbStack's machine
+// names (orb, <machine>@orb, <name>.orb.local). Any argument is looked at, an option's value included, so it fails closed.
+const ENGINE_CONTROLS = new Set(['orb', 'orbctl', 'colima', 'limactl']);
+const REMOTE_COPIERS = new Set(['ssh', 'scp', 'sftp', 'rsync']);
+const ORB_HOST = /^orb(:|$)|@orb(:|$)|(^|\.)orb\.local(:|$)/;
+// docker's global options that take a value (the other forms, --opt=value and the booleans --tls, --tlsverify, -D, are one token).
+const DOCKER_VALUE_OPTS = new Set(['--context', '-c', '-H', '--host', '-l', '--log-level', '--config', '--tlscacert', '--tlscert', '--tlskey']);
+
+// -> the first docker word that is not a global option or its value
+function dockerSub(args) {
+	for (let i = 0; i < args.length; i++) {
+		if (!args[i].startsWith('-')) return args[i];
+		if (DOCKER_VALUE_OPTS.has(args[i])) i++;
+	}
+	return undefined;
+}
+
+function denyEngineControl(cmd, args) {
+	let named = null;
+	if (ENGINE_CONTROLS.has(cmd)) named = cmd;
+	else if (cmd === 'docker' && dockerSub(args) === 'desktop') named = 'docker desktop';
+	else if (REMOTE_COPIERS.has(cmd) && args.some((a) => ORB_HOST.test(a))) named = cmd;
+	return named ? `the container engine is not controlled from a run (${named})` : null;
+}
 
 function denyProcessControl(seg, cmd, args, ctx) {
 	const tokens = args.filter((a) => !a.startsWith('-'));
@@ -943,6 +974,8 @@ function judge(command, ctx) {
 		}
 		const machine = denyMachinePaths(seg, inv, ctx, st);
 		if (machine) return deny(machine);
+		const engine = denyEngineControl(cmd, args);
+		if (engine) return deny(engine);
 		if (cmd === 'cd' || cmd === 'pushd') {
 			const target = args.find((a) => !a.startsWith('-'));
 			const to = target ? candidates(target, st.vars)[0] : home;

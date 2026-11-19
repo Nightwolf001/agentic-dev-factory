@@ -43,7 +43,11 @@ command -v claude >/dev/null && ok "claude $(claude --version 2>/dev/null | head
 if gh auth status >/dev/null 2>&1 || { sleep "${DF_GH_RETRY_SECONDS:-2}"; gh auth status >/dev/null 2>&1; }; then ok "gh authenticated (pull requests)"; else bad "gh not authenticated (gh auth login)"; fi
 
 if [ "$ENV_TYPE" = compose ]; then
-  docker info >/dev/null 2>&1 && ok "docker reachable" || bad "docker daemon unreachable"
+  # both Docker Desktop and OrbStack answer to `docker`; the context says which engine this is
+  if docker info >/dev/null 2>&1; then
+    dctx="$(docker context show 2>/dev/null | head -1)"
+    ok "docker reachable (context ${dctx:-unknown})"
+  else bad "docker daemon unreachable: start OrbStack or Docker Desktop"; fi
   if docker compose version >/dev/null 2>&1; then
     cv="$(docker compose version --short 2>/dev/null | sed 's/^v//')"
     # the isolated environments strip published ports with `ports: !reset []`, which needs Compose 2.24

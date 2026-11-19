@@ -206,3 +206,66 @@ test('a block the stop gate wrote and a spent QA fix budget are factory blocks, 
 		assert.match(section6, new RegExp(`${kind}[^\\n]*--kind factory|--kind factory[^\\n]*${kind}`), `${kind} is a factory block`);
 	}
 });
+
+// The stop gate judges an agent by the role run.json names, and lets go an agent of any other role: a dispatch that leaves the
+// previous role in place would leave the agent with no finish line at all. So each dispatch writes the role of the agent it sends.
+test('the ship-phase dispatch of an interactive build or quick change writes role builder with until ship', () => {
+	assert.match(read('build.md'), /5c\. Write `role` `builder`, `until` `ship`, dispatch the builder for the ship phase/);
+	assert.match(read('quick.md'), /5\. Write `role` `builder`, `until` `ship` and dispatch the builder for the ship phase/);
+});
+
+test('the interactive build sets role debugger before it dispatches the debugger to unstick the builder', () => {
+	assert.match(
+		read('build.md'),
+		/`needs_debug\.json`, set `role` `debugger` and `debugBefore` in run\.json, dispatch the debugger with trigger `unstick`/,
+	);
+});
+
+test('the interactive unstick sets role back to builder and clears the stale needs_debug.json and build.done before it re-dispatches the builder', () => {
+	assert.match(
+		read('build.md'),
+		/dispatch the debugger with trigger `unstick`, wait for a recorded round in `\.dev-factory\/debug\/` or `blocked\.json`, then delete `needs_debug\.json` and `build\.done`, set `role` back to `builder` and re-dispatch the builder/,
+	);
+});
+
+test('the promoter fix round sets role promoter and clears the stale promote.done before it re-dispatches the promoter', () => {
+	assert.match(
+		read('improve.md'),
+		/before each re-dispatch of the promoter, rewrite `role` `promoter` in run\.json[^\n]*? and delete `promote\.done`/,
+	);
+});
+
+test('the improve fix round sets role improver and clears the stale improve.done before it re-dispatches the improver', () => {
+	assert.match(
+		read('improve.md'),
+		/before each re-dispatch of the improver, rewrite `role` `improver` in run\.json[^\n]*? and delete `improve\.done`/,
+	);
+});
+
+// A wiki token can arrive as literal text through an MCP server that renders HTML, so the tick points a session at the HTML form there and
+// keeps the ADF and token forms for the token server. It names the condition (a comment tool that takes HTML), never claims what a product accepts.
+test('the tick composes a question with real mentions for an MCP server that takes HTML, and keeps compose-adf for the token server', () => {
+	const tick = read('tick.md');
+	const line = tick.split('\n').find((l) => l.includes('compose --kind question|factory'));
+	assert.ok(line, 'the compose line');
+	assert.ok(line.includes('compose --format html'), 'the HTML form');
+	assert.match(line, /--assignee-id <id> --assignee-name <name> --reporter-id <id> --reporter-name <name>/);
+	assert.match(line, /contentFormat/);
+	assert.ok(line.includes('compose-adf'), 'the token server keeps compose-adf');
+	assert.match(line, /MCP server whose comment tool takes HTML/);
+	assert.doesNotMatch(line, /accepts only|takes only|only accepts|only takes/i, 'no claim about what a named product accepts');
+	assert.match(fs.readFileSync(new URL('../skills/task-source/jira.md', import.meta.url), 'utf8'), /compose --format html/);
+	assert.match(fs.readFileSync(new URL('../docs/reference.md', import.meta.url), 'utf8'), /compose --format html/);
+});
+
+// Whether the tracker's server turns a mention element into a real mention is the server's doing, so no document says it always does.
+test('no document claims a mention element always notifies', () => {
+	for (const f of ['commands/tick.md', 'skills/task-source/jira.md', 'docs/reference.md', 'scripts/comment-lib.mjs'])
+		assert.doesNotMatch(fs.readFileSync(new URL(`../${f}`, import.meta.url), 'utf8'), /mention element always notifies/i, f);
+	assert.ok(
+		fs
+			.readFileSync(new URL('../skills/task-source/jira.md', import.meta.url), 'utf8')
+			.includes('node "${CLAUDE_PLUGIN_ROOT}/scripts/comment.mjs" compose --format html'),
+		'jira.md writes the command with the plugin-root prefix',
+	);
+});
