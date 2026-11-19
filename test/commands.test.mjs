@@ -269,3 +269,17 @@ test('no document claims a mention element always notifies', () => {
 		'jira.md writes the command with the plugin-root prefix',
 	);
 });
+
+// Direct ports publish nothing and take no machine-wide lock, so they are what lets web tickets overlap; a failed direct start must not fall back to
+// canonical, because that would take the lock the direct mode exists to avoid.
+test('the tick asks for direct ports only for a web ticket when more than one task may run, and never falls back to canonical', () => {
+	const step = read('tick.md')
+		.split('\n')
+		.find((l) => l.startsWith('3. Environment:'));
+	assert.ok(step, 'the Environment step');
+	assert.ok(step.includes('--ports direct'), 'names --ports direct');
+	assert.ok(step.includes('caps.maxConcurrent'), 'ties the choice to caps.maxConcurrent');
+	assert.match(step, /--ports canonical/, 'canonical stays for the maxConcurrent 1 case');
+	assert.match(step, /--device/, 'mobile keeps --device');
+	assert.match(step, /no fallback/, 'a failed direct start has no fallback');
+});
