@@ -24,14 +24,18 @@ function scan(prs, args) {
 	fs.writeFileSync(path.join(bin, 'gh'), `#!/bin/sh\nfor a in "$@"; do printf '%s\\n' "$a" >> "${dir}/args.log"; done\ncat "${dir}/prs.json"\n`, {
 		mode: 0o755,
 	});
-	const r = spawnSync(process.execPath, [script, 'candidates', ...args], {
-		encoding: 'utf8',
-		maxBuffer: 64 * 1024 * 1024,
-		env: { PATH: `${bin}:${process.env.PATH}`, HOME: dir },
-	});
-	const logFile = path.join(dir, 'args.log');
-	const logged = fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8').split('\n').filter(Boolean) : [];
-	return { ...r, logged };
+	try {
+		const r = spawnSync(process.execPath, [script, 'candidates', ...args], {
+			encoding: 'utf8',
+			maxBuffer: 64 * 1024 * 1024,
+			env: { PATH: `${bin}:${process.env.PATH}`, HOME: dir },
+		});
+		const logFile = path.join(dir, 'args.log');
+		const logged = fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8').split('\n').filter(Boolean) : [];
+		return { ...r, logged };
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
 }
 
 const big = { title: 'Large change [BIG-1]', mergedAt: '2026-11-10T00:00:00Z', comments: [], body: 'x'.repeat(3 * 1024 * 1024) };

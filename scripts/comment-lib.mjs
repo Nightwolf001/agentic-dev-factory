@@ -94,8 +94,9 @@ const escapeHtml = (t) =>
 		.replace(/"/g, '&quot;');
 
 // The same comment as HTML, for an MCP server whose comment tool takes HTML. A wiki token such as [~accountid:abc] or ADF JSON can
-// arrive as literal text there; a mention element always notifies. The text and the marker line go through paragraph() and
-// markerLine() as in compose, so they are defanged and limited, then escaped: the marker line stays plain text and last.
+// arrive as literal text there; a mention element becomes a real mention where the server converts HTML to the tracker's format. The
+// text and the marker line go through paragraph() and markerLine() as in compose, so they are defanged and limited, then escaped: the
+// marker line stays plain text and last.
 // people: [{ id, name }]
 export function composeHtml({ kind, text, detail = '', people = [] }) {
 	const body = paragraph(text);

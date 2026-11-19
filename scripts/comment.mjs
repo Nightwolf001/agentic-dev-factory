@@ -19,8 +19,17 @@ if (isMain(import.meta.url)) {
 	try {
 		const cmd = argv[0];
 		if (cmd === 'compose') {
+			// a mistyped or mismatched option is refused, never guessed at: a comment that quietly lost its mentions tells nobody
+			if (argv.some((a) => a.startsWith('--format='))) throw new Error('--format takes its value after a space: --format html');
+			if (argv.filter((a) => a === '--format').length > 1) throw new Error('--format was given more than once');
+			if (argv.includes('--format') && (argv[argv.indexOf('--format') + 1] ?? '--').startsWith('--'))
+				throw new Error('--format needs a value (text or html)');
 			const format = val('format') ?? 'text';
 			if (format !== 'text' && format !== 'html') throw new Error('--format must be text or html');
+			if (format === 'text' && ['assignee-id', 'assignee-name', 'reporter-id', 'reporter-name'].some((o) => argv.includes(`--${o}`)))
+				throw new Error('--assignee-id and the other id/name options need --format html');
+			if (format === 'html' && ['assignee', 'reporter'].some((o) => argv.includes(`--${o}`)))
+				throw new Error('--assignee and --reporter are for --format text; use --assignee-id/--assignee-name with --format html');
 			if (format === 'html') {
 				const people = ['assignee', 'reporter'].map((w) => ({ id: val(`${w}-id`), name: val(`${w}-name`) }));
 				console.log(composeHtml({ kind: val('kind'), text: val('text'), detail: val('detail') ?? '', people }));

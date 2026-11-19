@@ -18,17 +18,29 @@ export DF_OWNER_PID=$$
 
 # share the single-flight lock with the tick: both create worktrees and talk to the task source
 . "$DIR/scripts/lock.sh"
-df_lock_acquire "$STATE" "$LOG" improve || exit $?
+df_lock_acquire "$STATE" "$LOG" improve; rc=$?
+if [ "$rc" != 0 ]; then
+  [ "$DF_DRY_RUN" = 1 ] && echo "improve: dry run skipped: another pass holds the lock (log: $LOG)" >&2
+  exit $rc
+fi
 trap 'df_lock_release "$STATE"' EXIT
 
 rm -f "$STATE/active-run.json"
 cd "$REPO" || exit 1
 echo "$(date -u +%FT%TZ) improve start" >> "$LOG"
-bash "$DIR/scripts/doctor.sh" --ci >> "$LOG" 2>&1 || { echo "$(date -u +%FT%TZ) preflight failed" >> "$LOG"; exit 1; }
+bash "$DIR/scripts/doctor.sh" --ci >> "$LOG" 2>&1 || {
+  echo "$(date -u +%FT%TZ) preflight failed" >> "$LOG"
+  [ "$DF_DRY_RUN" = 1 ] && echo "improve: dry run stopped: the doctor failed (log: $LOG)" >&2
+  exit 1
+}
 # a dry run changes nothing, so it does not fetch
 [ "$DF_DRY_RUN" = 1 ] || git fetch origin "$(node "$DIR/scripts/worktree.mjs" default-branch)" --quiet >> "$LOG" 2>&1 || true
 
-node "$DIR/scripts/factory-settings.mjs" "$STATE/settings.json" || { echo "$(date -u +%FT%TZ) could not build settings" >> "$LOG"; exit 1; }
+node "$DIR/scripts/factory-settings.mjs" "$STATE/settings.json" || {
+  echo "$(date -u +%FT%TZ) could not build settings" >> "$LOG"
+  [ "$DF_DRY_RUN" = 1 ] && echo "improve: dry run stopped: could not build the settings (log: $LOG)" >&2
+  exit 1
+}
 # the MCP servers this pass starts from: the generated .devfactory/mcp.json, with the flags write-config chose
 df_mcp_args "$REPO" "$LOG"
 

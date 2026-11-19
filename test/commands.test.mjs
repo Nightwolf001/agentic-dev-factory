@@ -222,3 +222,15 @@ test('the tick composes a question with real mentions for an MCP server that tak
 	assert.match(fs.readFileSync(new URL('../skills/task-source/jira.md', import.meta.url), 'utf8'), /compose --format html/);
 	assert.match(fs.readFileSync(new URL('../docs/reference.md', import.meta.url), 'utf8'), /compose --format html/);
 });
+
+// Whether the tracker's server turns a mention element into a real mention is the server's doing, so no document says it always does.
+test('no document claims a mention element always notifies', () => {
+	for (const f of ['commands/tick.md', 'skills/task-source/jira.md', 'docs/reference.md', 'scripts/comment-lib.mjs'])
+		assert.doesNotMatch(fs.readFileSync(new URL(`../${f}`, import.meta.url), 'utf8'), /mention element always notifies/i, f);
+	assert.ok(
+		fs
+			.readFileSync(new URL('../skills/task-source/jira.md', import.meta.url), 'utf8')
+			.includes('node "${CLAUDE_PLUGIN_ROOT}/scripts/comment.mjs" compose --format html'),
+		'jira.md writes the command with the plugin-root prefix',
+	);
+});

@@ -13,18 +13,23 @@ const tmp = (prefix) => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), pr
 // anything else is touched, so a refused argument is status 2 (not the 1 of "not a repository") and leaves no trace.
 function refused(script, ...args) {
 	const cwd = tmp('df-args-cwd-');
-	const state = path.join(tmp('df-args-state-'), 'state');
+	const stateRoot = tmp('df-args-state-');
+	const state = path.join(stateRoot, 'state');
 	const env = { ...process.env, DF_STATE_DIR: state, HOME: cwd };
 	delete env.DF_REPO;
-	const r = spawnSync('bash', [path.join(ROOT, 'scripts', script), ...args], { encoding: 'utf8', env, cwd });
-	return { ...r, state };
+	try {
+		const r = spawnSync('bash', [path.join(ROOT, 'scripts', script), ...args], { encoding: 'utf8', env, cwd });
+		return { ...r, stateExisted: fs.existsSync(state) };
+	} finally {
+		for (const d of [cwd, stateRoot]) fs.rmSync(d, { recursive: true, force: true });
+	}
 }
 
 test('improve.sh --bogus exits 2 and names the argument', () => {
 	const r = refused('improve.sh', '--bogus');
 	assert.equal(r.status, 2, r.stderr);
 	assert.match(r.stderr, /improve\.sh: unknown argument '--bogus' \(accepted: --dry-run\)/);
-	assert.equal(fs.existsSync(r.state), false, 'nothing was created in the state folder');
+	assert.equal(r.stateExisted, false, 'nothing was created in the state folder');
 });
 
 test('tick.sh takes no arguments', () => {
@@ -32,7 +37,7 @@ test('tick.sh takes no arguments', () => {
 		const r = refused('tick.sh', arg);
 		assert.equal(r.status, 2, r.stderr);
 		assert.match(r.stderr, new RegExp(`tick\\.sh: unknown argument '${arg}' \\(accepted: none\\)`));
-		assert.equal(fs.existsSync(r.state), false, 'nothing was created in the state folder');
+		assert.equal(r.stateExisted, false, 'nothing was created in the state folder');
 	}
 });
 
@@ -112,8 +117,9 @@ echo '{"result":"improve: findings=0"}'
 	return { home, repo, state, env, run, slug, read };
 }
 
-test('improve.sh --dry-run asks for a dry run, does not fetch, ignores the pause switch, and prints what claude said', () => {
+test('improve.sh --dry-run asks for a dry run, does not fetch, ignores the pause switch, and prints what claude said', (t) => {
 	const f = improveFixture();
+	t.after(() => fs.rmSync(f.home, { recursive: true, force: true }));
 	// a scheduled run would stop at the pause switch; a person who asked for the dry run by hand did not ask for a pause
 	fs.writeFileSync(path.join(f.state, `paused.${f.slug}.improve`), '');
 	f.env.DF_SCHEDULED = '1';
@@ -129,8 +135,9 @@ test('improve.sh --dry-run asks for a dry run, does not fetch, ignores the pause
 	assert.match(log, /improve end rc=0/);
 });
 
-test('improve.sh without arguments is unchanged: it fetches, keeps the prompt, keeps the pause switch and writes only to the log', () => {
+test('improve.sh without arguments is unchanged: it fetches, keeps the prompt, keeps the pause switch and writes only to the log', (t) => {
 	const f = improveFixture();
+	t.after(() => fs.rmSync(f.home, { recursive: true, force: true }));
 	const r = f.run();
 	const log = f.read('improve.log');
 	assert.equal(r.status, 0, `${r.stderr}\n${log}`);
@@ -146,4 +153,64 @@ test('improve.sh without arguments is unchanged: it fetches, keeps the prompt, k
 	assert.equal(f.run().status, 0);
 	assert.equal(f.read('claude-args'), '', 'paused: claude did not start');
 	assert.match(f.read('improve.log'), /paused/);
+});
+
+// ---- improve.sh: a dry run that stops early says why on the terminal ----
+
+// Holds the pass lock the way a live pass does: this process's pid and a start time. A stand-in `ps` first on the path reports that same
+// start time for any pid, so the check does not depend on the real `ps` (a restricted test sandbox may refuse it).
+const STARTED = 'Mon Jan  1 00:00:00 2001';
+const standInPs = (f) => fs.writeFileSync(path.join(f.home, 'bin', 'ps'), `#!/bin/sh\necho "${STARTED}"\n`, { mode: 0o755 });
+function holdLock(f) {
+	const started = STARTED;
+	standInPs(f);
+	const lock = path.join(f.state, 'tick.lock');
+	fs.mkdirSync(lock);
+	fs.writeFileSync(path.join(lock, 'started'), `${started}\n`);
+	fs.writeFileSync(path.join(lock, 'pid'), `${process.pid}\n`);
+}
+
+test('a dry run that finds the lock held exits 75 and names the lock and the log on stderr; a real pass writes nothing new there', (t) => {
+	const f = improveFixture();
+	t.after(() => fs.rmSync(f.home, { recursive: true, force: true }));
+	holdLock(f);
+	const dry = f.run('--dry-run');
+	assert.equal(dry.status, 75, dry.stderr);
+	assert.match(dry.stderr, /improve: dry run skipped: another pass holds the lock \(log: .*improve\.log\)/);
+	assert.match(f.read('improve.log'), /improve skip: pass \d+ still running/);
+	assert.equal(f.read('claude-args'), '', 'claude did not start');
+	const real = f.run();
+	assert.equal(real.status, 75);
+	assert.equal(real.stderr, '', 'without --dry-run nothing goes to the terminal');
+	assert.equal(real.stdout, '');
+});
+
+test('a dry run whose doctor fails prints the failure and the log path; a real pass stays silent', (t) => {
+	const f = improveFixture();
+	t.after(() => fs.rmSync(f.home, { recursive: true, force: true }));
+	standInPs(f);
+	// the doctor needs claude on the path: without it the pass stops at the preflight
+	fs.writeFileSync(path.join(f.home, 'bin', 'claude'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+	const dry = f.run('--dry-run');
+	assert.equal(dry.status, 1, dry.stderr);
+	assert.match(dry.stderr, /improve: dry run stopped: the doctor failed \(log: .*improve\.log\)/);
+	assert.match(f.read('improve.log'), /preflight failed/);
+	const real = f.run();
+	assert.equal(real.status, 1);
+	assert.equal(real.stderr, '', 'without --dry-run nothing goes to the terminal');
+});
+
+test('a dry run that cannot build the settings prints the failure and the log path; a real pass stays silent', (t) => {
+	const f = improveFixture();
+	t.after(() => fs.rmSync(f.home, { recursive: true, force: true }));
+	standInPs(f);
+	// a folder where the settings file belongs makes the write fail
+	fs.mkdirSync(path.join(f.state, 'settings.json'));
+	const dry = f.run('--dry-run');
+	assert.equal(dry.status, 1, dry.stderr);
+	assert.match(dry.stderr, /improve: dry run stopped: could not build the settings \(log: .*improve\.log\)/);
+	assert.match(f.read('improve.log'), /could not build settings/);
+	const real = f.run();
+	assert.equal(real.status, 1);
+	assert.doesNotMatch(real.stderr, /improve: dry run/);
 });

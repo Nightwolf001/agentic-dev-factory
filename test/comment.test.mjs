@@ -271,6 +271,41 @@ test('compose --format html prints the HTML, text stays the default and any othe
 	assert.equal(bogus.stdout, '');
 });
 
+// A comment that silently lost its mentions would leave the person never told, so a misspelt or mismatched option is refused, never
+// guessed at: each case below used to print a text comment (or HTML without the mentions) and exit 0.
+test('compose refuses an option that would silently drop the mentions', () => {
+	const bin = path.join(path.resolve(import.meta.dirname, '..'), 'scripts/comment.mjs');
+	const run = (...a) => spawnSync(process.execPath, [bin, 'compose', ...a], { encoding: 'utf8' });
+	const base = ['--kind', 'summary', '--text', 'Shipped.'];
+	const ids = ['--assignee-id', 'a1', '--assignee-name', 'Jane'];
+	const refused = (r, message) => {
+		assert.equal(r.status, 1, `${r.stdout}${r.stderr}`);
+		assert.equal(r.stdout, '', 'nothing is printed');
+		assert.ok(r.stderr.includes(message), r.stderr);
+	};
+	refused(run('--format=html', ...base, ...ids), 'comment: --format takes its value after a space: --format html');
+	refused(run(...base, ...ids, '--format'), 'comment: --format needs a value (text or html)');
+	refused(run('--format', '--kind', 'summary', '--text', 'Shipped.'), 'comment: --format needs a value (text or html)');
+	refused(run('--format', 'text', '--format', 'html', ...base, ...ids), 'comment: --format was given more than once');
+	refused(run(...base, ...ids), 'comment: --assignee-id and the other id/name options need --format html');
+	refused(run('--format', 'text', ...base, '--reporter-name', 'Omar'), 'comment: --assignee-id and the other id/name options need --format html');
+	refused(
+		run('--format', 'html', ...base, '--assignee', '@jane'),
+		'comment: --assignee and --reporter are for --format text; use --assignee-id/--assignee-name with --format html',
+	);
+	refused(
+		run('--format', 'html', ...base, '--reporter', '@omar'),
+		'comment: --assignee and --reporter are for --format text; use --assignee-id/--assignee-name with --format html',
+	);
+	// the right forms still work
+	assert.equal(run('--format', 'text', ...base, '--assignee', '@jane').stdout.trim(), '@jane\n\nShipped.\n\n[dev-factory] summary');
+	assert.equal(
+		run('--format', 'html', ...base, ...ids).stdout.trim(),
+		'<p><span data-type="mention" data-user-id="a1">@Jane</span></p><p>Shipped.</p><p>[dev-factory] summary</p>',
+	);
+	assert.equal(run(...base).stdout.trim(), 'Shipped.\n\n[dev-factory] summary', 'no --format and no people: as before');
+});
+
 test('the CLI composes, reads replies and finds a fix request', () => {
 	const bin = path.join(path.resolve(import.meta.dirname, '..'), 'scripts/comment.mjs');
 	const run = (...a) => spawnSync(process.execPath, [bin, ...a], { encoding: 'utf8' });
