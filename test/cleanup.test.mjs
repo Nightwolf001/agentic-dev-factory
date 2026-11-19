@@ -7,7 +7,18 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
-import { cleanup, isLocalHost, lineage, listeners, portsFor, processes, protectedReason, restore, stopProcess } from '../scripts/cleanup.mjs';
+import {
+	cleanup,
+	defaultRun,
+	isLocalHost,
+	lineage,
+	listeners,
+	portsFor,
+	processes,
+	protectedReason,
+	restore,
+	stopProcess,
+} from '../scripts/cleanup.mjs';
 import { load, merge, validate } from '../scripts/config.mjs';
 import { takeoverOn } from '../scripts/takeover.mjs';
 
@@ -216,28 +227,60 @@ test('the ports lock goes when its owner is gone, stays while the owner runs, go
 	assert.equal(fs.existsSync(path.join(live, 'ports.lock')), false);
 });
 
+test('cleanup passes its own state folder to the commands it runs', async () => {
+	const { state, cfg } = noWorktreeState();
+	const calls = [];
+	const run = (cmd, args, opts) => (calls.push({ cmd, args, opts }), { status: 0, stdout: '', stderr: '' });
+	await cleanup({ takeover: false, ports: [], state, cfg, run });
+	const sweep = calls.find((c) => String(c.args[0]).endsWith('e2e-env.sh') && c.args[1] === 'sweep');
+	assert.ok(sweep, 'the sweep ran');
+	assert.equal(sweep.opts?.env?.DF_STATE_DIR, state, 'the sweep reads the state folder the caller named');
+	assert.ok(
+		calls.every((c) => c.opts?.env?.DF_STATE_DIR === state),
+		'every command it starts gets the same folder',
+	);
+});
+
 test('a real process holding a port is left by default and stopped with takeover', async () => {
 	const child = spawn(
 		process.execPath,
 		['-e', "require('net').createServer().listen(0,'127.0.0.1',function(){console.log(this.address().port)});setInterval(()=>{},1000)"],
 		{ stdio: ['ignore', 'pipe', 'ignore'] },
 	);
+	// a process the default scope would stop on a real machine (a Maestro driver); this test never lists it, so it must survive
+	const decoy = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)', 'maestro-driver-ios'], { stdio: 'ignore' });
 	try {
-		const port = await new Promise((res) => child.stdout.once('data', (d) => res(Number(String(d).trim()))));
+		// a listener that cannot bind exits: fail then, instead of waiting on a port that will never be printed
+		const port = await new Promise((res, rej) => {
+			child.stdout.once('data', (d) => res(Number(String(d).trim())));
+			child.once('exit', (code) => rej(new Error(`the listener exited (${code}) before it bound a port`)));
+		});
 		const { state, cfg } = noWorktreeState();
-		const left = await cleanup({ takeover: false, ports: [port], state, cfg });
+		// Real `lsof` and `kill` against the two processes above. The machine's own `ps`, docker and sweep are never run: `ps` is
+		// answered with exactly the child and this process, in the format processes() parses.
+		const rows = [`${child.pid} ${process.pid} node -e listener`, `${process.pid} ${process.ppid} node --test cleanup.test.mjs`];
+		const run = (cmd, args, opts) => {
+			if (cmd === 'ps') return { status: 0, stdout: rows.join('\n'), stderr: '' };
+			if (cmd === 'docker') return { status: 1, stdout: '', stderr: '' };
+			if (cmd === 'bash' && String(args[0]).endsWith('e2e-env.sh') && args[1] === 'sweep') return { status: 0, stdout: '', stderr: '' };
+			return defaultRun(cmd, args, opts);
+		};
+		const left = await cleanup({ takeover: false, ports: [port], state, cfg, run });
 		assert.ok(
 			left.left.some((l) => l.target === String(port)),
 			JSON.stringify(left),
 		);
 		assert.equal(child.exitCode, null, 'still running');
-		const taken = await cleanup({ takeover: true, ports: [port], state, cfg });
+		const taken = await cleanup({ takeover: true, ports: [port], state, cfg, run });
 		assert.ok(
 			taken.done.some((d) => d.what === 'process stop' && d.target.includes(`port ${port}`)),
 			JSON.stringify(taken),
 		);
 		await new Promise((res) => (child.exitCode !== null || child.signalCode ? res() : child.once('exit', res)));
 		assert.ok(child.exitCode !== null || child.signalCode);
+		assert.equal(decoy.exitCode, null, 'the decoy was not stopped');
+		assert.equal(decoy.signalCode, null, 'the decoy was not signalled');
+		assert.ok(!taken.done.some((d) => d.target.includes(String(decoy.pid))), 'the decoy is not in what takeover did');
 		await new Promise((res, rej) =>
 			net
 				.createServer()
@@ -248,6 +291,7 @@ test('a real process holding a port is left by default and stopped with takeover
 		);
 	} finally {
 		child.kill('SIGKILL');
+		decoy.kill('SIGKILL');
 	}
 });
 

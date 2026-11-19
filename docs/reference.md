@@ -23,7 +23,7 @@ The flow at a glance: [docs/dev-factory-flow.svg](dev-factory-flow.svg).
 | **In**    | A task: an idea typed to `/dev-factory:quick`, a markdown file, a GitHub issue, a Notion page or a Jira issue, with acceptance criteria.                                                                                               |
 | **Out**   | A draft pull request on its own branch, with the tests that drove it, QA screenshots tied to the exact commit, two independent reviews, and a root-cause note for bugs.                                                                |
 | **Never** | From the builder: merges, approves, marks a PR ready, force-pushes, pushes any branch but the task's own, or writes to your task tracker. A person decides what merges, unless you turn on [Auto-merge](#auto-merge) (off by default). |
-| **Needs** | Claude Code, git, the GitHub CLI and Node 20. Docker only if your tests need a container; a tracker and MCP servers only if you want them.                                                                                             |
+| **Needs** | Claude Code, git, the GitHub CLI and Node 20. A container engine (Docker Desktop or OrbStack) only if your tests need a container; a tracker and MCP servers only if you want them.                                                    |
 | **Runs**  | In your own session (`/dev-factory:build`, `quick`, `plan`) or unattended on a schedule, every 5 minutes by default (`tick`), the same agents either way.                                                                              |
 
 ## Concepts
@@ -52,7 +52,7 @@ The flow at a glance: [docs/dev-factory-flow.svg](dev-factory-flow.svg).
 | git, and a GitHub remote                                       | worktrees, branches, PRs                                         | `git remote -v`              |
 | GitHub CLI signed in                                           | opens PRs, reads reviews, and is the `github` task source        | `gh auth status`             |
 | Node 20 or newer                                               | every script and the tests (`.nvmrc` is honoured when present)   | `node -v`                    |
-| Docker (only for `environment.type: compose`)                  | an isolated stack per task                                       | `docker info`                |
+| Docker or OrbStack (only for `environment.type: compose`)      | an isolated stack per task                                       | `docker info`                |
 | Xcode simulator and Maestro (only when `mobile.appDir` is set) | the device lane                                                  | `xcrun simctl list runtimes` |
 | macOS (only for the launchd scheduler)                         | `dev-factory install` renders launchd jobs; the cloud needs none | `uname`                      |
 
@@ -356,7 +356,7 @@ One-run switches that are not settings:
 | ----------------------------- | ------- | ------------------------------------------------------------------------------------------------ |
 | `DF_MAX_STACKS`               | `2`     | How many isolated environments `e2e-env.sh` keeps at once before refusing with exit 75.          |
 | `DF_PING_URL`                 | unset   | Overrides `environment.pingUrl` for one `verify`.                                                |
-| `DF_SWEEP_SPARE_MINUTES`      | `180`   | `sweep` leaves a `df-*` project alone that was started within this many minutes.                 |
+| `DF_SWEEP_SPARE_MINUTES`      | `180`   | `sweep` leaves a `df-*` project alone whose worktree changed within this many minutes.           |
 | `DF_EMULATOR_BOOT_TIMEOUT`    | `300`   | Seconds `mobile-env.sh` waits for an Android emulator to finish booting.                         |
 | `DF_FORCE_NATIVE_BUILD`       | `0`     | `1` rebuilds the native app even when its inputs have not changed.                               |
 | `DF_GH_RETRY_SECONDS`         | `2`     | Seconds `doctor` waits before it asks `gh auth status` a second time.                            |
@@ -947,12 +947,12 @@ Runs the whole flow (worktree, environment, test-first build, QA walk, two revie
 -   **`none`** (default): there is no environment to start. Tests run on the host with the repository's own commands; `up` only records that.
 -   **`compose`**: an isolated docker compose project named `df-<key>`. It builds and starts `environment.composeFile`, runs each `environment.setup` command inside `environment.service` (as `environment.user` if set, or the entry's own `user`), populates `environment.submodules` from your main checkout, and then `verify` checks that services are healthy, `environment.processCheck` exits 0 and `environment.pingUrl` answers from inside the service.
 
-| Command                                                  | What it does                                                                                                     |
-| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `e2e-env.sh up --key KEY [--ports canonical] [--device]` | Start and verify. Exit 75 means a cap or the ports lock refused it; a later pass retries.                        |
-| `e2e-env.sh verify`                                      | Re-check the contract.                                                                                           |
-| `e2e-env.sh down`                                        | Remove the project and its volumes.                                                                              |
-| `e2e-env.sh sweep`                                       | Remove `df-*` projects with no live owner, except one whose worktree changed in the last 3 hours. Safe any time. |
+| Command                                                  | What it does                                                                                                                                              |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `e2e-env.sh up --key KEY [--ports canonical] [--device]` | Start and verify. Exit 75 means a cap or the ports lock refused it; a later pass retries.                                                                 |
+| `e2e-env.sh verify`                                      | Re-check the contract.                                                                                                                                    |
+| `e2e-env.sh down`                                        | Remove the project and its volumes.                                                                                                                       |
+| `e2e-env.sh sweep`                                       | Remove `df-*` projects that no live owner file claims, unless their labelled owner is alive or their worktree changed in the last 3 hours. Safe any time. |
 
 ### Remote QA
 
@@ -974,7 +974,9 @@ A second pass over the same ticket does not fail on the worktree it finds. `work
 
 Isolated mode (`--ports none`) publishes no host ports so several worktrees can coexist, but a host browser cannot reach it; web QA needs `--ports canonical`, which the pass uses whenever `caps.maxConcurrent` is 1 and which takes a machine-wide lock (`environment.webBaseUrl` is recorded in `env.json`). `--device` implies canonical ports and, when `mobile.appDir` is set, boots a simulator and starts the app's dev server (`scripts/mobile-env.sh`). Run state lives in `.dev-factory/` inside each worktree (gitignored); machine state in `~/.dev-factory/`.
 
-A canonical-ports start first checks that the compose file's published host ports are free and refuses with exit 75 and the port numbers (and the process holding them, when `lsof` can tell) before building anything, so your own copy of the stack running on the same ports is reported in seconds rather than after a long build. Other settings: `environment.readyTimeout` (seconds to wait for a fresh stack, default 900; the first start installs dependencies, so raise it, or set `DF_READY_TIMEOUT`), and `environment.preCommit` (a command to run inside the container before each commit, for repositories whose commit hook needs the container's tools: the builder runs it, then commits with `git commit -n`; unset means commit normally and let the hooks run). The isolated environments need Docker Compose 2.24 or newer; `dev-factory doctor` checks.
+A canonical-ports start first checks that the compose file's published host ports are free and refuses with exit 75 and the port numbers (and the process holding them, when `lsof` can tell) before building anything, so your own copy of the stack running on the same ports is reported in seconds rather than after a long build. Other settings: `environment.readyTimeout` (seconds to wait for a fresh stack, default 900; the first start installs dependencies, so raise it, or set `DF_READY_TIMEOUT`), and `environment.preCommit` (a command to run inside the container before each commit, for repositories whose commit hook needs the container's tools: the builder runs it, then commits with `git commit -n`; unset means commit normally and let the hooks run). The isolated environments need Docker Compose 2.24 or newer; `dev-factory doctor` checks. Any engine that provides the `docker` and `docker compose` commands works (Docker Desktop, OrbStack), and the doctor reports which one is active (`docker reachable (context <name>)`), or says to start one when the daemon does not answer.
+
+Every service of the compose override carries two labels, `dev-factory.owner` (the pid that started it: the scheduled pass, or the calling shell of a hand run) and `dev-factory.worktree` (its worktree). The sweep reads them from the containers themselves, so it keeps a stack whose labelled owner is still alive or whose worktree's `.dev-factory/run.json` changed within `DF_SWEEP_SPARE_MINUTES`, even when the sweep runs from another state folder than the one that started it (the live-file check only sees its own). A resumed ticket reuses its stack without rewriting the labels, so after a resume the worktree check is what protects it from such a sweep. A stack started before the labels existed has none, and is swept by the live-file rule as before.
 
 ### Clean-up after every run
 

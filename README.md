@@ -12,7 +12,7 @@ Tasks can live in local markdown files, GitHub Issues, Notion or Jira. Every MCP
 -   `git` and a GitHub remote
 -   GitHub CLI, signed in (`gh auth login`)
 -   Node 20 or newer
--   Docker, only if your tests need a container
+-   A container engine with `docker` and `docker compose` (Docker Desktop, OrbStack, ...), only if your tests need a container
 
 ## Get running
 

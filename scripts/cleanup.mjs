@@ -43,7 +43,7 @@ export const adbBin = (env = process.env) => {
 };
 
 export const defaultRun = (cmd, args, opts = {}) => {
-	const r = spawnSync(cmd, args, { encoding: 'utf8', timeout: opts.timeout ?? 60000 });
+	const r = spawnSync(cmd, args, { encoding: 'utf8', timeout: opts.timeout ?? 60000, env: opts.env ?? process.env });
 	return { status: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
 };
 
@@ -202,11 +202,17 @@ export async function cleanup({
 	ports: extraPorts = [],
 	dryRun = false,
 	cfg = load(),
+	// Every command cleanup starts takes its environment from this one (with DF_STATE_DIR set to `state`), so a partial `env`
+	// would drop PATH and HOME for all of them; pass a full copy of process.env with changes (no caller passes one today).
 	env = process.env,
 	run = defaultRun,
 	stop = stopProcess,
 	state = env.DF_STATE_DIR || path.join(os.homedir(), '.dev-factory'),
 } = {}) {
+	// every command below, and every helper that is handed `run`, reads the state folder this call names: the sweep of orphaned
+	// stacks must never look at the machine's default folder when the caller pointed at another
+	const baseRun = run;
+	run = (cmd, args, opts = {}) => baseRun(cmd, args, { ...opts, env: { ...env, DF_STATE_DIR: state } });
 	const done = [];
 	const left = [];
 	const record = { containers: [], processes: [] };
