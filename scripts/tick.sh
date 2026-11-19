@@ -3,6 +3,8 @@
 # 75 when another pass is still running, non-zero on a failed run.
 set -uo pipefail
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# a pass takes no arguments: refuse one before anything is read or created
+. "$DIR/scripts/pass-args.sh"; df_pass_args tick.sh "" -- "$@"
 . "$DIR/scripts/runtime.sh"
 REPO="$(df_repo)"; [ -n "$REPO" ] || { echo "dev-factory: run this from inside a git repository (or set DF_REPO)" >&2; exit 1; }
 STATE="$(df_state_dir)"; LOG="$(df_log_file tick)"
