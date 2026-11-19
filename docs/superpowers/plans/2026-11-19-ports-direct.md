@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-11-19-concurrent-task-environments-design.md` (sections 1 and 2). Its section 0 (the spike on the owner's OrbStack) has not been run: this plan builds only what fails closed when the address does not answer, and says so in the docs.
 
+**Revised after the final review.** Three parts of Task 2 below were replaced, and the code is the record. The host probe checks only that the stack's direct address answers (any HTTP answer below 500), because `pingUrl` may name another service and port and is already proven inside the service by `wait_ping`; so `direct_probe_url` and the `directProbe` field of `env.json` do not exist, and `do_verify` rebuilds the address from the settings instead of reading one from a file the run wrote. `do_down_quiet` releases `ports.lock` only for a stack whose recorded mode is `device` or `canonical`. The tick asks for `--ports direct` only when `environment.webBaseUrl` is set.
+
 ## Global Constraints
 
 -   `AGENTS.md` rules apply. A new setting goes in `config.json`, `scripts/config.mjs` (validation), `settings/options.json` (group, title, type, scopeHint) and `docs/reference.md`. Behaviour of `scripts/e2e-env.sh` and `scripts/config.mjs` needs a test in `test/`.

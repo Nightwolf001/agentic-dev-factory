@@ -1187,5 +1187,5 @@ Adding a tracker: a new file under `scripts/sources/` that answers `list({ state
 -   Auto-merge checks each PR alone, can wait silently (a branch that must be up to date, a merge queue, a blocker nobody merges) and respects a person's draft only for the same head; its limits are listed in [Auto-merge](#auto-merge).
 -   GitHub dependencies are read from `Blocked by:` lines in the issue body, not from GitHub's native issue dependencies.
 -   Notion and Jira writes go through their MCP servers, so an unattended pass for those sources needs that server logged in or an API-token alternative.
--   One build per pass by default. Increase `DF_MAX_CONCURRENT` only after checking your plan's usage limits. The Mac must be awake and online for scheduled passes.
+-   One build per pass by default. Increase `DF_MAX_CONCURRENT` only after checking your plan's usage limits, and not above 1 until the prerequisites in [Environments](#environments) are met (the run pointer per worktree, and clean-up that no longer treats canonical ports as needed for a direct run). The Mac must be awake and online for scheduled passes.
 -   The scheduler cannot enforce tracker workflow rules (for example a validator on Jira transitions).
