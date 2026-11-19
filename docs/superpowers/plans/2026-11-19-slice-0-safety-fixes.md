@@ -109,6 +109,24 @@ Branch `fix/hermetic-tests-owner-sweep`, from `origin/main`.
 -   [ ] **Step 4: Run** `node --test test/e2e-env.test.mjs test/cleanup.test.mjs test/hermetic.test.mjs` → PASS.
 -   [ ] **Step 5: Commit** `Label each environment service with its owner and keep the sweep from removing a live one`.
 
+### Task 3b: The doctor names the container engine
+
+Added 2026-11-19 with the move to OrbStack.
+
+**Files:**
+
+-   Modify: `scripts/doctor.sh` (lines 46 to 52), `test/doctor.test.mjs`
+
+**Interfaces:**
+
+-   Produces: when the daemon answers, the line reads `docker reachable (context <name>)` with `<name>` from `docker context show` (or `unknown`); when it does not, `docker daemon unreachable: start OrbStack or Docker Desktop`. Nothing else in the doctor's docker checks changes.
+
+-   [ ] **Step 1: Write the failing tests** in `test/doctor.test.mjs`, using the file's own way of running the doctor with a fake `docker` first on `PATH` (the folder from Task 1 is there already; put a fake that answers `info` and `context show` ahead of it): the output contains `docker reachable (context orbstack)` when `context show` prints `orbstack`; with the Task 1 fake (every call exits 1) it contains `start OrbStack or Docker Desktop`.
+-   [ ] **Step 2: Run** `sandbox-test.sh <wt> node --test test/doctor.test.mjs` → FAIL.
+-   [ ] **Step 3: Implement** both messages.
+-   [ ] **Step 4: Run** `node --test test/doctor.test.mjs test/cloud.test.mjs` → PASS.
+-   [ ] **Step 5: Commit** `Name the container engine in the doctor`.
+
 ### Task 4: The rule, the docs, the release
 
 **Files:**
@@ -116,7 +134,7 @@ Branch `fix/hermetic-tests-owner-sweep`, from `origin/main`.
 -   Modify: `AGENTS.md` (the `## Rules` list), `docs/reference.md` (the environment section that describes the sweep), `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`
 
 -   [ ] **Step 1: Add to `AGENTS.md` Rules**: a test never talks to the machine's real docker or stops a process it did not start, because the suite runs beside the scheduler's live passes; `test/isolate-state.mjs` puts a fake `docker` first on `PATH`, and a test of `cleanup()` injects `run`.
--   [ ] **Step 2: Document in `docs/reference.md`** the two new labels and that the sweep keeps a stack whose labelled owner is alive or whose worktree changed recently; keep the wording by reason.
+-   [ ] **Step 2: Document in `docs/reference.md`** the two new labels and that the sweep keeps a stack whose labelled owner is alive or whose worktree changed recently; keep the wording by reason. Also say where the docs name Docker that the factory works with any engine that provides the `docker` and `docker compose` commands (Docker Desktop, OrbStack), and that the doctor reports which one is active.
 -   [ ] **Step 3: Bump to `0.20.1`** in both manifests.
 -   [ ] **Step 4: Run** `sandbox-test.sh <wt> compare`, the Prettier check on the changed files, `bash scripts/lint-vocabulary.sh` and `claude plugin validate .` (through the runner) → no failure outside the baseline.
 -   [ ] **Step 5: Commit** `Release 0.20.1`, push, open the draft pull request. In the body: patch release because there is no new setting and no new behaviour a person sees; say that the stack sweep now reads labels.
@@ -160,6 +178,25 @@ Branch `fix/enforcement-gaps`, from `origin/main`. A person reviews this one: it
 -   [ ] **Step 3: Implement** the attached form in `ghApiWrites`: a token matching `/^-X(?!=)(.+)$/` is a write unless its method is `GET` (case-insensitive). If a quoting case failed in Step 2, make `unquote` in `guard-paths.mjs` drop an unquoted backslash and keep the next character, and nothing more. If none failed, the quoting test stays as a regression test and the pull request says it passed before the change.
 -   [ ] **Step 4: Run** `node --test test/guard.test.mjs test/guard-hardening.test.mjs test/guard-machine.test.mjs test/guard-writers.test.mjs` → PASS.
 -   [ ] **Step 5: Commit** `Treat an attached -X method on gh api as a write`.
+
+### Task 6b: Engine-control commands are refused
+
+Added 2026-11-19 after the owner chose to run the factory on OrbStack: its `orb` and `orbctl` commands stop the whole engine and run commands in Linux machines that see the Mac's files, and the guard allows both today (as it allows `colima stop` and `docker desktop stop`).
+
+**Files:**
+
+-   Modify: `scripts/guard-lib.mjs` (beside `DOCKER_STOPS`, near line 508)
+-   Test: `test/guard-machine.test.mjs` (next to the existing docker stop and kill tests; find them with `grep -n "docker stop" test/guard*.test.mjs`)
+
+**Interfaces:**
+
+-   Produces: `evaluate()` denies, for every role, a command whose basename is `orb`, `orbctl`, `colima` or `limactl`, and `docker desktop <anything>`, with the reason `the container engine is not controlled from a run (<command>)`. `docker ps`, `docker compose ps|logs|exec` and the other commands already allowed stay allowed.
+
+-   [ ] **Step 1: Write the failing test** `engine control is refused`: `denied` for `orbctl stop`, `orb stop docker`, `orbctl delete docker`, `orb delete ubuntu`, `orb -m ubuntu rm -rf /tmp/x`, `orb run rm -rf ~/work`, `colima stop`, `limactl stop default`, `docker desktop stop`, `env orbctl stop`, `(orbctl stop)`; `allowed` for `docker ps`, `docker compose ps`, `git status`.
+-   [ ] **Step 2: Run** `sandbox-test.sh <wt> node --test test/guard-machine.test.mjs` → FAIL for every denied case.
+-   [ ] **Step 3: Implement** the check where the other process-control checks run, so wrappers and groups are already looked through (`invocation()` yields the real command and its arguments).
+-   [ ] **Step 4: Run** `node --test test/guard.test.mjs test/guard-hardening.test.mjs test/guard-machine.test.mjs test/guard-writers.test.mjs` → PASS.
+-   [ ] **Step 5: Commit** `Refuse commands that control the container engine`.
 
 ### Task 7: The stop gate lets go an agent that no longer owns the run
 
@@ -249,6 +286,6 @@ Branch `feat/pass-args-and-html-mentions`, from `origin/main`.
 
 ## Self-review
 
--   **Spec coverage:** goal 1 (hermetic tests, owner-aware sweep) is Tasks 1 to 3; goal 2 is Task 5; goal 3 is Task 6; goal 4 is Task 7; goal 5 is Task 9; goal 6 is Task 10; goal 7 is Task 11. The three releases are Tasks 4, 8 and 11. The sandbox and baseline the design requires are Task 0. Non-goals (graphql exception, stack-move refusal, `GH_TOKEN` refusal, any new setting) have no task, by design.
+-   **Spec coverage:** goal 1 (hermetic tests, owner-aware sweep) is Tasks 1 to 3; goal 2 is Task 5; goal 3 is Task 6; goal 4 is Task 7; goal 5 is Task 9; goal 6 is Task 10; goal 7 is Task 11; goal 8 (added with the move to OrbStack: the engine is not controlled from a run, and the doctor names it) is Tasks 6b and 3b. The three releases are Tasks 4, 8 and 11. The sandbox and baseline the design requires are Task 0. Non-goals (graphql exception, stack-move refusal, `GH_TOKEN` refusal, any new setting) have no task, by design.
 -   **Type consistency:** `readLayer` (Task 5), `agentRoleOf` and `ownsRun` (Task 7), `df_pass_args` and `DF_DRY_RUN` (Task 9), `composeHtml` and the `--format` option (Task 11) each have one definition and the later steps use the same names. `labelled_in_use` and `fresh_worktree` (Task 3) are used only inside `e2e-env.sh`.
 -   **Open calls left to the builder:** the exact `sandbox-exec` rules (Task 0, constrained by the four refusals of Step 3), the owner-label escape for odd worktree paths (Task 3), and which quoting cases fail today (Task 6).

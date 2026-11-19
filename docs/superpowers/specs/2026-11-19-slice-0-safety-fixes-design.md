@@ -15,6 +15,7 @@ A downstream fork of this factory was compared with `main` on 2026-11-18 (a read
 5. `improve --dry-run` does not run a real scan, and a pass script refuses an argument it does not know.
 6. `learnings-scan` survives a large merged-PR list.
 7. A comment posted through a tracker MCP server that takes HTML carries real mentions.
+8. The container engine is not controlled from a run, and the doctor says which engine is active. Added when the owner moved the factory to OrbStack: `orb` and `orbctl` can stop every stack and run commands in Linux machines that see the Mac's files, and the guard allowed both (as it allows `colima stop` and `docker desktop stop`).
 
 ## Non-goals
 
@@ -49,12 +50,14 @@ A downstream fork of this factory was compared with `main` on 2026-11-18 (a read
 -   `test/no-docker.mjs`: `noDockerEnv()` puts a fake `docker` first on `PATH`. `test/hermetic.test.mjs` fails when a test reaches the real one.
 -   `test/cleanup.test.mjs`, "a real process holding a port is left by default and stopped with takeover": inject `run` and a process filter with a decoy process, so only the child the test started can be stopped. The default `run` shells out to `ps` and `docker`, which is what makes that test unsafe beside a live pass.
 -   `AGENTS.md`: a rule that a test never talks to the machine's real docker or stops a process it did not start, with the reason.
+-   `scripts/doctor.sh`: `docker reachable (context <name>)` when the engine answers, and `docker daemon unreachable: start OrbStack or Docker Desktop` when it does not. The docs say the factory works with any engine that provides `docker` and `docker compose`.
 
 ### 2. Enforcement fixes (patch, 0.20.2; a person reviews it, as the enforcement files are guarded)
 
 -   `scripts/config.mjs`: `readJson` becomes a layer reader that names the file and refuses anything but an object (`null`, an array, a number, a string) for the defaults, the user layer and the project layer. Test in `test/config.test.mjs`.
 -   `scripts/guard-lib.mjs`, `ghApiWrites`: match an attached method (`-XPOST`, `-XDELETE`) as well as `-X POST` and `--method=POST`; `-XGET` stays allowed. The words of a segment already pass through `shellUnquote`; first write tests for `gh "pr" merge`, `gh 'pr' merge` and `gh p\r merge` and fix only the spellings that are judged differently from how the shell reads them. Tests in the guard suites.
 -   `scripts/stop-gate.mjs` and `scripts/stop-gate-lib.mjs`: the hook input carries `agent_type`, which `resolveRun` already reads. Add `agentRoleOf(agentType)` and return early, before the refused-file move, the nudge count and the `blocked.json` write, when the stopping agent's role is not the role in `run.json` (the scheduler has moved the run on, for example to the debugger, after taking the builder's hand-off). Test in `test/stop-gate.test.mjs`, including that the 0.20.0 behaviours (a refused `build.done` is set aside; giving up writes `blocked.json`) are unchanged for the agent that owns the run.
+-   `scripts/guard-lib.mjs`: refuse `orb`, `orbctl`, `colima`, `limactl` and `docker desktop` for every role, because each controls the engine every stack runs on. Test in `test/guard-machine.test.mjs`.
 
 ### 3. Scheduler scripts and mentions (minor, 0.21.0)
 
