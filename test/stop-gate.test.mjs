@@ -279,7 +279,7 @@ test('agentRoleOf names the role of a factory agent type and nothing else', () =
 	assert.equal(agentRoleOf('general-purpose'), null);
 	assert.equal(agentRoleOf(undefined), null);
 	assert.equal(agentRoleOf(null), null);
-	assert.equal(agentRoleOf('my-factory-builder-x'), null);
+	assert.equal(agentRoleOf('myfactory-builder'), null);
 	assert.equal(agentRoleOf('dev-factory:factory-builderx'), null);
 });
 
@@ -313,6 +313,13 @@ test('the debugger that owns the run is still held to its finish line, and a non
 		assert.match(r.stderr, /not finished/);
 		assert.equal(exists(root, 'stop-nudges'), true);
 	}
+});
+
+test('giving up is unchanged for the agent that owns the run: it still gets the block that names what was unmet', () => {
+	const root = worktree(debuggerRun);
+	const r = gateAs(root, 'dev-factory:factory-debugger', { DF_STOP_GATE_MAX: '0' });
+	assert.equal(r.status, 0, r.stderr);
+	assert.match(JSON.parse(fs.readFileSync(marker(root, 'blocked.json'), 'utf8')).reason, /stop gate.*no debug round recorded/);
 });
 
 test('a builder that owns the run keeps its refused build.done set aside, and another role stopping there leaves the file alone', () => {
