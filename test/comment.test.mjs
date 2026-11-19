@@ -286,6 +286,7 @@ test('compose refuses an option that would silently drop the mentions', () => {
 	refused(run('--format=html', ...base, ...ids), 'comment: --format takes its value after a space: --format html');
 	refused(run(...base, ...ids, '--format'), 'comment: --format needs a value (text or html)');
 	refused(run('--format', '--kind', 'summary', '--text', 'Shipped.'), 'comment: --format needs a value (text or html)');
+	refused(run('--format', '--text', 'hi', '--kind', 'summary'), 'comment: --format needs a value (text or html)');
 	refused(run('--format', 'text', '--format', 'html', ...base, ...ids), 'comment: --format was given more than once');
 	refused(run(...base, ...ids), 'comment: --assignee-id and the other id/name options need --format html');
 	refused(run('--format', 'text', ...base, '--reporter-name', 'Omar'), 'comment: --assignee-id and the other id/name options need --format html');
@@ -304,6 +305,26 @@ test('compose refuses an option that would silently drop the mentions', () => {
 		'<p><span data-type="mention" data-user-id="a1">@Jane</span></p><p>Shipped.</p><p>[dev-factory] summary</p>',
 	);
 	assert.equal(run(...base).stdout.trim(), 'Shipped.\n\n[dev-factory] summary', 'no --format and no people: as before');
+});
+
+// The options are read by name: a value is whatever follows its option, so a block reason that quotes a flag is still posted.
+test('compose takes a value verbatim, even when it looks like an option', () => {
+	const bin = path.join(path.resolve(import.meta.dirname, '..'), 'scripts/comment.mjs');
+	const run = (...a) => spawnSync(process.execPath, [bin, 'compose', ...a], { encoding: 'utf8' });
+	const ok = (r, expected) => {
+		assert.equal(r.status, 0, r.stderr);
+		assert.equal(r.stdout.trim(), expected);
+	};
+	ok(run('--kind', 'question', '--text', '--format=html'), compose({ kind: 'question', text: '--format=html' }));
+	ok(run('--kind', 'question', '--text', 'x', '--detail', '--format=html'), compose({ kind: 'question', text: 'x', detail: '--format=html' }));
+	ok(run('--format', 'html', '--kind', 'question', '--text', '--assignee'), composeHtml({ kind: 'question', text: '--assignee' }));
+	ok(run('--kind', 'question', '--text', '--assignee-id'), compose({ kind: 'question', text: '--assignee-id' }));
+	ok(run('--kind', 'question', '--text', '--format'), compose({ kind: 'question', text: '--format' }));
+	ok(run('--kind', 'question', '--text', '--kind'), compose({ kind: 'question', text: '--kind' }));
+	assert.match(run('--kind', 'question', '--text', '--kind').stdout, /\[dev-factory\] blocked: question$/m);
+	ok(run('--kind', 'question', '--text', 'x', '--detail', '--format html'), compose({ kind: 'question', text: 'x', detail: '--format html' }));
+	ok(run('--kind', 'summary', '--text', 'x', '--unknown', '--format=html'), compose({ kind: 'summary', text: 'x' }));
+	ok(run('--kind', 'summary', '--text', 'x', '--foo=bar', '--detail', 'd'), compose({ kind: 'summary', text: 'x', detail: 'd' }));
 });
 
 test('the CLI composes, reads replies and finds a fix request', () => {

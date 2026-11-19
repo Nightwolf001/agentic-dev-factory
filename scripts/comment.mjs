@@ -13,36 +13,59 @@ import { get, load } from './config.mjs';
 import { compose, composeAdf, composeHtml, findFixRequest, findReplies } from './comment-lib.mjs';
 import { isMain } from './is-main.mjs';
 
+// compose reads its options by name: a token that starts with -- at a name position is an option name, and the token after a known
+// name is its value, taken as it is whatever it looks like, so a reason that quotes a flag ("--format=html") is plain text. An unknown
+// --name is skipped with its value, a --name=value token is not an option of ours, and any other token is skipped alone.
+const ID_OPTIONS = ['assignee-id', 'assignee-name', 'reporter-id', 'reporter-name'];
+const COMPOSE_OPTIONS = ['kind', 'text', 'detail', 'assignee', 'reporter', 'format', ...ID_OPTIONS];
+function parseCompose(args) {
+	const opts = {};
+	const names = new Set();
+	let formatCount = 0;
+	let formatEquals = false;
+	for (let i = 0; i < args.length; i++) {
+		const t = args[i];
+		if (!t.startsWith('--')) continue;
+		const name = t.slice(2);
+		if (name.includes('=')) {
+			if (name.startsWith('format=')) formatEquals = true;
+			continue;
+		}
+		if (COMPOSE_OPTIONS.includes(name)) {
+			names.add(name);
+			if (name === 'format') formatCount++;
+			if (!(name in opts)) opts[name] = args[i + 1];
+		}
+		i++; // the value (an unknown option's too)
+	}
+	return { opts, names, formatCount, formatEquals };
+}
+
 if (isMain(import.meta.url)) {
 	const argv = process.argv.slice(2);
 	const val = (n) => (argv.includes(`--${n}`) ? argv[argv.indexOf(`--${n}`) + 1] : undefined);
 	try {
 		const cmd = argv[0];
 		if (cmd === 'compose') {
+			const o = parseCompose(argv.slice(1));
 			// a mistyped or mismatched option is refused, never guessed at: a comment that quietly lost its mentions tells nobody
-			if (argv.some((a) => a.startsWith('--format='))) throw new Error('--format takes its value after a space: --format html');
-			if (argv.filter((a) => a === '--format').length > 1) throw new Error('--format was given more than once');
-			if (argv.includes('--format') && (argv[argv.indexOf('--format') + 1] ?? '--').startsWith('--'))
+			if (o.formatEquals) throw new Error('--format takes its value after a space: --format html');
+			if (o.formatCount > 1) throw new Error('--format was given more than once');
+			if (o.formatCount === 1 && (o.opts.format === undefined || COMPOSE_OPTIONS.some((n) => o.opts.format === `--${n}`)))
 				throw new Error('--format needs a value (text or html)');
-			const format = val('format') ?? 'text';
+			const format = o.opts.format ?? 'text';
 			if (format !== 'text' && format !== 'html') throw new Error('--format must be text or html');
-			if (format === 'text' && ['assignee-id', 'assignee-name', 'reporter-id', 'reporter-name'].some((o) => argv.includes(`--${o}`)))
+			if (format === 'text' && ID_OPTIONS.some((n) => o.names.has(n)))
 				throw new Error('--assignee-id and the other id/name options need --format html');
-			if (format === 'html' && ['assignee', 'reporter'].some((o) => argv.includes(`--${o}`)))
+			if (format === 'html' && ['assignee', 'reporter'].some((n) => o.names.has(n)))
 				throw new Error('--assignee and --reporter are for --format text; use --assignee-id/--assignee-name with --format html');
+			const { kind, text } = o.opts;
+			const detail = o.opts.detail ?? '';
 			if (format === 'html') {
-				const people = ['assignee', 'reporter'].map((w) => ({ id: val(`${w}-id`), name: val(`${w}-name`) }));
-				console.log(composeHtml({ kind: val('kind'), text: val('text'), detail: val('detail') ?? '', people }));
+				const people = ['assignee', 'reporter'].map((w) => ({ id: o.opts[`${w}-id`], name: o.opts[`${w}-name`] }));
+				console.log(composeHtml({ kind, text, detail, people }));
 			} else {
-				console.log(
-					compose({
-						kind: val('kind'),
-						text: val('text'),
-						detail: val('detail') ?? '',
-						assignee: val('assignee'),
-						reporter: val('reporter'),
-					}),
-				);
+				console.log(compose({ kind, text, detail, assignee: o.opts.assignee, reporter: o.opts.reporter }));
 			}
 		} else if (cmd === 'compose-adf') {
 			const people = ['assignee', 'reporter'].map((w) => ({ id: val(`${w}-id`), name: val(`${w}-name`) }));
