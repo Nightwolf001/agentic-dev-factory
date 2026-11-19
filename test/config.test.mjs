@@ -326,6 +326,18 @@ test('environment.buildFiles is a list of globs', () => {
 		);
 });
 
+test('environment.directHost defaults to the engine naming and is a host name with {service} and {project}', () => {
+	assert.equal(load().environment.directHost, '{service}.{project}.orb.local');
+	assert.deepEqual(validate(load()), []);
+	for (const good of ['{service}.{project}.orb.local', 'stack.test', '{project}.example.dev'])
+		assert.deepEqual(withSetting('environment.directHost', good), [], good);
+	for (const bad of ['{host}.x', 'bad host', 'a/b', '', 5, '.leading.dot', '{service}.{project}.'])
+		assert.ok(
+			withSetting('environment.directHost', bad).some((p) => p.includes('environment.directHost')),
+			JSON.stringify(bad),
+		);
+});
+
 test('tasks.questionLabel is a label name that differs from the blocked label', () => {
 	assert.deepEqual(withSetting('tasks.questionLabel', 'needs-answer'), []);
 	for (const bad of ['has space', 'semi;colon', '', 7])

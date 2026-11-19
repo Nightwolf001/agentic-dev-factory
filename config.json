@@ -159,6 +159,7 @@
 		"readyTimeout": 900,
 		"pingUrl": null,
 		"webBaseUrl": null,
+		"directHost": "{service}.{project}.orb.local",
 		"submodules": [],
 		"buildFiles": [],
 		"preCommit": null

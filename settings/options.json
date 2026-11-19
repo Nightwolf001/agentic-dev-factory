@@ -461,6 +461,12 @@
 			"type": "string",
 			"scopeHint": "project"
 		},
+		"environment.directHost": {
+			"group": "Environment",
+			"title": "Direct host (OrbStack)",
+			"type": "string",
+			"scopeHint": "project"
+		},
 		"environment.submodules": {
 			"group": "Environment",
 			"title": "Submodules to populate",

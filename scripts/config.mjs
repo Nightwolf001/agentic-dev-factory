@@ -441,6 +441,12 @@ export function validate(config) {
 		if (setup !== undefined && !(Array.isArray(setup) && setup.every(step)))
 			problems.push('environment.setup must be a list of commands, each a string or {"run": "...", "user": "..."}');
 	}
+	const directHost = dig(config, 'environment.directHost');
+	if (directHost !== undefined) {
+		const sample = typeof directHost === 'string' ? directHost.replaceAll('{service}', 'a').replaceAll('{project}', 'a') : '';
+		if (!/^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$/.test(sample))
+			problems.push("environment.directHost must be a host name, with {service} and {project} where the stack's own names go");
+	}
 	const buildFiles = dig(config, 'environment.buildFiles');
 	if (buildFiles !== undefined && !(Array.isArray(buildFiles) && buildFiles.every((g) => typeof g === 'string' && g)))
 		problems.push('environment.buildFiles must be a list of globs');
