@@ -326,9 +326,10 @@ const ghPositionals = (args) => {
 };
 
 // `gh api` is a POST as soon as it carries a body field or input, with no -X at all; -X may carry its method attached.
+// -i is its only boolean short flag, so a value-taking flag can follow it in one cluster (-iXPOST, -iftitle=x).
 function ghApiWrites(args) {
 	for (let i = 0; i < args.length; i++) {
-		const a = args[i];
+		const a = args[i].replace(/^-i+(?=[XfF])/, '-');
 		if (/^(-X|--method)(=|$)/.test(a)) {
 			const value = a.includes('=') ? a.split('=')[1] : args[i + 1];
 			if (!/^GET$/i.test(value ?? '')) return true;

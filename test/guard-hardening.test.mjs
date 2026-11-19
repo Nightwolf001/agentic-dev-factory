@@ -373,6 +373,28 @@ test('an attached -X method on gh api is a write', () => {
 	assert.equal(sched('gh api -XGET repos/o/r/pulls'), false);
 });
 
+test('a method or body field behind the boolean -i on gh api is a write', () => {
+	const writes = [
+		'gh api -iXPOST x',
+		'gh api -iX POST x',
+		'gh api -iX=POST x',
+		'gh api -iiXPOST x',
+		'gh api -iftitle=x x',
+		'gh api -iF title=x x',
+		'gh api -iXPOST repos/o/r/issues',
+	];
+	for (const c of writes) denied(c);
+	for (const c of writes) assert.equal(evaluate(c, {}).deny, true, `the scheduler is refused too: ${c}`);
+	for (const c of [
+		'gh api -i repos/o/r/pulls',
+		'gh api -iXGET repos/o/r/pulls',
+		'gh api -iX GET repos/o/r/pulls',
+		'gh api -iq .name repos/o/r',
+		'gh api -i -H Accept:x repos/o/r/pulls',
+	])
+		allowed(c);
+});
+
 test('quoted and escaped gh subcommands are judged as the shell reads them', () => {
 	for (const c of ["gh 'pr' merge 1", 'gh "pr" merge 1', 'gh p\\r merge 1', "gh pr 'merge' 1"]) denied(c);
 });
