@@ -151,21 +151,25 @@ export const isLegacyConfig = (file) => path.basename(file) === REPO_CONFIG;
 // In the machine folder, not a repository's own state folder (install --isolate): one person's choices hold for every repository.
 export const userConfigFile = (env = process.env) => path.join(machineDir(env), 'config.json');
 
-function readJson(file) {
+// A layer is merged over the defaults, so null, an array or a scalar would silently replace them: it must be an object.
+function readLayer(file) {
+	let data;
 	try {
-		return JSON.parse(fs.readFileSync(file, 'utf8'));
+		data = JSON.parse(fs.readFileSync(file, 'utf8'));
 	} catch (e) {
 		throw new Error(`${file}: ${e.message}`);
 	}
+	if (!isObject(data)) throw new Error(`${file}: a settings file must be a JSON object`);
+	return data;
 }
 
 // The three file layers, always in this order. A layer whose file is missing has file null and no data.
 export function layers({ from = process.cwd(), env = process.env } = {}) {
 	const user = userConfigFile(env);
 	const project = findRepoConfig(from, env);
-	const read = (file) => (file && fs.existsSync(file) ? { file, data: readJson(file) } : { file: null, data: {} });
+	const read = (file) => (file && fs.existsSync(file) ? { file, data: readLayer(file) } : { file: null, data: {} });
 	return [
-		{ name: 'defaults', file: FILE, data: readJson(FILE) },
+		{ name: 'defaults', file: FILE, data: readLayer(FILE) },
 		{ name: 'user', ...read(user) },
 		{ name: 'project', ...read(project) },
 	];
@@ -255,7 +259,7 @@ export function setIn(layer, dotted, value, { from = process.cwd(), env = proces
 		file = path.join(root, PROJECT_FILES.config);
 		if (!fs.existsSync(file) && fs.existsSync(path.join(root, REPO_CONFIG))) seed = path.join(root, REPO_CONFIG);
 	}
-	const data = fs.existsSync(file) ? readJson(file) : seed ? readJson(seed) : {};
+	const data = fs.existsSync(file) ? readLayer(file) : seed ? readLayer(seed) : {};
 	const trail = [data];
 	let at = data;
 	for (const k of keys.slice(0, -1)) {
