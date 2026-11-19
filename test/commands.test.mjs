@@ -282,4 +282,8 @@ test('the tick asks for direct ports only for a web ticket when more than one ta
 	assert.match(step, /--ports canonical/, 'canonical stays for the maxConcurrent 1 case');
 	assert.match(step, /--device/, 'mobile keeps --device');
 	assert.match(step, /no fallback/, 'a failed direct start has no fallback');
+	assert.match(step, /above 1 and `environment\.webBaseUrl` is set/, 'direct only when there is an address to swap the host of');
+	assert.match(step, /`--ports none`, as there is no host address to open/, 'otherwise the default');
+	assert.match(step, /exit 1, for example because the address did not answer/, 'the cause is worded neutrally');
+	assert.match(step, /Environments section of `docs\/reference\.md`/, 'points at what is not settled');
 });

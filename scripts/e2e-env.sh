@@ -16,8 +16,9 @@
 # environment per Mac. --device implies canonical because the mobile app has the ports baked in.
 # --ports direct strips the published ports as none does, and records the stack's own address instead: environment.webBaseUrl
 # with its host replaced by environment.directHost ({service}.{project}.orb.local by default, the name an engine such as
-# OrbStack gives each container). up probes that address from this machine and fails, with no fallback, when it does not
-# answer. No lock: any number of direct environments coexist (they still count against the cap). Not with --device yet.
+# OrbStack gives each container). up probes that address itself from this machine (pingUrl stays the check inside the
+# service) and counts any HTTP answer below 500 as reachable; no connection or a 5xx until the ready timeout fails, with no
+# fallback. No lock: any number of direct environments coexist (they still count against the cap). Not with --device yet.
 #
 # Remote QA: `up --remote ENV [--account NAME] [--device]` starts nothing. It checks that the deployed address in
 # environments.ENV.remote.url answers, and records mode remote in env.json with the NAMES of the variables that hold the QA
@@ -163,37 +164,39 @@ wait_ping() { # inside the service, as the stack's own hostnames resolve there
   done
 }
 
-# direct_url BASEURL PROJECT: BASEURL with its host replaced by environment.directHost, {service} and {project} filled in; scheme,
-# port, path and query kept. Exit 1 when the result is not an http(s) address with a valid host name.
+# direct_url BASEURL PROJECT: BASEURL with its host replaced by environment.directHost, {service} (environment.service) and
+# {project} filled in; scheme, port, path and query kept. Exit 2 when BASEURL is not an http(s) address; exit 1, printing the
+# host it made (printable characters only), when that is not a valid host name.
 direct_url() {
   node -e '
     const [base, tpl, service, project] = process.argv.slice(1);
-    try {
-      const u = new URL(base);
-      const host = tpl.replaceAll("{service}", service).replaceAll("{project}", project);
-      if (!/^https?:$/.test(u.protocol) || !/^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$/.test(host)) process.exit(1);
-      const out = u.protocol + "//" + host + (u.port ? ":" + u.port : "") + (u.pathname === "/" ? "" : u.pathname) + u.search + u.hash;
-      if (new URL(out).hostname !== host.toLowerCase()) process.exit(1);
-      process.stdout.write(out);
-    } catch (e) { process.exit(1); }' "$1" "$(cfg directHost)" "$SERVICE" "$2"
-}
-# direct_probe_url DIRECTURL: its origin with the path and query of environment.pingUrl, or DIRECTURL itself when there is no
-# pingUrl or it has no path. Exit 1 when pingUrl is not an address.
-direct_probe_url() {
-  node -e '
-    const [direct, ping] = process.argv.slice(1);
-    try {
-      if (!ping) { process.stdout.write(direct); process.exit(0); }
-      const p = new URL(ping);
-      process.stdout.write(p.pathname === "/" ? direct : new URL(direct).origin + p.pathname + p.search);
-    } catch (e) { process.exit(1); }' "$1" "$PING_URL"
+    let u;
+    try { u = new URL(base); } catch (e) { process.exit(2); }
+    if (!/^https?:$/.test(u.protocol)) process.exit(2);
+    const host = tpl.replaceAll("{service}", service).replaceAll("{project}", project);
+    const bad = () => { process.stdout.write(host.replace(/[^\x21-\x7e]/g, "?").slice(0, 200)); process.exit(1); };
+    if (!/^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$/.test(host)) bad();
+    const out = u.protocol + "//" + host + (u.port ? ":" + u.port : "") + (u.pathname === "/" ? "" : u.pathname) + u.search + u.hash;
+    try { if (new URL(out).hostname !== host.toLowerCase()) bad(); } catch (e) { bad(); }
+    process.stdout.write(out);' "$1" "$(cfg directHost)" "$SERVICE" "$2"
 }
 # url_shown URL: origin and path only, for logs and messages (a query can carry a token)
-url_shown() { node -e 'try{const u=new URL(process.argv[1]);process.stdout.write(u.origin+u.pathname)}catch(e){process.stdout.write("(not an address)")}' "$1"; }
+url_shown() { node -e 'try{const u=new URL(process.argv[1]);process.stdout.write(u.origin+(u.pathname==="/"?"":u.pathname))}catch(e){process.stdout.write("(not an address)")}' "$1"; }
 
-wait_direct() { # from this machine, as a browser reaches the stack
+# The probe from this machine checks reachability only, as remote_answers does: any HTTP answer below 500 means the engine routes
+# to the stack (a login redirect, a 401 and a 404 all count); 000 (no connection) and 5xx do not. pingUrl is not used here: it
+# stays the readiness check inside the service, and its query can carry a token.
+direct_status() { # prints the HTTP status, 000 for no connection
+  local code; code="$(curl -ks -o /dev/null -m 10 -w '%{http_code}' "$1" </dev/null 2>/dev/null)"
+  case "$code" in [0-9][0-9][0-9]) printf '%s' "$code" ;; *) printf '000' ;; esac
+}
+direct_reachable() { case "$1" in 000|5*) return 1 ;; esac; return 0; }
+DIRECT_CODE=000
+wait_direct() { # wait_direct URL: until it answers below 500 or READY_TIMEOUT passes; the last status is left in DIRECT_CODE
   local url="$1" end=$((SECONDS + READY_TIMEOUT))
-  until curl -ksf -m 10 -o /dev/null "$url" </dev/null; do
+  while :; do
+    DIRECT_CODE="$(direct_status "$url")"
+    direct_reachable "$DIRECT_CODE" && return 0
     [ "$SECONDS" -ge "$end" ] && return 1
     sleep 5
   done
@@ -246,9 +249,18 @@ do_verify() {
   if [ -n "$PING_URL" ]; then
     compose "$project" "${EXEC_ARGS[@]}" curl -ksf -o /dev/null "$PING_URL" </dev/null || add "ping failed: $PING_URL"
   fi
+  # the direct address is worked out again from the settings, never read back from env.json, which the run can write
   if [ "$(env_get mode)" = direct ]; then
-    local probe; probe="$(env_get directProbe)"
-    curl -ksf -m 10 -o /dev/null "$probe" </dev/null || add "direct address does not answer: $(url_shown "$probe")"
+    local addr code
+    if ! valid_project "$project"; then
+      add "the recorded project is not one this script makes (df-<key>): no direct address was probed"
+    elif ! addr="$(direct_url "$WEB_BASE_URL" "$project")"; then
+      add "environment.webBaseUrl and environment.directHost do not make a direct address"
+    else
+      code="$(direct_status "$addr")"
+      if [ "$code" = 000 ]; then add "direct address does not answer: $(url_shown "$addr")"
+      elif ! direct_reachable "$code"; then add "direct address answered HTTP $code: $(url_shown "$addr")"; fi
+    fi
   fi
 
   if [ -n "$problems" ]; then
@@ -343,11 +355,14 @@ do_up() {
   [ "$ENV_TYPE" = none ] && { do_up_none; return 0; }
   [ -f "$COMPOSE_FILE" ] || die "missing $COMPOSE_FILE (run from a worktree of the repository)"
   local project; project="$(project_for "$KEY")"
-  local direct="" probe=""
+  local direct="" rc
   if [ "$PORTS" = direct ]; then
     [ -n "$WEB_BASE_URL" ] || die "--ports direct needs environment.webBaseUrl (the address a browser would use, with its port)"
-    direct="$(direct_url "$WEB_BASE_URL" "$project")" || die "environment.directHost ($(cfg directHost)) and environment.webBaseUrl do not make an http(s) address with a host name"
-    probe="$(direct_probe_url "$direct")" || die "environment.pingUrl is not an address, so the direct address cannot be probed"
+    direct="$(direct_url "$WEB_BASE_URL" "$project")" || {
+      rc=$?
+      [ "$rc" = 2 ] && die "environment.webBaseUrl must be an http(s) address for --ports direct"
+      die "environment.directHost ($(cfg directHost)) with {service} = environment.service ($SERVICE) and {project} = $project makes $direct, which is not a valid host name: a service name with _ (or another character a host name cannot have) is not a valid host label, so put the name of the service that serves the web in environment.directHost instead (web.{project}.orb.local)"
+    }
   fi
 
   # Idempotent: a resumed ticket finds its stack still healthy and just takes ownership of it again. A stack started with
@@ -369,7 +384,7 @@ do_up() {
       device|canonical) mkdir -p "$STATE_DIR/ports.lock"; echo "${DF_OWNER_PID:-$PPID}" > "$STATE_DIR/ports.lock/owner" ;;
     esac
     [ "$(env_get mode)" = device ] && { ( cd "$WORKTREE" && bash "$SELF_DIR/mobile-env.sh" up --worktree "$WORKTREE" ) || die "mobile lane failed"; }
-    log "ready (reused): $project"
+    log "ready (reused, $(env_get mode)): $project"
     return 0
   fi
 
@@ -398,10 +413,8 @@ do_up() {
   write_override
   local web=""
   case "$PORTS" in canonical) web="$WEB_BASE_URL" ;; direct) web="$direct" ;; esac
-  local record=(project="$project" key="$KEY" worktree="$WORKTREE" composeFile="$COMPOSE_FILE" override="$OVERRIDE"
-    mode="$(want_mode)" ports="$PORTS" webBaseUrl="$web")
-  [ "$PORTS" = direct ] && record+=(directProbe="$probe")
-  write_env "${record[@]}"
+  write_env project="$project" key="$KEY" worktree="$WORKTREE" composeFile="$COMPOSE_FILE" override="$OVERRIDE" \
+    mode="$(want_mode)" ports="$PORTS" webBaseUrl="$web"
   mark_live "$project"
 
   local ok=0
@@ -417,8 +430,12 @@ do_up() {
   node "$SELF_DIR/env-build-files.mjs" seal --worktree "$WORKTREE" >&2 || true
   wait_ping "$project" || die "timed out waiting for the ping URL"
   if [ "$PORTS" = direct ]; then
-    log "probing the direct address from this machine: $(url_shown "$probe")"
-    wait_direct "$probe" || die "the engine did not make the stack reachable from this machine: $(url_shown "$probe") did not answer within ${READY_TIMEOUT}s (environment.directHost is $(cfg directHost); an engine that does not name containers that way needs another value)"
+    local shown; shown="$(url_shown "$direct")"
+    log "probing the direct address from this machine: $shown"
+    if ! wait_direct "$direct"; then
+      [ "$DIRECT_CODE" = 000 ] && die "the engine did not make the stack reachable from this machine: $shown did not answer within ${READY_TIMEOUT}s (environment.directHost is $(cfg directHost); an engine that does not name containers that way needs another value)"
+      die "the stack is reachable at its direct address but not serving: $shown still answered HTTP $DIRECT_CODE after ${READY_TIMEOUT}s"
+    fi
   fi
   if [ "$DEVICE" = 1 ]; then
     ( cd "$WORKTREE" && bash "$SELF_DIR/mobile-env.sh" up --worktree "$WORKTREE" ) || { rc=$?; [ "$rc" = 75 ] && refuse "Metro port busy"; die "mobile lane failed"; }
@@ -429,12 +446,19 @@ do_up() {
   log "ready: $project"
 }
 
+# do_down_quiet PROJECT: every caller runs it while env.json still records the stack being taken down (do_down and the
+# replace path remove the record after it; the EXIT trap of up runs after write_env), so the recorded mode says whether the
+# stack held the ports lock: only a canonical or device stack takes it. The same owner pid can hold the lock for a canonical
+# stack elsewhere, and a direct or isolated stack going down must not release that.
 do_down_quiet() {
   local project="$1"
   compose "$project" down -v --remove-orphans >/dev/null 2>&1 || \
     docker ps -aq --filter "label=com.docker.compose.project=$project" | xargs -r docker rm -f >/dev/null 2>&1
   forget_live "$project"
-  [ -d "$STATE_DIR/ports.lock" ] && [ "$(cat "$STATE_DIR/ports.lock/owner" 2>/dev/null)" = "${DF_OWNER_PID:-$PPID}" ] && rm -rf "$STATE_DIR/ports.lock"
+  case "$(env_get mode)" in
+    canonical|device)
+      [ -d "$STATE_DIR/ports.lock" ] && [ "$(cat "$STATE_DIR/ports.lock/owner" 2>/dev/null)" = "${DF_OWNER_PID:-$PPID}" ] && rm -rf "$STATE_DIR/ports.lock" ;;
+  esac
   return 0
 }
 

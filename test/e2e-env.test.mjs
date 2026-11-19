@@ -52,9 +52,11 @@ test('--ports accepts direct and the error names all three values', () => {
 	assert.doesNotMatch(ok.stderr, /--ports must be/);
 });
 
-test('the compose override strips host ports only for --ports none', () => {
+test('the compose override strips host ports for --ports none and --ports direct, and keeps them for canonical', () => {
+	const recorded = { none: '', canonical: 'https://login.app.local', direct: 'https://app.df-app-1.orb.local' };
 	for (const [ports, strips] of [
 		['none', true],
+		['direct', true],
 		['canonical', false],
 	]) {
 		const f = fixture({
@@ -66,7 +68,7 @@ test('the compose override strips host ports only for --ports none', () => {
 		assert.match(override, /dev-factory: "1"/);
 		const env = JSON.parse(fs.readFileSync(path.join(f.worktree, '.dev-factory/env.json'), 'utf8'));
 		assert.equal(env.ports, ports);
-		assert.equal(env.webBaseUrl, ports === 'canonical' ? 'https://login.app.local' : '');
+		assert.equal(env.webBaseUrl, recorded[ports], ports);
 	}
 });
 
@@ -455,7 +457,7 @@ esac
 		healthy(f);
 		record(f, have);
 		r = f.run('up', '--key', 'APP-1', '--ports', ports);
-		assert.match(r.stderr, /ready \(reused\)/, `${have} -> ${ports}: ${r.stderr}`);
+		assert.match(r.stderr, new RegExp(`ready \\(reused, ${have}\\): df-app-1`), `${have} -> ${ports}: ${r.stderr}`);
 		assert.doesNotMatch(f.log(), / up -d| build/);
 	}
 });
@@ -473,9 +475,10 @@ const DIRECT_CFG = {
 };
 
 // fixture() with a docker whose stack is healthy (so `up` gets through verify) and a fake curl for the probe from this machine:
-// it logs its arguments to curl.log and answers while the file curl-answer says yes (exit 22, curl's HTTP failure, otherwise).
-// `state` shares one state folder between fixtures.
-function directFixture(config = DIRECT_CFG, { answers = true, state } = {}) {
+// it logs its arguments to curl.log and prints the HTTP status held in the file curl-answer, as `-w '%{http_code}'` does; 000 is
+// no connection, which real curl also reports with a non-zero exit. `answers` is true (200), false (000) or a status.
+// `state` shares one state folder between fixtures; `env` adds variables to every run.
+function directFixture(config = DIRECT_CFG, { answers = true, state, env: more = {} } = {}) {
 	const f = fixture(config);
 	fs.writeFileSync(
 		path.join(f.base, 'bin/docker'),
@@ -495,12 +498,14 @@ esac
 		path.join(f.base, 'bin/curl'),
 		`#!/bin/bash
 echo "$@" >> "${f.base}/curl.log"
-[ "$(cat "${f.base}/curl-answer" 2>/dev/null)" = yes ] && exit 0
-exit 22
+code="$(cat "${f.base}/curl-answer" 2>/dev/null)"
+printf '%s' "\${code:-000}"
+[ "\${code:-000}" = 000 ] && exit 7
+exit 0
 `,
 		{ mode: 0o755 },
 	);
-	const answer = (yes) => fs.writeFileSync(path.join(f.base, 'curl-answer'), yes ? 'yes' : 'no');
+	const answer = (a) => fs.writeFileSync(path.join(f.base, 'curl-answer'), a === true ? '200' : a === false ? '000' : String(a));
 	answer(answers);
 	const stateDir = state ?? f.state;
 	const env = {
@@ -511,6 +516,7 @@ exit 22
 		DF_READY_TIMEOUT: '0',
 	};
 	delete env.DF_PING_URL;
+	Object.assign(env, more);
 	const run = (...args) => spawnSync('bash', [SCRIPT, ...args], { env, encoding: 'utf8', cwd: f.worktree });
 	const record = () => JSON.parse(fs.readFileSync(path.join(f.worktree, '.dev-factory/env.json'), 'utf8'));
 	const curlLog = () => (fs.existsSync(path.join(f.base, 'curl.log')) ? fs.readFileSync(path.join(f.base, 'curl.log'), 'utf8') : '');
@@ -548,6 +554,33 @@ test('--ports direct needs environment.webBaseUrl', () => {
 	assert.equal(none.record().mode, 'none');
 });
 
+test('--ports direct refuses a webBaseUrl that is not an http(s) address, before anything is written', () => {
+	for (const webBaseUrl of ['ftp://localhost:3000', 'localhost:3000/app']) {
+		const f = directFixture(withEnv({ webBaseUrl }));
+		const r = f.run('up', '--key', 'APP-1', '--ports', 'direct');
+		assert.equal(r.status, 1, `${webBaseUrl}: ${r.stderr}`);
+		assert.match(r.stderr, /environment\.webBaseUrl must be an http\(s\) address for --ports direct/, webBaseUrl);
+		assert.equal(fs.existsSync(path.join(f.worktree, '.dev-factory/compose.override.yml')), false, webBaseUrl);
+		assert.equal(fs.existsSync(path.join(f.worktree, '.dev-factory/env.json')), false, webBaseUrl);
+	}
+});
+
+test('--ports direct refuses a service name that does not make a host name, naming environment.service and environment.directHost', () => {
+	const f = directFixture(withEnv({ service: 'web_app' }));
+	const r = f.run('up', '--key', 'APP-1', '--ports', 'direct');
+	assert.equal(r.status, 1, r.stderr);
+	assert.match(r.stderr, /environment\.service \(web_app\)/);
+	assert.match(r.stderr, /environment\.directHost \(\{service\}\.\{project\}\.orb\.local\)/);
+	assert.match(r.stderr, /makes web_app\.df-app-1\.orb\.local, which is not a valid host name/);
+	assert.equal(fs.existsSync(path.join(f.worktree, '.dev-factory/compose.override.yml')), false);
+	assert.equal(fs.existsSync(path.join(f.worktree, '.dev-factory/env.json')), false);
+	// the web served by another service: its name goes in directHost, and the address is valid again
+	const g = directFixture(withEnv({ service: 'web_app', directHost: 'web.{project}.orb.local' }));
+	const ok = g.run('up', '--key', 'APP-1', '--ports', 'direct');
+	assert.equal(ok.status, 0, ok.stderr);
+	assert.equal(g.record().webBaseUrl, 'http://web.df-app-1.orb.local:3000');
+});
+
 test("a direct start records the stack's own address, strips the published ports, takes no lock and asks the host to probe it", () => {
 	const f = directFixture();
 	const r = f.run('up', '--key', 'APP-1', '--ports', 'direct');
@@ -556,25 +589,75 @@ test("a direct start records the stack's own address, strips the published ports
 	assert.equal(rec.mode, 'direct');
 	assert.equal(rec.ports, 'direct');
 	assert.equal(rec.webBaseUrl, 'http://app.df-app-1.orb.local:3000');
-	assert.equal(rec.directProbe, 'http://app.df-app-1.orb.local:3000/api/health?token=SECRET');
+	assert.equal('directProbe' in rec, false, 'the address is the only thing recorded');
 	const override = fs.readFileSync(path.join(f.worktree, '.dev-factory/compose.override.yml'), 'utf8');
 	assert.ok(override.includes('ports: !reset []'), override);
-	assert.match(f.curlLog(), /app\.df-app-1\.orb\.local:3000\/api\/health/);
+	assert.match(f.curlLog(), /-w %\{http_code\} http:\/\/app\.df-app-1\.orb\.local:3000(\s|$)/, 'the host probes the web address itself');
 	assert.equal(f.locked(), false, 'no ports.lock');
 	assert.doesNotMatch(f.log(), /config --format json/, 'no busy-ports check');
-	assert.doesNotMatch(r.stdout + r.stderr, /SECRET/, 'the probe is named without its query');
+});
+
+test('the host probe never uses the pingUrl: neither its query nor DF_PING_URL reaches the output, env.json or the probe', () => {
+	const f = directFixture(DIRECT_CFG, { env: { DF_PING_URL: 'http://localhost:3000/health?token=ENVSECRET' } });
+	const r = f.run('up', '--key', 'APP-1', '--ports', 'direct');
+	assert.equal(r.status, 0, r.stderr);
+	const text = fs.readFileSync(path.join(f.worktree, '.dev-factory/env.json'), 'utf8');
+	assert.doesNotMatch(text, /SECRET|health/, text);
+	assert.doesNotMatch(r.stdout + r.stderr, /SECRET/);
+	assert.doesNotMatch(f.curlLog(), /SECRET|health/, 'the probe from this machine is the web address, not the ping URL');
+	assert.match(f.log(), /curl -ksf -o \/dev\/null http:\/\/localhost:3000\/health\?token=ENVSECRET/, 'the ping inside the service still runs');
+});
+
+test('the host probe counts any answer below 500 as reachable', () => {
+	for (const code of ['200', '302', '401', '404']) {
+		const f = directFixture(DIRECT_CFG, { answers: code });
+		const r = f.run('up', '--key', 'APP-1', '--ports', 'direct');
+		assert.equal(r.status, 0, `${code}: ${r.stderr}`);
+	}
 });
 
 test('a direct address that does not answer ends up with exit 1 and no lock, naming the engine problem', () => {
-	const f = directFixture(DIRECT_CFG, { answers: false });
+	const f = directFixture(DIRECT_CFG, { answers: '000' });
 	const r = f.run('up', '--key', 'APP-1', '--ports', 'direct');
 	assert.equal(r.status, 1, r.stderr);
-	assert.match(r.stderr, /did not make the stack reachable/);
-	assert.match(r.stderr, /http:\/\/app\.df-app-1\.orb\.local:3000\/api\/health did not answer within 0s/);
+	assert.match(
+		r.stderr,
+		/the engine did not make the stack reachable from this machine: http:\/\/app\.df-app-1\.orb\.local:3000 did not answer within 0s/,
+	);
 	assert.match(r.stderr, /environment\.directHost is \{service\}\.\{project\}\.orb\.local/);
 	assert.doesNotMatch(r.stdout + r.stderr, /SECRET/);
 	assert.equal(f.locked(), false, 'no ports.lock');
 	assert.match(f.log(), /down -v/, 'the stack is taken down');
+});
+
+test('a direct address that answers 5xx is reachable but not ready: exit 1, and the message says which', () => {
+	for (const code of ['500', '503']) {
+		const f = directFixture(DIRECT_CFG, { answers: code });
+		const r = f.run('up', '--key', 'APP-1', '--ports', 'direct');
+		assert.equal(r.status, 1, `${code}: ${r.stderr}`);
+		assert.match(r.stderr, new RegExp(`http://app\\.df-app-1\\.orb\\.local:3000 still answered HTTP ${code} after 0s`), code);
+		assert.doesNotMatch(r.stderr, /did not make the stack reachable/, code);
+		assert.match(f.log(), /down -v/, code);
+	}
+});
+
+test('a direct start that fails leaves alone a canonical ports lock the same owner holds', () => {
+	const f = directFixture(DIRECT_CFG, { answers: '000' });
+	fs.mkdirSync(path.join(f.state, 'ports.lock'));
+	fs.writeFileSync(path.join(f.state, 'ports.lock/owner'), `${process.pid}\n`);
+	const r = f.run('up', '--key', 'APP-1', '--ports', 'direct');
+	assert.equal(r.status, 1, r.stderr);
+	assert.match(f.log(), /down -v/);
+	assert.equal(f.locked(), true, 'the lock of the canonical stack survives');
+	// a direct stack's own down leaves it too
+	fs.writeFileSync(path.join(f.worktree, '.dev-factory/env.json'), JSON.stringify({ project: 'df-app-1', mode: 'direct' }));
+	assert.equal(f.run('down').status, 0);
+	assert.equal(f.locked(), true, 'a direct down does not release it');
+	// the canonical stack's own down releases it
+	fs.writeFileSync(path.join(f.worktree, '.dev-factory/env.json'), JSON.stringify({ project: 'df-app-1', mode: 'canonical' }));
+	const down = f.run('down');
+	assert.equal(down.status, 0, down.stderr);
+	assert.equal(f.locked(), false, 'a canonical down releases its lock');
 });
 
 test('environment.directHost changes the address', () => {
@@ -582,7 +665,7 @@ test('environment.directHost changes the address', () => {
 	const r = f.run('up', '--key', 'APP-1', '--ports', 'direct');
 	assert.equal(r.status, 0, r.stderr);
 	assert.equal(f.record().webBaseUrl, 'http://df-app-1.stack.test:3000');
-	assert.equal(f.record().directProbe, 'http://df-app-1.stack.test:3000/api/health?token=SECRET');
+	assert.match(f.curlLog(), /http:\/\/df-app-1\.stack\.test:3000/);
 });
 
 test('a url with no port keeps none', () => {
@@ -590,17 +673,26 @@ test('a url with no port keeps none', () => {
 	const r = f.run('up', '--key', 'APP-1', '--ports', 'direct');
 	assert.equal(r.status, 0, r.stderr);
 	assert.equal(f.record().webBaseUrl, 'https://app.df-app-1.orb.local');
-	assert.equal(f.record().directProbe, 'https://app.df-app-1.orb.local/api/health?token=SECRET');
-	assert.match(f.curlLog(), /https:\/\/app\.df-app-1\.orb\.local\/api\/health/);
+	assert.match(f.curlLog(), /https:\/\/app\.df-app-1\.orb\.local(\s|$)/);
 });
 
-test('with no pingUrl the probe is the direct web address', () => {
+test('with no pingUrl the probe is still the direct web address', () => {
 	const f = directFixture(withEnv({ pingUrl: '' }));
 	const r = f.run('up', '--key', 'APP-1', '--ports', 'direct');
 	assert.equal(r.status, 0, r.stderr);
-	assert.equal(f.record().directProbe, 'http://app.df-app-1.orb.local:3000');
 	assert.equal(f.record().webBaseUrl, 'http://app.df-app-1.orb.local:3000');
 	assert.match(f.curlLog(), /http:\/\/app\.df-app-1\.orb\.local:3000/);
+});
+
+test('direct stacks still count against the cap: with DF_MAX_STACKS=1 a second direct up for another key is refused', () => {
+	const one = directFixture(DIRECT_CFG, { env: { DF_MAX_STACKS: '1' } });
+	const two = directFixture(DIRECT_CFG, { state: one.state, env: { DF_MAX_STACKS: '1' } });
+	const a = one.run('up', '--key', 'APP-1', '--ports', 'direct');
+	assert.equal(a.status, 0, a.stderr);
+	const b = two.run('up', '--key', 'APP-2', '--ports', 'direct');
+	assert.equal(b.status, 75, b.stderr);
+	assert.match(b.stderr, /already live \(cap 1\)/);
+	assert.doesNotMatch(two.log(), / up -d| build/, 'nothing was started');
 });
 
 test('two direct environments for different keys coexist with no lock', () => {
@@ -621,11 +713,36 @@ test('verify of a direct stack fails when the address stops answering', () => {
 	assert.equal(f.run('up', '--key', 'APP-1', '--ports', 'direct').status, 0);
 	const ok = f.run('verify');
 	assert.equal(ok.status, 0, ok.stderr);
+	f.answer('404');
+	assert.equal(f.run('verify').status, 0, 'a 404 is reachable');
 	f.answer(false);
 	const bad = f.run('verify');
 	assert.equal(bad.status, 1, bad.stderr);
-	assert.match(bad.stderr, /direct address does not answer: http:\/\/app\.df-app-1\.orb\.local:3000\/api\/health/);
+	assert.match(bad.stderr, /direct address does not answer: http:\/\/app\.df-app-1\.orb\.local:3000/);
 	assert.doesNotMatch(bad.stderr, /SECRET/);
+	f.answer('503');
+	const sick = f.run('verify');
+	assert.equal(sick.status, 1, sick.stderr);
+	assert.match(sick.stderr, /direct address answered HTTP 503: http:\/\/app\.df-app-1\.orb\.local:3000/);
+});
+
+test('verify of a direct stack works out the address from the settings and never probes one read back from env.json', () => {
+	const f = directFixture();
+	assert.equal(f.run('up', '--key', 'APP-1', '--ports', 'direct').status, 0);
+	const file = path.join(f.worktree, '.dev-factory/env.json');
+	const rec = JSON.parse(fs.readFileSync(file, 'utf8'));
+	fs.writeFileSync(file, JSON.stringify({ ...rec, webBaseUrl: 'http://elsewhere.test:9/', directProbe: 'http://elsewhere.test:9/x' }));
+	fs.writeFileSync(path.join(f.base, 'curl.log'), '');
+	const v = f.run('verify');
+	assert.equal(v.status, 0, v.stderr);
+	assert.doesNotMatch(f.curlLog(), /elsewhere/);
+	assert.match(f.curlLog(), /http:\/\/app\.df-app-1\.orb\.local:3000/);
+	// a recorded project that this script cannot have made is not turned into an address
+	fs.writeFileSync(file, JSON.stringify({ ...rec, project: 'df-app;x' }));
+	fs.writeFileSync(path.join(f.base, 'curl.log'), '');
+	const bad = f.run('verify');
+	assert.equal(bad.status, 1, bad.stderr);
+	assert.equal(f.curlLog(), '', 'nothing was probed');
 });
 
 test('reuse order: isolated < direct < canonical < device', () => {
@@ -637,9 +754,7 @@ test('reuse order: isolated < direct < canonical < device', () => {
 				key: 'APP-1',
 				worktree: f.worktree,
 				mode,
-				...(mode === 'direct'
-					? { webBaseUrl: 'http://app.df-app-1.orb.local:3000', directProbe: 'http://app.df-app-1.orb.local:3000/api/health' }
-					: {}),
+				...(mode === 'direct' ? { webBaseUrl: 'http://app.df-app-1.orb.local:3000' } : {}),
 			}),
 		);
 	// replaced: isolated -> direct, direct -> canonical, direct -> device
@@ -660,7 +775,7 @@ test('reuse order: isolated < direct < canonical < device', () => {
 		const f = directFixture();
 		record(f, 'direct');
 		const r = f.run('up', '--key', 'APP-1', '--ports', ports);
-		assert.match(r.stderr, /ready \(reused\)/, `direct -> ${ports}: ${r.stderr}`);
+		assert.match(r.stderr, /ready \(reused, direct\): df-app-1/, `direct -> ${ports}: ${r.stderr}`);
 		assert.doesNotMatch(f.log(), / up -d| build/);
 		assert.equal(f.locked(), false, `direct -> ${ports}: no ports.lock`);
 	}
