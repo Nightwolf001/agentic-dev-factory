@@ -103,7 +103,8 @@ write_override() {
   local services owner wt
   services="$(docker compose -f "$COMPOSE_FILE" config --services)" || die "compose file does not render"
   owner="${DF_OWNER_PID:-$PPID}"
-  wt="$(printf '%s' "$WORKTREE" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')" # inside a YAML double-quoted string: \ and " are escaped
+  # compose interpolates every value of every -f file, so a literal $ is written $$; then, inside a YAML double-quoted string, \ and " are escaped
+  wt="$(printf '%s' "$WORKTREE" | sed -e 's/\$/$$/g' -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
   {
     echo "services:"
     for s in $services; do
@@ -403,7 +404,10 @@ fresh_stray() { fresh_worktree "$(sed -n 2p "$STATE_DIR/live/$1" 2>/dev/null)"; 
 
 # A stack that names its owner on its own containers is in use when that owner's pid is alive, or when its worktree is still
 # being worked on. This holds from any state folder, which the live/ file does not. No labels (a stack started before they
-# existed) or a docker that does not answer: not in use by this rule, so the live-file rule alone decides.
+# existed) or a docker that does not answer: not in use by this rule, so the live-file rule alone decides. Limits: the owner label
+# is written when the stack is created and is not updated when a resumed ticket reuses it, so after a resume the worktree check
+# is what protects it from a sweep in another state folder (the live file still protects it in its own); and kill -0 treats a pid
+# of another user as dead, while a reused pid keeps a dead stack until that pid exits, the same convention live_projects uses.
 labelled_in_use() {
   local first owner wt
   first="$(docker ps -a --filter "label=com.docker.compose.project=$1" --format '{{.Label "dev-factory.owner"}}|{{.Label "dev-factory.worktree"}}' 2>/dev/null | sed -n 1p)"

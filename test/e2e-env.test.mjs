@@ -116,6 +116,30 @@ test('a worktree path with a quote or a backslash stays valid YAML in the overri
 	assert.ok(override.includes(String.raw`dev-factory.worktree: "${fs.realpathSync(odd).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`), override);
 });
 
+test('a dollar sign in the worktree path is doubled in the override label, as compose interpolates every value', () => {
+	for (const name of ['a$NAME', 'a${NAME}b', 'a$-b', 'trail$', 'mix$"q\\b$X']) {
+		const f = fixture({ environment: { type: 'compose', composeFile: '.devcontainer/docker-compose.yml', service: 'app' } });
+		const odd = path.join(f.base, name);
+		fs.mkdirSync(path.join(odd, '.devcontainer'), { recursive: true });
+		fs.writeFileSync(path.join(odd, '.devcontainer/docker-compose.yml'), 'services: {}\n');
+		fs.writeFileSync(path.join(odd, 'dev-factory.config.json'), fs.readFileSync(path.join(f.worktree, 'dev-factory.config.json')));
+		spawnSync('bash', [SCRIPT, 'up', '--worktree', odd, '--key', 'APP-1'], {
+			env: {
+				...process.env,
+				PATH: `${path.join(f.base, 'bin')}:${process.env.PATH}`,
+				DF_STATE_DIR: f.state,
+				DF_OWNER_PID: String(process.pid),
+			},
+			encoding: 'utf8',
+			cwd: f.worktree,
+		});
+		const override = fs.readFileSync(path.join(odd, '.dev-factory/compose.override.yml'), 'utf8');
+		const want = fs.realpathSync(odd).replace(/\$/g, '$$$$').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+		assert.ok(override.includes(`dev-factory.worktree: "${want}"`), `${name}: ${override}`);
+		assert.equal((override.match(/\$/g) ?? []).length, (name.match(/\$/g) ?? []).length * 2, name);
+	}
+});
+
 test('a sweep from another state folder keeps a stack whose labelled owner is alive', () => {
 	const f = fixture({}, { labels: `${process.pid}|/nonexistent\n` }); // no live/ file here: this sweep does not know the owner
 	const r = f.run('sweep');
