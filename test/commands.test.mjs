@@ -206,3 +206,38 @@ test('a block the stop gate wrote and a spent QA fix budget are factory blocks, 
 		assert.match(section6, new RegExp(`${kind}[^\\n]*--kind factory|--kind factory[^\\n]*${kind}`), `${kind} is a factory block`);
 	}
 });
+
+// The stop gate judges an agent by the role run.json names, and lets go an agent of any other role: a dispatch that leaves the
+// previous role in place would leave the agent with no finish line at all. So each dispatch writes the role of the agent it sends.
+test('the ship-phase dispatch of an interactive build or quick change writes role builder with until ship', () => {
+	assert.match(read('build.md'), /5c\. Write `role` `builder`, `until` `ship`, dispatch the builder for the ship phase/);
+	assert.match(read('quick.md'), /5\. Write `role` `builder`, `until` `ship` and dispatch the builder for the ship phase/);
+});
+
+test('the interactive build sets role debugger before it dispatches the debugger to unstick the builder', () => {
+	assert.match(
+		read('build.md'),
+		/`needs_debug\.json`, set `role` `debugger` and `debugBefore` in run\.json, dispatch the debugger with trigger `unstick`/,
+	);
+});
+
+test('the interactive unstick sets role back to builder and clears the stale needs_debug.json and build.done before it re-dispatches the builder', () => {
+	assert.match(
+		read('build.md'),
+		/dispatch the debugger with trigger `unstick`, wait for a recorded round in `\.dev-factory\/debug\/` or `blocked\.json`, then delete `needs_debug\.json` and `build\.done`, set `role` back to `builder` and re-dispatch the builder/,
+	);
+});
+
+test('the promoter fix round sets role promoter and clears the stale promote.done before it re-dispatches the promoter', () => {
+	assert.match(
+		read('improve.md'),
+		/before each re-dispatch of the promoter, rewrite `role` `promoter` in run\.json[^\n]*? and delete `promote\.done`/,
+	);
+});
+
+test('the improve fix round sets role improver and clears the stale improve.done before it re-dispatches the improver', () => {
+	assert.match(
+		read('improve.md'),
+		/before each re-dispatch of the improver, rewrite `role` `improver` in run\.json[^\n]*? and delete `improve\.done`/,
+	);
+});

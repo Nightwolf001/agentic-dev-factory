@@ -7,7 +7,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { done, record, start } from '../bin/qa.mjs';
-import { decide, mayRecordBlock } from '../scripts/stop-gate-lib.mjs';
+import { agentRoleOf, decide, mayRecordBlock, ownsRun } from '../scripts/stop-gate-lib.mjs';
 
 // Every git call here, in this process and in the hook it spawns, sees no global or system git configuration and one fixed
 // identity, so a person's own git settings (hooks, signing, an excludes file) cannot change a result.
@@ -64,6 +64,13 @@ function passingQa(root) {
 const gate = (root, env = {}, script = GATE) =>
 	spawnSync(process.execPath, [script], {
 		input: JSON.stringify({ cwd: root }),
+		encoding: 'utf8',
+		env: { ...process.env, DF_ACTIVE: '1', DF_STATE_DIR: `${root}-state`, ...env },
+	});
+// The same hook as a dispatched agent of a given type sends it.
+const gateAs = (root, agentType, env = {}) =>
+	spawnSync(process.execPath, [GATE], {
+		input: JSON.stringify({ cwd: root, agent_type: agentType }),
 		encoding: 'utf8',
 		env: { ...process.env, DF_ACTIVE: '1', DF_STATE_DIR: `${root}-state`, ...env },
 	});
@@ -261,4 +268,74 @@ test('a qa.mjs that fails to load leaves every other role alone and refuses a bu
 	assert.equal(b.status, 2, b.stderr);
 	assert.match(b.stderr, /build\.done could not be checked: .*qa\.mjs failed to load/);
 	assert.equal(exists(built, 'build.done'), false);
+});
+
+// ---- an agent that no longer owns the run ----
+
+test('agentRoleOf names the role of a factory agent type and nothing else', () => {
+	assert.equal(agentRoleOf('dev-factory:factory-builder'), 'builder');
+	assert.equal(agentRoleOf('factory-debugger'), 'debugger');
+	assert.equal(agentRoleOf('dev-factory:factory-reviewer'), 'reviewer');
+	assert.equal(agentRoleOf('general-purpose'), null);
+	assert.equal(agentRoleOf(undefined), null);
+	assert.equal(agentRoleOf(null), null);
+	assert.equal(agentRoleOf('myfactory-builder'), null);
+	assert.equal(agentRoleOf('dev-factory:factory-builderx'), null);
+});
+
+test('ownsRun: an agent of another factory role does not own the run, any other stop is gated as before', () => {
+	assert.equal(ownsRun('dev-factory:factory-debugger', { role: 'debugger' }), true);
+	assert.equal(ownsRun('dev-factory:factory-builder', { role: 'debugger' }), false);
+	assert.equal(ownsRun(undefined, { role: 'debugger' }), true, 'no agent type: gated as before');
+	assert.equal(ownsRun(null, { role: 'reviewer' }), true);
+	assert.equal(ownsRun('general-purpose', { role: 'debugger' }), true, 'a type that is no factory agent is gated as before');
+	assert.equal(ownsRun('dev-factory:factory-builder', {}), true, 'a run with no role is a builder run');
+	assert.equal(ownsRun('dev-factory:factory-debugger', {}), false);
+});
+
+const debuggerRun = { role: 'debugger', key: 'APP-1', debugBefore: 0 };
+
+test('a builder whose hand-off was taken and whose run moved on to the debugger is let go, charged nothing and given no block', () => {
+	for (const env of [{}, { DF_STOP_GATE_MAX: '0' }]) {
+		const root = worktree(debuggerRun);
+		const r = gateAs(root, 'dev-factory:factory-builder', env);
+		assert.equal(r.status, 0, r.stderr);
+		assert.equal(exists(root, 'stop-nudges'), false, 'the foreign stop is not counted against the run');
+		assert.equal(exists(root, 'blocked.json'), false, `no block is written for a run that is not this agent's (${JSON.stringify(env)})`);
+	}
+});
+
+test('the debugger that owns the run is still held to its finish line, and a non-factory agent is gated as before', () => {
+	for (const type of ['dev-factory:factory-debugger', 'general-purpose']) {
+		const root = worktree(debuggerRun);
+		const r = gateAs(root, type);
+		assert.equal(r.status, 2, `${type}: ${r.stderr}`);
+		assert.match(r.stderr, /not finished/);
+		assert.equal(exists(root, 'stop-nudges'), true);
+	}
+});
+
+test('giving up is unchanged for the agent that owns the run: it still gets the block that names what was unmet', () => {
+	const root = worktree(debuggerRun);
+	const r = gateAs(root, 'dev-factory:factory-debugger', { DF_STOP_GATE_MAX: '0' });
+	assert.equal(r.status, 0, r.stderr);
+	assert.match(JSON.parse(fs.readFileSync(marker(root, 'blocked.json'), 'utf8')).reason, /stop gate.*no debug round recorded/);
+});
+
+test('a builder that owns the run keeps its refused build.done set aside, and another role stopping there leaves the file alone', () => {
+	const owner = worktree();
+	fs.writeFileSync(marker(owner, 'build.done'), g(owner, 'rev-parse', 'HEAD'));
+	const r = gateAs(owner, 'dev-factory:factory-builder');
+	assert.equal(r.status, 2, r.stderr);
+	assert.match(r.stderr, /build\.done is not accepted/);
+	assert.equal(exists(owner, 'build.done'), false);
+	assert.equal(exists(owner, 'build.refused'), true);
+
+	const other = worktree();
+	fs.writeFileSync(marker(other, 'build.done'), g(other, 'rev-parse', 'HEAD'));
+	const o = gateAs(other, 'dev-factory:factory-reviewer');
+	assert.equal(o.status, 0, o.stderr);
+	assert.equal(exists(other, 'build.done'), true, "a hand-off that is not this agent's to refuse stays where it is");
+	assert.equal(exists(other, 'build.refused'), false);
+	assert.equal(exists(other, 'stop-nudges'), false);
 });

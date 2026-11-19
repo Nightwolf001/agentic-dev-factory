@@ -799,3 +799,63 @@ test('autoMerge accepts every method, and any bounded bucket of a custom pr.size
 	c.autoMerge.maxSize = 'big';
 	assert.ok(validate(c).some((p) => /needs a line bound/.test(p)));
 });
+
+const NOT_OBJECTS = { null: 'null', array: '[]', number: '3', string: '"text"' };
+
+function layerFixture() {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'df-layer-'));
+	const state = path.join(dir, 'state');
+	fs.mkdirSync(state);
+	return { dir, state, userFile: path.join(state, 'config.json'), projectFile: path.join(dir, 'project.json') };
+}
+
+test('a settings layer that is not a JSON object is refused and names the file', () => {
+	for (const [what, text] of Object.entries(NOT_OBJECTS)) {
+		const { dir, state, userFile, projectFile } = layerFixture();
+		fs.writeFileSync(userFile, text);
+		assert.throws(
+			() => layers({ from: dir, env: { DF_STATE_DIR: state } }),
+			(e) => e.message.includes(userFile) && e.message.includes('a settings file must be a JSON object'),
+			`user layer: ${what}`,
+		);
+		fs.rmSync(userFile);
+		fs.writeFileSync(projectFile, text);
+		assert.throws(
+			() => layers({ from: dir, env: { DF_STATE_DIR: state, DF_CONFIG: projectFile } }),
+			(e) => e.message.includes(projectFile) && e.message.includes('a settings file must be a JSON object'),
+			`project layer: ${what}`,
+		);
+	}
+});
+
+test('an empty object layer still loads', () => {
+	const { dir, state, userFile, projectFile } = layerFixture();
+	fs.writeFileSync(userFile, '{}');
+	fs.writeFileSync(projectFile, '{}');
+	const ls = layers({ from: dir, env: { DF_STATE_DIR: state, DF_CONFIG: projectFile } });
+	assert.deepEqual(ls[1].data, {});
+	assert.deepEqual(ls[2].data, {});
+	assert.equal(ls[0].data.tasks.source, 'local', 'the defaults beneath are intact');
+});
+
+test('a settings layer with a JSON syntax error still reports the parse error under its file', () => {
+	const { dir, state, userFile } = layerFixture();
+	fs.writeFileSync(userFile, '{ nope');
+	assert.throws(
+		() => layers({ from: dir, env: { DF_STATE_DIR: state } }),
+		(e) => e.message.startsWith(`${userFile}: `) && !/must be a JSON object/.test(e.message),
+	);
+});
+
+test('setIn refuses to write into a settings file that is not a JSON object and leaves it untouched', () => {
+	for (const [what, text] of Object.entries(NOT_OBJECTS)) {
+		const { dir, state, userFile } = layerFixture();
+		fs.writeFileSync(userFile, text);
+		assert.throws(
+			() => setIn('user', 'caps.maxFixRounds', 2, { from: dir, env: { DF_STATE_DIR: state } }),
+			(e) => e.message.includes(userFile) && e.message.includes('a settings file must be a JSON object'),
+			what,
+		);
+		assert.equal(fs.readFileSync(userFile, 'utf8'), text, `${what}: bytes unchanged`);
+	}
+});
