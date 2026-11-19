@@ -86,6 +86,34 @@ export function composeAdf({ kind, text, detail = '', people = [] }) {
 	return { version: 1, type: 'doc', content };
 }
 
+const escapeHtml = (t) =>
+	String(t ?? '')
+		.replace(/&/g, '&amp;')
+		.replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;')
+		.replace(/"/g, '&quot;');
+
+// The same comment as HTML, for an MCP server whose comment tool takes HTML. A wiki token such as [~accountid:abc] or ADF JSON can
+// arrive as literal text there; a mention element always notifies. The text and the marker line go through paragraph() and
+// markerLine() as in compose, so they are defanged and limited, then escaped: the marker line stays plain text and last.
+// people: [{ id, name }]
+export function composeHtml({ kind, text, detail = '', people = [] }) {
+	const body = paragraph(text);
+	if (!body) throw new Error('a comment needs some text');
+	const seen = new Set();
+	const mentions = [];
+	for (const p of people) {
+		if (!p?.id || seen.has(p.id)) continue;
+		seen.add(p.id);
+		mentions.push(`<span data-type="mention" data-user-id="${escapeHtml(p.id)}">@${escapeHtml(p.name ?? p.id)}</span>`);
+	}
+	const parts = [];
+	if (mentions.length) parts.push(`<p>${mentions.join(' ')}</p>`);
+	parts.push(`<p>${escapeHtml(body)}</p>`);
+	parts.push(`<p>${escapeHtml(markerLine(kind, detail))}</p>`);
+	return parts.join('');
+}
+
 // ---- reading comments back ----
 
 // The factory's marker on a comment: the last line that starts with it. -> { name, rest, key } or null.
