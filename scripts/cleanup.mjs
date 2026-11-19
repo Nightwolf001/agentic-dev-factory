@@ -202,6 +202,8 @@ export async function cleanup({
 	ports: extraPorts = [],
 	dryRun = false,
 	cfg = load(),
+	// Every command cleanup starts takes its environment from this one (with DF_STATE_DIR set to `state`), so a partial `env`
+	// would drop PATH and HOME for all of them; pass a full copy of process.env with changes (no caller passes one today).
 	env = process.env,
 	run = defaultRun,
 	stop = stopProcess,
