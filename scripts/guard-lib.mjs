@@ -325,7 +325,7 @@ const ghPositionals = (args) => {
 	return out;
 };
 
-// `gh api` is a POST as soon as it carries a body field or input, with no -X at all.
+// `gh api` is a POST as soon as it carries a body field or input, with no -X at all; -X may carry its method attached.
 function ghApiWrites(args) {
 	for (let i = 0; i < args.length; i++) {
 		const a = args[i];
@@ -333,6 +333,9 @@ function ghApiWrites(args) {
 			const value = a.includes('=') ? a.split('=')[1] : args[i + 1];
 			if (!/^GET$/i.test(value ?? '')) return true;
 		}
+		// the method may be attached to the flag: -XPOST, -XDELETE
+		const attached = /^-X(?!=)(.+)$/.exec(a);
+		if (attached && !/^GET$/i.test(attached[1])) return true;
 		if (/^-[fF]/.test(a) || /^--(field|raw-field|input)(=|$)/.test(a)) return true;
 	}
 	return false;
