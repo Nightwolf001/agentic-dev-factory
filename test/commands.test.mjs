@@ -221,6 +221,20 @@ test('the interactive build sets role debugger before it dispatches the debugger
 	);
 });
 
+test('the interactive unstick sets role back to builder and clears the stale needs_debug.json and build.done before it re-dispatches the builder', () => {
+	assert.match(
+		read('build.md'),
+		/dispatch the debugger with trigger `unstick`, wait for a recorded round in `\.dev-factory\/debug\/` or `blocked\.json`, then delete `needs_debug\.json` and `build\.done`, set `role` back to `builder` and re-dispatch the builder/,
+	);
+});
+
+test('the promoter fix round sets role promoter and clears the stale promote.done before it re-dispatches the promoter', () => {
+	assert.match(
+		read('improve.md'),
+		/before each re-dispatch of the promoter, rewrite `role` `promoter` in run\.json[^\n]*? and delete `promote\.done`/,
+	);
+});
+
 test('the improve fix round sets role improver and clears the stale improve.done before it re-dispatches the improver', () => {
 	assert.match(
 		read('improve.md'),

@@ -495,3 +495,56 @@ test('words that merely contain an engine name are arguments, not the command', 
 	])
 		allowed(c);
 });
+
+// OrbStack's machines are reached through ssh as well: `ssh orb`, `ssh <machine>@orb`, `<name>.orb.local`.
+test('ssh, scp, sftp and rsync to an OrbStack machine name are refused, one assertion per spelling', () => {
+	for (const c of [
+		"ssh orb 'rm -rf x'",
+		'ssh dev@orb orbctl stop',
+		'ssh -p 22 dev@orb ls',
+		'ssh -i ~/.ssh/k orb ls',
+		'scp file orb:/tmp/x',
+		'scp dev@orb:/tmp/x .',
+		'sftp orb',
+		'rsync -a src/ orb:/tmp/x',
+		'ssh web.orb.local ls',
+		'ssh dev@web.orb.local',
+		'scp file dev@web.orb.local:/tmp/x',
+		'env ssh orb ls',
+		'(ssh orb ls)',
+		'"ssh" orb ls',
+		'/usr/bin/ssh orb ls',
+		'sudo ssh orb ls',
+		'ls && ssh orb ls',
+	])
+		denied(c);
+	assert.match(run('ssh orb ls').reason, /the container engine is not controlled from a run \(ssh\)/);
+	assert.match(run('rsync -a src/ orb:/tmp/x').reason, /\(rsync\)/);
+	for (const c of ['ssh orb ls', 'scp dev@orb:/tmp/x .', 'ssh dev@web.orb.local'])
+		assert.equal(evaluate(c, {}).deny, true, `should be refused with no role: ${c}`);
+});
+
+test('everyday ssh, scp and rsync keep working', () => {
+	for (const c of [
+		'ssh github.com',
+		'ssh -T git@github.com',
+		"ssh host 'echo orb'",
+		'scp a.txt host:/tmp/',
+		'rsync -a a/ host:/tmp/b',
+		'grep -r orb docs',
+		'echo ssh orb',
+	])
+		allowed(c);
+});
+
+test('docker desktop is found past the global options and their values, and a value named desktop is not the subcommand', () => {
+	for (const c of [
+		'docker --context default desktop stop',
+		'docker -H unix:///x desktop stop',
+		'docker -l debug desktop stop',
+		'docker --config /tmp/c desktop status',
+		'docker --context=x desktop stop',
+	])
+		denied(c);
+	for (const c of ['docker --context desktop ps', 'docker -H unix:///x ps', 'docker --context default compose ps']) allowed(c);
+});

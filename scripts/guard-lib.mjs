@@ -512,12 +512,30 @@ const PROTECTED_NAMES =
 const DOCKER_STOPS = new Set(['stop', 'kill', 'rm', 'restart', 'pause', 'rmi']);
 
 // The container engine is the machine's, for every role: stopping or deleting it takes down every df-* stack, a live pass's
-// included, and its Linux machines (orb run, orb -m, limactl shell) see the person's files, so they would get round the path rules.
+// included, and its Linux machines see the person's files, so a command run there would get round the path rules. Closed here:
+// the engine's own commands (orb, orbctl, colima, limactl, docker desktop) and ssh, scp, sftp and rsync to OrbStack's machine
+// names (orb, <machine>@orb, <name>.orb.local). Any argument is looked at, an option's value included, so it fails closed.
 const ENGINE_CONTROLS = new Set(['orb', 'orbctl', 'colima', 'limactl']);
+const REMOTE_COPIERS = new Set(['ssh', 'scp', 'sftp', 'rsync']);
+const ORB_HOST = /^orb(:|$)|@orb(:|$)|(^|\.)orb\.local(:|$)/;
+// docker's global options that take a value (the other forms, --opt=value and the booleans --tls, --tlsverify, -D, are one token).
+const DOCKER_VALUE_OPTS = new Set(['--context', '-c', '-H', '--host', '-l', '--log-level', '--config', '--tlscacert', '--tlscert', '--tlskey']);
+
+// -> the first docker word that is not a global option or its value
+function dockerSub(args) {
+	for (let i = 0; i < args.length; i++) {
+		if (!args[i].startsWith('-')) return args[i];
+		if (DOCKER_VALUE_OPTS.has(args[i])) i++;
+	}
+	return undefined;
+}
 
 function denyEngineControl(cmd, args) {
-	const engine = ENGINE_CONTROLS.has(cmd) || (cmd === 'docker' && args.find((a) => !a.startsWith('-')) === 'desktop');
-	return engine ? `the container engine is not controlled from a run (${cmd === 'docker' ? 'docker desktop' : cmd})` : null;
+	let named = null;
+	if (ENGINE_CONTROLS.has(cmd)) named = cmd;
+	else if (cmd === 'docker' && dockerSub(args) === 'desktop') named = 'docker desktop';
+	else if (REMOTE_COPIERS.has(cmd) && args.some((a) => ORB_HOST.test(a))) named = cmd;
+	return named ? `the container engine is not controlled from a run (${named})` : null;
 }
 
 function denyProcessControl(seg, cmd, args, ctx) {
