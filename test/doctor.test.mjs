@@ -145,3 +145,52 @@ test('doctor shows the notes config validate prints', () => {
 	fs.writeFileSync(path.join(m.repo, 'dev-factory.config.json'), '{}\n');
 	assert.match(m.run().stdout, /warn {2}.*dev-factory\.config\.json is the old location/);
 });
+
+// ---- the container engine ----
+
+// environment.type must be compose, or the doctor skips every docker check and a test of them would pass for nothing.
+function withCompose(m) {
+	fs.mkdirSync(path.join(m.repo, '.devfactory'), { recursive: true });
+	fs.writeFileSync(path.join(m.repo, '.devfactory', 'config.json'), JSON.stringify({ environment: { type: 'compose' } }));
+}
+
+// A docker whose daemon answers `info`, whose `compose version` is current and whose `context show` runs `contextShow`.
+function fakeDocker(m, contextShow) {
+	const body = [
+		'case "$1 $2" in',
+		'"info "*) exit 0 ;;',
+		`"context show") ${contextShow} ;;`,
+		'"compose version") [ "$3" = "--short" ] && echo v2.30.0 || echo "Docker Compose version v2.30.0"; exit 0 ;;',
+		'esac',
+		'exit 1',
+	].join('\n');
+	fs.writeFileSync(path.join(m.root, 'bin', 'docker'), `#!/bin/bash\n${body}\n`, { mode: 0o755 });
+}
+
+test('doctor names the engine context when the docker daemon answers', () => {
+	const m = machine();
+	withCompose(m);
+	fakeDocker(m, 'echo orbstack; exit 0');
+	const out = m.run().stdout;
+	assert.match(out, /ok {4}docker reachable \(context orbstack\)/);
+	assert.match(out, /ok {4}docker compose 2\.30\.0/, 'the docker checks ran');
+});
+
+test('doctor says the context is unknown when docker context show fails or prints nothing', () => {
+	for (const contextShow of ['exit 1', 'exit 0']) {
+		const m = machine();
+		withCompose(m);
+		fakeDocker(m, contextShow);
+		const out = m.run().stdout;
+		assert.match(out, /ok {4}docker reachable \(context unknown\)/, contextShow);
+		assert.match(out, /ok {4}docker compose 2\.30\.0/, 'the docker checks ran');
+	}
+});
+
+test('doctor says which engines to start when the docker daemon does not answer', () => {
+	const m = machine();
+	withCompose(m);
+	const out = m.run().stdout;
+	assert.match(out, /FAIL {2}docker daemon unreachable: start OrbStack or Docker Desktop/);
+	assert.match(out, /FAIL {2}docker compose missing/, 'the docker checks ran');
+});
