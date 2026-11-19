@@ -9,7 +9,8 @@ import { test } from 'node:test';
 const SCRIPT = new URL('../scripts/e2e-env.sh', import.meta.url).pathname;
 
 // A fake docker that records every call; `compose ls` lists one df-* project and `config --services` one service.
-function fixture(config = {}) {
+// `labels` is what `ps -a --filter label=... --format ...` prints: the owner and worktree labels of the project's first container.
+function fixture(config = {}, { labels = '' } = {}) {
 	const base = fs.mkdtempSync(path.join(os.tmpdir(), 'df-e2e-'));
 	const bin = path.join(base, 'bin');
 	const state = path.join(base, 'state');
@@ -26,6 +27,7 @@ echo "$@" >> "${base}/docker.log"
 case "$*" in
   *"compose ls"*) echo '[{"Name":"df-app-1"}]' ;;
   *"config --services"*) echo api ;;
+  *"ps -a --filter"*"--format"*) cat "${base}/labels" ;;
   *"ps -aq"*) echo c1 ;;
   *" build"*|*" up -d"*|*" exec "*) exit 0 ;;
   *) exit 1 ;;
@@ -33,6 +35,7 @@ esac
 `,
 		{ mode: 0o755 },
 	);
+	fs.writeFileSync(path.join(base, 'labels'), labels);
 	const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, DF_STATE_DIR: state, DF_OWNER_PID: String(process.pid) };
 	const run = (...args) => spawnSync('bash', [SCRIPT, ...args], { env, encoding: 'utf8', cwd: worktree });
 	const log = () => (fs.existsSync(path.join(base, 'docker.log')) ? fs.readFileSync(path.join(base, 'docker.log'), 'utf8') : '');
@@ -81,6 +84,90 @@ test('sweep removes an orphan stack but spares one whose worktree is still being
 	fs.writeFileSync(path.join(gone.state, 'live/df-app-1'), `99999999\n${gone.worktree}-missing\n`);
 	gone.run('sweep');
 	assert.match(gone.log(), /ps -aq/);
+});
+
+// a pid that has exited: a child that ran and was waited for
+const deadPid = () => spawnSync(process.execPath, ['-e', '0']).pid;
+const removed = (f) => /rm -f/.test(f.log());
+
+test('the override labels every service with its owner and worktree', () => {
+	const f = fixture({ environment: { type: 'compose', composeFile: '.devcontainer/docker-compose.yml', service: 'app' } });
+	f.run('up', '--key', 'APP-1', '--ports', 'none'); // fails at compose build on the fake docker; the override is already written
+	const override = fs.readFileSync(path.join(f.worktree, '.dev-factory/compose.override.yml'), 'utf8');
+	assert.match(override, /dev-factory: "1"/);
+	assert.ok(override.includes(`dev-factory.owner: "${process.pid}"`), override);
+	assert.ok(override.includes(`dev-factory.worktree: "${fs.realpathSync(f.worktree)}"`), override);
+	assert.match(override, /ports: !reset \[\]/);
+});
+
+test('a worktree path with a quote or a backslash stays valid YAML in the override labels', () => {
+	const f = fixture({ environment: { type: 'compose', composeFile: '.devcontainer/docker-compose.yml', service: 'app' } });
+	const odd = path.join(f.base, 'we"ird\\wt');
+	fs.mkdirSync(path.join(odd, '.devcontainer'), { recursive: true });
+	fs.writeFileSync(path.join(odd, '.devcontainer/docker-compose.yml'), 'services: {}\n');
+	fs.writeFileSync(path.join(odd, 'dev-factory.config.json'), fs.readFileSync(path.join(f.worktree, 'dev-factory.config.json')));
+	const r = spawnSync('bash', [SCRIPT, 'up', '--worktree', odd, '--key', 'APP-1'], {
+		env: { ...process.env, PATH: `${path.join(f.base, 'bin')}:${process.env.PATH}`, DF_STATE_DIR: f.state, DF_OWNER_PID: String(process.pid) },
+		encoding: 'utf8',
+		cwd: f.worktree,
+	});
+	assert.notEqual(r.status, null);
+	const override = fs.readFileSync(path.join(odd, '.dev-factory/compose.override.yml'), 'utf8');
+	assert.ok(override.includes(String.raw`dev-factory.worktree: "${fs.realpathSync(odd).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`), override);
+});
+
+test('a sweep from another state folder keeps a stack whose labelled owner is alive', () => {
+	const f = fixture({}, { labels: `${process.pid}|/nonexistent\n` }); // no live/ file here: this sweep does not know the owner
+	const r = f.run('sweep');
+	assert.equal(r.status, 0, r.stderr);
+	assert.equal(removed(f), false, f.log());
+});
+
+test('a sweep keeps a stack whose worktree has a fresh run.json even when its owner is dead', () => {
+	const f = fixture();
+	fs.writeFileSync(path.join(f.base, 'labels'), `${deadPid()}|${f.worktree}\n`);
+	fs.writeFileSync(path.join(f.worktree, '.dev-factory/run.json'), '{}');
+	f.run('sweep');
+	assert.equal(removed(f), false, f.log());
+});
+
+test('a sweep removes a stack whose owner is dead and whose worktree is gone', () => {
+	const f = fixture({}, { labels: `${deadPid()}|/nonexistent\n` });
+	f.run('sweep');
+	assert.match(f.log(), /ps -aq --filter label=com.docker.compose.project=df-app-1/);
+	assert.ok(removed(f), f.log());
+});
+
+test('a sweep removes a stack whose owner is dead and whose run.json is old', () => {
+	const f = fixture();
+	fs.writeFileSync(path.join(f.base, 'labels'), `${deadPid()}|${f.worktree}\n`);
+	const past = new Date(Date.now() - 6 * 3600_000);
+	fs.utimesSync(path.join(f.worktree, '.dev-factory/run.json'), past, past);
+	f.run('sweep');
+	assert.ok(removed(f), f.log());
+});
+
+test('a stack with no labels is swept by the live-file rule as before', () => {
+	const bare = fixture(); // started before this release: no labels, no live/ file
+	bare.run('sweep');
+	assert.ok(removed(bare), bare.log());
+
+	const kept = fixture(); // no labels, but a live/ file whose pid is alive
+	fs.writeFileSync(path.join(kept.state, 'live/df-app-1'), `${process.pid}\n/nonexistent\n`);
+	kept.run('sweep');
+	assert.equal(removed(kept), false, kept.log());
+});
+
+test('a stack whose labels cannot be read is swept by the live-file rule', () => {
+	const f = fixture();
+	// docker answers the label query with a failure
+	fs.writeFileSync(
+		path.join(f.base, 'bin/docker'),
+		fs.readFileSync(path.join(f.base, 'bin/docker'), 'utf8').replace('cat "' + f.base + '/labels"', 'exit 1'),
+		{ mode: 0o755 },
+	);
+	f.run('sweep');
+	assert.ok(removed(f), f.log());
 });
 
 test('up refuses a key that is not a task key, since it reaches node -e snippets', () => {

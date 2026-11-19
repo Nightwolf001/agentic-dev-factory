@@ -95,18 +95,23 @@ compose() { # compose <args...> using the recorded project
   docker compose "${files[@]}" -p "$project" "$@"
 }
 
-# Writes the override: no host ports and a label on every service, so isolated environments never
-# collide on host ports and every object this script owns can be found by label.
+# Writes the override: no host ports and labels on every service, so isolated environments never collide on host ports and
+# every object this script owns can be found by label. The owner (the pid mark_live records) and the worktree are labels too:
+# a sweep run from another state folder has no live/ file for the stack, but it can read who owns it from the stack itself.
 write_override() {
   mkdir -p "$RUN_DIR"
-  local services
+  local services owner wt
   services="$(docker compose -f "$COMPOSE_FILE" config --services)" || die "compose file does not render"
+  owner="${DF_OWNER_PID:-$PPID}"
+  wt="$(printf '%s' "$WORKTREE" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')" # inside a YAML double-quoted string: \ and " are escaped
   {
     echo "services:"
     for s in $services; do
       echo "  $s:"
       echo "    labels:"
       echo "      dev-factory: \"1\""
+      echo "      dev-factory.owner: \"$owner\""
+      echo "      dev-factory.worktree: \"$wt\""
       [ "$PORTS" = none ] && echo "    ports: !reset []"
     done
   } > "$OVERRIDE"
@@ -390,9 +395,22 @@ do_down() {
 # A stack whose worktree still exists and whose run.json changed within SPARE_MINUTES belongs to a ticket
 # that is about to be resumed (its pass died, the work did not); sweeping it would resume against nothing.
 SPARE_MINUTES="${DF_SWEEP_SPARE_MINUTES:-180}"
-fresh_stray() {
-  local wt; wt="$(sed -n 2p "$STATE_DIR/live/$1" 2>/dev/null)"
+fresh_worktree() { # a worktree that still exists and whose run.json changed within SPARE_MINUTES
+  local wt="$1"
   [ -n "$wt" ] && [ -f "$wt/.dev-factory/run.json" ] && [ -n "$(find "$wt/.dev-factory/run.json" -mmin "-$SPARE_MINUTES" 2>/dev/null)" ]
+}
+fresh_stray() { fresh_worktree "$(sed -n 2p "$STATE_DIR/live/$1" 2>/dev/null)"; }
+
+# A stack that names its owner on its own containers is in use when that owner's pid is alive, or when its worktree is still
+# being worked on. This holds from any state folder, which the live/ file does not. No labels (a stack started before they
+# existed) or a docker that does not answer: not in use by this rule, so the live-file rule alone decides.
+labelled_in_use() {
+  local first owner wt
+  first="$(docker ps -a --filter "label=com.docker.compose.project=$1" --format '{{.Label "dev-factory.owner"}}|{{.Label "dev-factory.worktree"}}' 2>/dev/null | sed -n 1p)"
+  owner="${first%%|*}"; wt=""
+  case "$first" in *'|'*) wt="${first#*|}" ;; esac
+  case "$owner" in ''|*[!0-9]*|0) ;; *) kill -0 "$owner" 2>/dev/null && return 0 ;; esac
+  fresh_worktree "$wt"
 }
 
 do_sweep() {
@@ -402,7 +420,7 @@ do_sweep() {
   projects="$(docker compose ls -a --format json 2>/dev/null | node -e 'let t="";process.stdin.on("data",d=>t+=d).on("end",()=>{try{for(const p of JSON.parse(t))if(p.Name.startsWith("df-"))console.log(p.Name)}catch(e){}})')"
   local swept=0
   for p in $projects; do
-    if ! printf '%s\n' "$live" | grep -qx "$p" && ! fresh_stray "$p"; then
+    if ! printf '%s\n' "$live" | grep -qx "$p" && ! fresh_stray "$p" && ! labelled_in_use "$p"; then
       log "sweeping orphan $p"
       docker ps -aq --filter "label=com.docker.compose.project=$p" | xargs -r docker rm -f >/dev/null 2>&1
       docker network ls -q --filter "label=com.docker.compose.project=$p" | xargs -r docker network rm >/dev/null 2>&1
