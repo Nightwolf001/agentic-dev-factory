@@ -1248,6 +1248,16 @@ test('graphql: a redirect of what gh prints is not an argument of gh, so the exc
 	gqlRefusedAt(`gh api graphql -f query='{viewer{login}}' >`);
 });
 
+test('graphql: >& joins a file descriptor and nothing else, since >&file writes a file the file rules do not see', () => {
+	const READ = `gh api graphql -f query='{viewer{login}}' --jq .data`;
+	for (const r of ['>&~/.zshrc', '>&.dev-factory/run.json', '>& file', '>&/tmp/x', '2>&/tmp/x', '1>&file', '<&file', '>&&2'])
+		gqlRefusedAt(`${READ} ${r}`);
+	// &> and &>> name a file the file rules judge: a protected one stays refused
+	gqlRefusedAt(`${READ} &> .dev-factory/run.json`);
+	gqlRefusedAt(`${READ} &>> .dev-factory/run.json`);
+	for (const r of ['2>&1', '>&2', '3>&1', '2>&-', '9>&1']) gqlAllowedAt(`${READ} ${r}`);
+});
+
 test('graphql: a refused scheduler call is told which rule it broke and what to write instead', () => {
 	const why = (c) => evaluate(c, AT).reason ?? '';
 	const HOW = /one literal `gh api graphql -f query='\.\.\.'` command per thread/;
@@ -1256,6 +1266,8 @@ test('graphql: a refused scheduler call is told which rule it broke and what to 
 		[`gh api graphql -f query='{viewer{login}}' -f query='{viewer{id}}'`, /2 query fields/],
 		[`gh api graphql -f "query={a(x:$P)}"`, /\$ or a backquote outside single quotes/],
 		[`FOO=1 gh api graphql -f query='{viewer{login}}'`, /sets a variable or changes the shell/],
+		[`command gh api graphql -f query='{viewer{login}}'`, /gh is not the first word/],
+		[`env gh api graphql -f query='{viewer{login}}'`, /gh is not the first word/],
 		[`gh api --hostname attacker.example graphql -f query='{viewer{login}}'`, /--hostname other than github\.com/],
 		[`gh api graphql -f query='{viewer{login}}' -F x=@.env.local`, /@ file or stdin/],
 		[`gh api graphql -f query='mutation{mergePullRequest(input:{pullRequestId:"x"}){clientMutationId}}'`, /resolveReviewThread/],

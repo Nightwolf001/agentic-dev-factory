@@ -571,7 +571,8 @@ function withoutRedirects(args, seg) {
 			continue;
 		}
 		if (/^\d*[<>]&(\d+-?|-)$/.test(w)) continue;
-		const m = /^(?:\d*(?:>>?|>\||>&|<)|&>>?)(.+)$/.exec(w);
+		// a file target; >&word and <&word take only a descriptor (above): >&file writes a file the file rules do not read
+		const m = /^(?:\d*(?:>>?|>\||<)|&>>?)([^&].*)$/.exec(w);
 		if (m && !m[1].startsWith('(') && !unquotedAngle(m[1])) continue;
 		return { bad: `a redirect the guard cannot read (${w.slice(0, 30)})` };
 	}
@@ -613,9 +614,10 @@ function shellExpands(raw) {
 // -> null when the call is allowed, or the reason it is not, in words the scheduler can act on.
 function graphqlRefusal(args, seg, where) {
 	if (where.nested) return "it runs inside another shell's string or a substitution ($(...), backquotes, sh -c)";
+	// a wrapper first: `command gh ...` is a wrapper, though `command` also counts as a word that changes the shell
+	if (where.wrapped) return 'gh is not the first word (a wrapper such as env or command, or a path to gh)';
 	if (where.changesShell)
 		return 'the command sets a variable or changes the shell (NAME=value, export, read, for, set, alias, a function, builtin, command and the like)';
-	if (where.wrapped) return 'gh is not the first word (a wrapper such as env or command, or a path to gh)';
 	if (shellExpands(seg))
 		return 'a $ or a backquote outside single quotes (or an unclosed quote), which the shell expands after the guard has read it';
 	const bare = withoutRedirects(args, seg);
