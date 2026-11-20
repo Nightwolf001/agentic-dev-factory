@@ -726,6 +726,20 @@ test('verify of a direct stack fails when the address stops answering', () => {
 	assert.match(sick.stderr, /direct address answered HTTP 503: http:\/\/app\.df-app-1\.orb\.local:3000/);
 });
 
+test('verify names the ping address by origin and path only: its query, which can carry a token, is never printed', () => {
+	const f = directFixture();
+	assert.equal(f.run('up', '--key', 'APP-1', '--ports', 'direct').status, 0);
+	// the same fake docker, but the ping inside the service fails
+	const dockerFile = path.join(f.base, 'bin/docker');
+	const failing = fs.readFileSync(dockerFile, 'utf8').replace('  *"compose ls"*)', '  *"curl -ksf"*) exit 22 ;;\n  *"compose ls"*)');
+	assert.notEqual(failing, fs.readFileSync(dockerFile, 'utf8'), 'the fake docker was changed');
+	fs.writeFileSync(dockerFile, failing, { mode: 0o755 });
+	const bad = f.run('verify');
+	assert.equal(bad.status, 1, bad.stderr);
+	assert.match(bad.stderr, /ping failed: http:\/\/localhost:3000\/api\/health(\s|$)/, bad.stderr);
+	assert.doesNotMatch(bad.stdout + bad.stderr, /SECRET|token/);
+});
+
 test('verify of a direct stack works out the address from the settings and never probes one read back from env.json', () => {
 	const f = directFixture();
 	assert.equal(f.run('up', '--key', 'APP-1', '--ports', 'direct').status, 0);

@@ -247,7 +247,7 @@ do_verify() {
     compose "$project" "${EXEC_ARGS[@]}" bash -c "$PROCESS_CHECK" </dev/null >/dev/null 2>&1 || add "process check failed: $PROCESS_CHECK"
   fi
   if [ -n "$PING_URL" ]; then
-    compose "$project" "${EXEC_ARGS[@]}" curl -ksf -o /dev/null "$PING_URL" </dev/null || add "ping failed: $PING_URL"
+    compose "$project" "${EXEC_ARGS[@]}" curl -ksf -o /dev/null "$PING_URL" </dev/null || add "ping failed: $(url_shown "$PING_URL")"
   fi
   # the direct address is worked out again from the settings, never read back from env.json, which the run can write
   if [ "$(env_get mode)" = direct ]; then
