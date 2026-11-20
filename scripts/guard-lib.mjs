@@ -159,11 +159,18 @@ export function stripHeredocs(command) {
 	return out.join('\n');
 }
 
-// A segment that sets or exports a shell variable, or makes later assignments exported (set -a), or runs a file in this shell.
-const SETS_VARIABLE = /^(\w+=|(export|declare|typeset|readonly|local|set|source|unset|alias|eval|\.)(\s|$))/;
+// A segment that changes the shell later commands run in: it sets a variable (NAME=, NAME+=, NAME[i]=, or a builtin that
+// assigns one: read, printf -v, mapfile, let, getopts, for, select), exports or unsets one, makes later assignments exported
+// (set -a), defines an alias or a function, remaps a command (hash -p, enable), sets a trap, or runs code in this shell
+// (source, ., eval, exec). builtin and command can run any of those, so they count too. A word is enough: which of its uses
+// is harmless is not worked out.
+const SHELL_WORDS =
+	'export|declare|typeset|local|readonly|read|printf|mapfile|readarray|let|getopts|hash|select|for|set|unset|source|alias|shopt|builtin|command|exec|trap|eval|enable|function';
+const CHANGES_SHELL = new RegExp(`^(\\w+(\\[[^\\]]*\\])?\\+?=|(${SHELL_WORDS}|\\.)(\\s|$)|[^\\s(){}=]+\\s*\\(\\s*\\))`);
 
-// Strips leading VAR=value assignments and control keywords. With `found`, sets found.assigns when one of the command's own
-// segments sets a variable (a leading VAR=value included, which is stripped from what is returned).
+// Strips leading VAR=value assignments and control keywords. With `found` (at the top level), sets found.own to the number of
+// the command's own segments, which come first in what is returned, and found.changesShell when one of them changes the shell
+// (CHANGES_SHELL; a leading VAR=value counts, though it is stripped from what is returned).
 export function segments(command, depth = 0, found = null) {
 	command = stripHeredocs(command);
 	const own = (splitTop(command) ?? command.split(/&&|\|\||[;&|\n]/))
@@ -171,7 +178,7 @@ export function segments(command, depth = 0, found = null) {
 			let t = s.trim();
 			for (let prev = ''; prev !== t; ) {
 				prev = t;
-				if (found && SETS_VARIABLE.test(t)) found.assigns = true;
+				if (found && CHANGES_SHELL.test(t)) found.changesShell = true;
 				t = t.replace(/^(\w+=(?:"[^"]*"|'[^']*'|\S*)\s+)+/, '').replace(KEYWORD, '');
 			}
 			// a subshell or group written without a space, (git push) or {git push}: the command inside is judged, not the bracket
@@ -184,10 +191,11 @@ export function segments(command, depth = 0, found = null) {
 				while (/[)}]$/.test(t) && count(/\)/g) > count(/\(/g) && !/\$\([^)]*\)$/.test(t)) t = t.replace(/\s*[)}]$/, '');
 			}
 			// checked again past a bracket and a keyword: (GH_HOST=x; gh ...), if X=1 gh ...
-			if (found && (SETS_VARIABLE.test(t) || SETS_VARIABLE.test(t.replace(KEYWORD, '')))) found.assigns = true;
+			if (found && (CHANGES_SHELL.test(t) || CHANGES_SHELL.test(t.replace(KEYWORD, '')))) found.changesShell = true;
 			return t;
 		})
 		.filter(Boolean);
+	if (found) found.own = own.length;
 	return depth > 3 ? own : [...own, ...nested(command).flatMap((n) => segments(n, depth + 1))];
 }
 
@@ -504,7 +512,7 @@ const GH_API_VALUE = new Set([
 ]);
 const GH_API_BOOL = new Set(['-i', '--include', '--paginate', '--slurp', '--silent', '--verbose']);
 
-// -> { positionals, flags: [[flag, value]] } for the words after `gh`, or null for a flag outside the tables above.
+// -> { positionals, flags: [[flag, value]] } for the words after `gh`, or { bad } naming a flag outside the tables above.
 function ghApiWords(args) {
 	const positionals = [];
 	const flags = [];
@@ -517,13 +525,57 @@ function ghApiWords(args) {
 		let m;
 		if (GH_API_BOOL.has(a)) continue;
 		if (GH_API_VALUE.has(a)) {
-			if (i + 1 >= args.length) return null;
+			if (i + 1 >= args.length) return { bad: `${a} with no value` };
 			flags.push([a, args[++i]]);
 		} else if ((m = /^(--[a-z-]+)=([^]*)$/.exec(a)) && GH_API_VALUE.has(m[1])) flags.push([m[1], m[2]]);
 		else if ((m = /^(-[HqtpRfF])=?([^]+)$/.exec(a))) flags.push([m[1], m[2]]);
-		else return null;
+		else return { bad: a.split('=')[0].slice(0, 40) };
 	}
 	return { positionals, flags };
+}
+
+// True when a raw word (quotes still in it) has a < or > outside quotes, which bash reads as a redirection.
+function unquotedAngle(word) {
+	let q = null;
+	for (let i = 0; i < word.length; i++) {
+		const c = word[i];
+		if (q) {
+			if (c === q) q = null;
+			else if (q === '"' && c === '\\') i++;
+		} else if (c === '\\') i++;
+		else if (c === "'" || c === '"') q = c;
+		else if (c === '<' || c === '>') return true;
+	}
+	return false;
+}
+
+// The words gh receives, with the redirections bash takes out first: >f, > f, >>f, 2>f, 2>&1, >&2, &>f, >|f, <f. Read from
+// the raw words of the segment, so a quoted '>' stays an argument as it does for bash. -> { args } or { bad }. A here-document
+// or here-string is refused: gh never needs standard input here, and the guard does not read what it carries. A redirect
+// the guard cannot take apart ({fd}>f, a>b, >(cmd)) is refused too. What a redirect writes to is judged by the file rules.
+function withoutRedirects(args, seg) {
+	const raw = tokenize(seg).slice(1);
+	if (raw.length !== args.length) return { bad: 'words the guard could not line up' };
+	const kept = [];
+	for (let i = 0; i < raw.length; i++) {
+		const w = raw[i];
+		if (!unquotedAngle(w)) {
+			kept.push(args[i]);
+			continue;
+		}
+		if (/^\d*<</.test(w)) return { bad: 'a here-document or here-string' };
+		if (/^(\d*(>>?|>\||<)|&>>?)$/.test(w)) {
+			// the operator alone: its target is the next word
+			if (i + 1 >= raw.length || unquotedAngle(raw[i + 1])) return { bad: `a redirect with no target (${w})` };
+			i++;
+			continue;
+		}
+		if (/^\d*[<>]&(\d+-?|-)$/.test(w)) continue;
+		const m = /^(?:\d*(?:>>?|>\||>&|<)|&>>?)(.+)$/.exec(w);
+		if (m && !m[1].startsWith('(') && !unquotedAngle(m[1])) continue;
+		return { bad: `a redirect the guard cannot read (${w.slice(0, 30)})` };
+	}
+	return { args: kept };
 }
 
 // $ or a backquote outside single quotes in the raw text of the command: the shell expands it after the guard has read the
@@ -553,47 +605,70 @@ function shellExpands(raw) {
 //   No {owner}, {repo} or {branch} in it: gh fills those after the guard has read it.
 // - No -F or --field value from a file or stdin (@): gh would read and send what the guard cannot see, a secret included.
 // - No host but github.com, and a repository only as owner/name (HOST/owner/name names another host).
-// - `plain`: a bare `gh`, typed at the top of a command that sets no variable. A gh call inside `bash -c "..."`, `$(...)` or
-//   backquotes is read by that shell after its own expansion, so the quotes the guard sees are not the ones that count; a
-//   variable (GH_HOST, GH_TOKEN, GH_CONFIG_DIR, or any other: none is judged harmless) or a wrapper (env NAME=value gh) decides
-//   where gh sends the request and as whom.
-// - Nothing the shell expands in the segment.
-function schedulerGraphql(args, seg = '', plain = false) {
-	if (!plain || shellExpands(seg)) return false;
-	const words = ghApiWords(args);
-	if (!words) return false;
+// - gh is the first word, typed at the top of a command that does not change the shell (CHANGES_SHELL). A gh call inside
+//   `bash -c "..."`, `$(...)` or backquotes is read by that shell after its own expansion, so the quotes the guard sees are not
+//   the ones that count; a variable (GH_HOST, GH_TOKEN, GH_CONFIG_DIR, or any other: none is judged harmless), a function or
+//   a wrapper (env NAME=value gh) decides where gh sends the request and as whom.
+// - Nothing the shell expands in the segment, and only the redirections withoutRedirects can take apart.
+// -> null when the call is allowed, or the reason it is not, in words the scheduler can act on.
+function graphqlRefusal(args, seg, where) {
+	if (where.nested) return "it runs inside another shell's string or a substitution ($(...), backquotes, sh -c)";
+	if (where.changesShell)
+		return 'the command sets a variable or changes the shell (NAME=value, export, read, for, set, alias, a function, builtin, command and the like)';
+	if (where.wrapped) return 'gh is not the first word (a wrapper such as env or command, or a path to gh)';
+	if (shellExpands(seg))
+		return 'a $ or a backquote outside single quotes (or an unclosed quote), which the shell expands after the guard has read it';
+	const bare = withoutRedirects(args, seg);
+	if (bare.bad) return bare.bad;
+	const words = ghApiWords(bare.args);
+	if (words.bad) return `unknown or refused flag ${words.bad}`;
 	const { positionals, flags } = words;
-	if (positionals.length !== 2 || positionals[0] !== 'api' || positionals[1] !== 'graphql') return false;
+	if (positionals.length !== 2 || positionals[0] !== 'api' || positionals[1] !== 'graphql')
+		return `the endpoint is not exactly graphql (gh would get: ${positionals.join(' ').slice(0, 60)})`;
 	const queries = [];
 	for (const [flag, value] of flags) {
-		if ((flag === '--hostname' && value !== 'github.com') || (/^(-R|--repo)$/.test(flag) && !/^[\w.-]+\/[\w.-]+$/.test(value))) return false;
+		if (flag === '--hostname' && value !== 'github.com') return 'a --hostname other than github.com';
+		if (/^(-R|--repo)$/.test(flag) && !/^[\w.-]+\/[\w.-]+$/.test(value)) return `${flag} other than owner/name`;
 		if (!/^(-f|-F|--field|--raw-field)$/.test(flag)) continue;
 		const eq = value.indexOf('=');
-		if (eq < 1) return false;
+		if (eq < 1) return `a field that is not key=value (${flag} ${value.slice(0, 30)})`;
 		const [key, v] = [value.slice(0, eq), value.slice(eq + 1)];
-		if ((flag === '-F' || flag === '--field') && v.startsWith('@')) return false;
+		if ((flag === '-F' || flag === '--field') && v.startsWith('@'))
+			return `an @ file or stdin value (${flag} ${key}=@...), which gh would read and send`;
 		if (/^query(\[|$)/.test(key)) queries.push(v);
 	}
-	if (queries.length !== 1 || queries[0].startsWith('@') || /\{(owner|repo|branch)\}/.test(queries[0])) return false;
+	if (queries.length !== 1) return `${queries.length} query fields (exactly one is needed)`;
+	if (queries[0].startsWith('@')) return 'the query is an @ file or stdin, which the guard cannot read';
+	if (/\{(owner|repo|branch)\}/.test(queries[0])) return 'the query has {owner}, {repo} or {branch}, which gh fills in after the guard has read it';
 	try {
-		return graphqlAllowed(queries[0]);
-	} catch {
-		return false;
+		if (!graphqlAllowed(queries[0]))
+			return 'the query is neither one read operation nor one mutation whose only field is resolveReviewThread (no fragments, no second operation)';
+	} catch (e) {
+		return `the query cannot be read (${e.message})`;
 	}
+	return null;
 }
+
+const GRAPHQL_HOW =
+	"the scheduler's graphql exception covers one gh api graphql call typed as the first word of a command that sets no variable, with a single-quoted query, no $ or backquote outside single quotes, no wrapper, no -X/--method/--input and no @file; write one literal `gh api graphql -f query='...'` command per thread (a redirect such as >/dev/null is fine)";
 
 const FACTORY_ROLES = new Set(['builder', 'reviewer', 'debugger', 'researcher', 'improver', 'promoter']);
 const ISSUE_WRITES = ['create', 'edit', 'close', 'reopen', 'comment', 'delete', 'transfer', 'lock', 'unlock', 'pin', 'unpin', 'develop'];
 
-function denyGh(args, ctx = {}, seg = '', plain = false) {
+function denyGh(args, ctx = {}, seg = '', where = { nested: true }) {
 	const p = ghPositionals(args);
 	if (FACTORY_ROLES.has(ctx.role) && p[0] === 'issue' && ISSUE_WRITES.includes(p[1]))
 		return 'issues are the task tracker: only the scheduler writes to it, a factory agent does not (gh issue ' + p[1] + ')';
 	if (ctx.noAttribution && p[0] === 'pr' && ['create', 'edit', 'comment'].includes(p[1]) && AGENT_MARK.test(seg))
 		return 'PR text carries no Co-Authored-By or generated-by line (git.agentAttribution is false)';
 	if (p[0] === 'pr' && ['merge', 'review', 'ready', 'close', 'reopen'].includes(p[1])) return `gh pr ${p[1]} is reserved for people`;
-	if (p[0] === 'api' && ghApiWrites(args) && (FACTORY_ROLES.has(ctx.role) || !schedulerGraphql(args, seg, plain)))
-		return 'gh api writes are not allowed: no -X other than GET, no body field, no --input';
+	if (p[0] === 'api' && ghApiWrites(args)) {
+		const plainRefusal = 'gh api writes are not allowed: no -X other than GET, no body field, no --input';
+		if (FACTORY_ROLES.has(ctx.role)) return plainRefusal;
+		const why = graphqlRefusal(args, seg, where);
+		// the scheduler that meant the graphql exception is told what kept it out; any other write keeps the plain refusal
+		if (why) return args.includes('graphql') ? `${plainRefusal}; ${GRAPHQL_HOW}. Here: ${why}` : plainRefusal;
+	}
 	if (
 		p[0] === 'auth' &&
 		(p[1] === 'token' || p[1] === 'refresh' || p[1] === 'login' || p[1] === 'logout' || args.includes('--show-token') || args.includes('-t'))
@@ -1155,11 +1230,9 @@ function judge(command, ctx) {
 		};
 	// the toggle is the owner's: an agent does not switch it on for itself, however the name is written
 	if (FACTORY_ROLES.has(ctx.role) && !ctx.takeover && triesTakeover(command)) return { deny: true, reason: TAKEOVER_REFUSAL };
-	const segs = segments(command);
-	// segments() lists the command's own segments first, then those nested in substitutions and `sh -c` strings; past depth 3
-	// it lists only its own, so this counts them; found.assigns is set when any of them sets a variable
+	// the command's own segments come first (found.own of them), then those nested in substitutions and `sh -c` strings
 	const found = {};
-	const topLevel = segments(command, 4, found).length;
+	const segs = segments(command, 0, found);
 	if (segs.length > LIMITS.segments) throw new Unjudgeable(`more than ${LIMITS.segments} commands`);
 	const { home, stateDir } = envOf(ctx);
 	const st = { cwd: ctx.cwd || process.cwd(), vars: { HOME: home, DF_STATE_DIR: stateDir, PWD: ctx.cwd || process.cwd() } };
@@ -1211,9 +1284,15 @@ function judge(command, ctx) {
 		const body = [cmd, ...args].join(' ');
 		let reason = null;
 		if (cmd === 'git') reason = denyGit(args, ctx, seg);
-		// the graphql exception is for a bare `gh` typed at the top of a command that sets no variable: a nested call is read by
-		// another shell, and a variable or a wrapper (env GH_HOST=x gh) can send the request to another host or as another account
-		else if (cmd === 'gh') reason = denyGh(args, ctx, seg, index < topLevel && !found.assigns && tokens[0] === 'gh');
+		// the graphql exception is for gh as the first word (quotes or a backslash around the name are fine: bash runs the same
+		// binary), typed at the top of a command that does not change the shell. A nested call is read by another shell, and a
+		// variable, a function or a wrapper (env GH_HOST=x gh) can send the request to another host or as another account.
+		else if (cmd === 'gh')
+			reason = denyGh(args, ctx, seg, {
+				nested: index >= found.own,
+				changesShell: Boolean(found.changesShell),
+				wrapped: tokens[0] !== 'gh',
+			});
 		if (!reason && hitsTrackerHost(inv, ctx, st.vars) && (FACTORY_ROLES.has(ctx.role) || !notionUpload(cmd, args)))
 			reason = 'direct task-tracker access is reserved for the scheduler, which sends only QA screenshots to a Notion upload URL';
 		if (!reason && FACTORY_ROLES.has(ctx.role) && /^node\s+\S*tasks\.mjs"?\s+(set-state|comment|label|link|block|create|init)\b/.test(seg))
