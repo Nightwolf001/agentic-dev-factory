@@ -159,14 +159,19 @@ export function stripHeredocs(command) {
 	return out.join('\n');
 }
 
-// Strips leading VAR=value assignments and control keywords.
-export function segments(command, depth = 0) {
+// A segment that sets or exports a shell variable, or makes later assignments exported (set -a), or runs a file in this shell.
+const SETS_VARIABLE = /^(\w+=|(export|declare|typeset|readonly|local|set|source|unset|alias|eval|\.)(\s|$))/;
+
+// Strips leading VAR=value assignments and control keywords. With `found`, sets found.assigns when one of the command's own
+// segments sets a variable (a leading VAR=value included, which is stripped from what is returned).
+export function segments(command, depth = 0, found = null) {
 	command = stripHeredocs(command);
 	const own = (splitTop(command) ?? command.split(/&&|\|\||[;&|\n]/))
 		.map((s) => {
 			let t = s.trim();
 			for (let prev = ''; prev !== t; ) {
 				prev = t;
+				if (found && SETS_VARIABLE.test(t)) found.assigns = true;
 				t = t.replace(/^(\w+=(?:"[^"]*"|'[^']*'|\S*)\s+)+/, '').replace(KEYWORD, '');
 			}
 			// a subshell or group written without a space, (git push) or {git push}: the command inside is judged, not the bracket
@@ -178,6 +183,8 @@ export function segments(command, depth = 0) {
 				const count = (re) => (t.match(re) ?? []).length;
 				while (/[)}]$/.test(t) && count(/\)/g) > count(/\(/g) && !/\$\([^)]*\)$/.test(t)) t = t.replace(/\s*[)}]$/, '');
 			}
+			// checked again past a bracket and a keyword: (GH_HOST=x; gh ...), if X=1 gh ...
+			if (found && (SETS_VARIABLE.test(t) || SETS_VARIABLE.test(t.replace(KEYWORD, '')))) found.assigns = true;
 			return t;
 		})
 		.filter(Boolean);
@@ -546,10 +553,13 @@ function shellExpands(raw) {
 //   No {owner}, {repo} or {branch} in it: gh fills those after the guard has read it.
 // - No -F or --field value from a file or stdin (@): gh would read and send what the guard cannot see, a secret included.
 // - No host but github.com, and a repository only as owner/name (HOST/owner/name names another host).
-// - Typed at the top of the command, with nothing the shell expands: a gh call inside `bash -c "..."`, `$(...)` or backquotes
-//   is read by that shell after its own expansion, so the quotes the guard sees are not the ones that count.
-function schedulerGraphql(args, seg = '', nested = true) {
-	if (nested || shellExpands(seg)) return false;
+// - `plain`: a bare `gh`, typed at the top of a command that sets no variable. A gh call inside `bash -c "..."`, `$(...)` or
+//   backquotes is read by that shell after its own expansion, so the quotes the guard sees are not the ones that count; a
+//   variable (GH_HOST, GH_TOKEN, GH_CONFIG_DIR, or any other: none is judged harmless) or a wrapper (env NAME=value gh) decides
+//   where gh sends the request and as whom.
+// - Nothing the shell expands in the segment.
+function schedulerGraphql(args, seg = '', plain = false) {
+	if (!plain || shellExpands(seg)) return false;
 	const words = ghApiWords(args);
 	if (!words) return false;
 	const { positionals, flags } = words;
@@ -575,14 +585,14 @@ function schedulerGraphql(args, seg = '', nested = true) {
 const FACTORY_ROLES = new Set(['builder', 'reviewer', 'debugger', 'researcher', 'improver', 'promoter']);
 const ISSUE_WRITES = ['create', 'edit', 'close', 'reopen', 'comment', 'delete', 'transfer', 'lock', 'unlock', 'pin', 'unpin', 'develop'];
 
-function denyGh(args, ctx = {}, seg = '', nested = false) {
+function denyGh(args, ctx = {}, seg = '', plain = false) {
 	const p = ghPositionals(args);
 	if (FACTORY_ROLES.has(ctx.role) && p[0] === 'issue' && ISSUE_WRITES.includes(p[1]))
 		return 'issues are the task tracker: only the scheduler writes to it, a factory agent does not (gh issue ' + p[1] + ')';
 	if (ctx.noAttribution && p[0] === 'pr' && ['create', 'edit', 'comment'].includes(p[1]) && AGENT_MARK.test(seg))
 		return 'PR text carries no Co-Authored-By or generated-by line (git.agentAttribution is false)';
 	if (p[0] === 'pr' && ['merge', 'review', 'ready', 'close', 'reopen'].includes(p[1])) return `gh pr ${p[1]} is reserved for people`;
-	if (p[0] === 'api' && ghApiWrites(args) && (FACTORY_ROLES.has(ctx.role) || !schedulerGraphql(args, seg, nested)))
+	if (p[0] === 'api' && ghApiWrites(args) && (FACTORY_ROLES.has(ctx.role) || !schedulerGraphql(args, seg, plain)))
 		return 'gh api writes are not allowed: no -X other than GET, no body field, no --input';
 	if (
 		p[0] === 'auth' &&
@@ -1147,8 +1157,9 @@ function judge(command, ctx) {
 	if (FACTORY_ROLES.has(ctx.role) && !ctx.takeover && triesTakeover(command)) return { deny: true, reason: TAKEOVER_REFUSAL };
 	const segs = segments(command);
 	// segments() lists the command's own segments first, then those nested in substitutions and `sh -c` strings; past depth 3
-	// it lists only its own, so this counts them
-	const topLevel = segments(command, 4).length;
+	// it lists only its own, so this counts them; found.assigns is set when any of them sets a variable
+	const found = {};
+	const topLevel = segments(command, 4, found).length;
 	if (segs.length > LIMITS.segments) throw new Unjudgeable(`more than ${LIMITS.segments} commands`);
 	const { home, stateDir } = envOf(ctx);
 	const st = { cwd: ctx.cwd || process.cwd(), vars: { HOME: home, DF_STATE_DIR: stateDir, PWD: ctx.cwd || process.cwd() } };
@@ -1200,7 +1211,9 @@ function judge(command, ctx) {
 		const body = [cmd, ...args].join(' ');
 		let reason = null;
 		if (cmd === 'git') reason = denyGit(args, ctx, seg);
-		else if (cmd === 'gh') reason = denyGh(args, ctx, seg, index >= topLevel);
+		// the graphql exception is for a bare `gh` typed at the top of a command that sets no variable: a nested call is read by
+		// another shell, and a variable or a wrapper (env GH_HOST=x gh) can send the request to another host or as another account
+		else if (cmd === 'gh') reason = denyGh(args, ctx, seg, index < topLevel && !found.assigns && tokens[0] === 'gh');
 		if (!reason && hitsTrackerHost(inv, ctx, st.vars) && (FACTORY_ROLES.has(ctx.role) || !notionUpload(cmd, args)))
 			reason = 'direct task-tracker access is reserved for the scheduler, which sends only QA screenshots to a Notion upload URL';
 		if (!reason && FACTORY_ROLES.has(ctx.role) && /^node\s+\S*tasks\.mjs"?\s+(set-state|comment|label|link|block|create|init)\b/.test(seg))
