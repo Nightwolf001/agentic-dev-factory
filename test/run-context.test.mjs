@@ -1,6 +1,7 @@
 import './isolate-state.mjs';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -13,7 +14,7 @@ import {
 	pointerFile,
 	resolveRun,
 	setPointer,
-	settleBinding,
+	unbindAgent,
 	unbindWorktree,
 	workRoot,
 } from '../scripts/run-context.mjs';
@@ -51,7 +52,11 @@ const bound = (r) => {
 };
 const listBindings = (env) => {
 	try {
-		return fs.readdirSync(bindingsDir(env)).sort();
+		// the bindings themselves; the claims folder beside them is looked at by the tests about claims
+		return fs
+			.readdirSync(bindingsDir(env))
+			.filter((f) => f.endsWith('.json'))
+			.sort();
 	} catch {
 		return [];
 	}
@@ -228,7 +233,7 @@ test('workRoot: cwd run, one binding, two bindings throw naming --worktree, none
 
 test('parseBindCommand accepts the exact form and rejects chains, pipes, extra flags, relative paths and command substitution', () => {
 	const script = '/Users/me/.claude/plugins/dev-factory/scripts/run-context.mjs';
-	const ok = (command, worktree) => assert.deepEqual(parseBindCommand(command), { worktree }, command);
+	const ok = (command, worktree) => assert.deepEqual(parseBindCommand(command), { worktree, script }, command);
 	ok(`node "${script}" bind --worktree /w/APP-1`, '/w/APP-1');
 	ok(`node "${script}" bind --worktree '/w/APP 1'`, '/w/APP 1');
 	ok(`node "${script}" bind --worktree "/w/APP 1"`, '/w/APP 1');
@@ -427,24 +432,84 @@ test('a symlink or case alias of a bound worktree is the same worktree for the s
 	}
 });
 
-test('after the rename the later of two same-role binds to one worktree removes its own file and is refused', () => {
+// The claim a bind takes on a worktree and role: <state>/agents/claims/<sha256 of the canonical worktree>.<role>.
+const claimPath = (env, worktree, role) =>
+	path.join(bindingsDir(env), 'claims', `${crypto.createHash('sha256').update(fs.realpathSync.native(worktree)).digest('hex')}.${role}`);
+const claims = (env) => {
+	try {
+		return fs.readdirSync(path.join(bindingsDir(env), 'claims')).sort();
+	} catch {
+		return [];
+	}
+};
+
+test('a bind claims its worktree and role, a live claim refuses another agent, and a claim left behind is replaced', () => {
 	const { worktree, env } = fixture({ role: 'builder' });
-	const real = fs.realpathSync.native(worktree);
-	fs.mkdirSync(bindingsDir(env), { recursive: true });
-	const plant = (id, at) => fs.writeFileSync(path.join(bindingsDir(env), `${id}.json`), JSON.stringify({ worktree: real, role: 'builder', at }));
-	plant('b0', '2026-11-20T10:00:00.000Z');
-	plant('b1', '2026-11-20T10:00:01.000Z');
-	const lost = settleBinding('b1', env);
-	assert.equal(lost.ok, false);
-	assert.match(lost.reason, /already bound/);
-	assert.deepEqual(listBindings(env), ['b0.json']);
-	// the earlier one keeps its binding when it looks again
-	assert.equal(settleBinding('b0', env).ok, true);
-	assert.deepEqual(listBindings(env), ['b0.json']);
-	// with the same time the lower agent id wins
-	plant('a9', '2026-11-20T10:00:00.000Z');
-	assert.equal(settleBinding('b0', env).ok, false);
-	assert.deepEqual(listBindings(env), ['a9.json']);
+	const claimFile = claimPath(env, worktree, 'builder');
+	bound(bindAgent({ agentId: 'b1', agentType: BUILDER, worktree, env }));
+	assert.equal(fs.readFileSync(claimFile, 'utf8'), 'b1');
+	// rebinding by the holder keeps its claim
+	bound(bindAgent({ agentId: 'b1', agentType: BUILDER, worktree, env }));
+	assert.deepEqual(claims(env), [path.basename(claimFile)]);
+	// a claim whose holder still has its binding refuses another agent, and that agent leaves nothing behind
+	const second = bindAgent({ agentId: 'b2', agentType: BUILDER, worktree, env });
+	assert.equal(second.ok, false);
+	assert.match(second.reason, /already bound/);
+	assert.deepEqual(listBindings(env), ['b1.json']);
+	// the holder's binding is gone but its claim stayed (a crash): the next agent replaces the claim
+	fs.rmSync(path.join(bindingsDir(env), 'b1.json'));
+	bound(bindAgent({ agentId: 'b2', agentType: BUILDER, worktree, env }));
+	assert.equal(fs.readFileSync(claimFile, 'utf8'), 'b2');
+	assert.deepEqual(listBindings(env), ['b2.json']);
+	// while another agent is replacing a leftover claim, a third is refused and told to bind again
+	fs.rmSync(path.join(bindingsDir(env), 'b2.json'));
+	fs.writeFileSync(`${claimFile}.takeover`, 'b9');
+	const during = bindAgent({ agentId: 'b3', agentType: BUILDER, worktree, env });
+	assert.equal(during.ok, false);
+	assert.match(during.reason, /bind again/);
+	assert.deepEqual(listBindings(env), []);
+	fs.rmSync(`${claimFile}.takeover`);
+	bound(bindAgent({ agentId: 'b3', agentType: BUILDER, worktree, env }));
+	assert.equal(fs.readFileSync(claimFile, 'utf8'), 'b3');
+	assert.deepEqual(claims(env), [path.basename(claimFile)], 'no takeover or temporary file is left');
+});
+
+test('unbindAgent, unbindWorktree and clear remove the claims with the bindings', () => {
+	const { base, worktree, env } = fixture({ role: 'builder' });
+	const other = addWorktree(base, 'APP-2', { role: 'builder' });
+	bound(bindAgent({ agentId: 'b1', agentType: BUILDER, worktree, env }));
+	bound(bindAgent({ agentId: 'b2', agentType: BUILDER, worktree: other, env }));
+	unbindAgent('b2', env);
+	assert.deepEqual(claims(env), [path.basename(claimPath(env, worktree, 'builder'))]);
+	// a claim of another role on the worktree goes with unbindWorktree too
+	fs.writeFileSync(claimPath(env, worktree, 'reviewer'), 'r1');
+	bound(bindAgent({ agentId: 'b2', agentType: BUILDER, worktree: other, env }));
+	unbindWorktree(worktree, env);
+	assert.deepEqual(claims(env), [path.basename(claimPath(env, other, 'builder'))]);
+	assert.deepEqual(listBindings(env), ['b2.json']);
+	// the worktree is free again for a new agent
+	bound(bindAgent({ agentId: 'b3', agentType: BUILDER, worktree, env }));
+	clearBindings(env);
+	assert.deepEqual(claims(env), []);
+	assert.equal(fs.existsSync(bindingsDir(env)), false);
+});
+
+test('an agent bound to one worktree is not bound to another as well, unless its binding no longer resolves', () => {
+	const { base, repo, worktree, env } = fixture({ role: 'builder' });
+	const other = addWorktree(base, 'APP-2', { role: 'builder' });
+	bound(bindAgent({ agentId: 'b1', agentType: BUILDER, worktree, env }));
+	const moved = bindAgent({ agentId: 'b1', agentType: BUILDER, worktree: other, env });
+	assert.equal(moved.ok, false);
+	assert.match(moved.reason, /already bound to/);
+	assert.match(moved.reason, /\.$/);
+	assert.equal(resolveRun({ cwd: repo, agentType: BUILDER, agentId: 'b1', env }).root, fs.realpathSync.native(worktree));
+	assert.deepEqual(claims(env), [path.basename(claimPath(env, worktree, 'builder'))]);
+	// the same worktree again is the same binding
+	bound(bindAgent({ agentId: 'b1', agentType: BUILDER, worktree, env }));
+	// once its run has moved on to another role, the old binding is dead and the agent may bind elsewhere, giving up its old claim
+	fs.writeFileSync(path.join(worktree, '.dev-factory', 'run.json'), JSON.stringify({ key: 'APP-1', role: 'reviewer' }));
+	bound(bindAgent({ agentId: 'b1', agentType: BUILDER, worktree: other, env }));
+	assert.deepEqual(claims(env), [path.basename(claimPath(env, other, 'builder'))]);
 });
 
 test("a binding made before the run's role changed no longer resolves", () => {

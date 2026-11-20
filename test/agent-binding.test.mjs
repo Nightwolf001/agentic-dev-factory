@@ -3,7 +3,7 @@
 // stdin, the way Claude Code runs them.
 import './isolate-state.mjs';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -39,13 +39,18 @@ function addWorktree(base, key, run) {
 const hook = (script, env, evt) => spawnSync(process.execPath, [path.join(SCRIPTS, script)], { input: JSON.stringify(evt), env, encoding: 'utf8' });
 const agent = (agent_type, agent_id) => ({ agent_type, ...(agent_id === undefined ? {} : { agent_id }) });
 const bash = (env, repo, who, command) => hook('guard-bash.mjs', env, { cwd: repo, tool_input: { command }, ...who });
-const edit = (env, repo, who, file) => hook('edit-guard.mjs', env, { cwd: repo, tool_input: { file_path: file, content: 'x' }, ...who });
+const edit = (env, repo, who, file, tool_name = 'Write') =>
+	hook('edit-guard.mjs', env, { cwd: repo, tool_name, tool_input: { file_path: file, content: 'x' }, ...who });
 const mcp = (env, repo, who, tool = SENTRY) => hook('mcp-guard.mjs', env, { cwd: repo, tool_name: tool, tool_input: {}, ...who });
 const stop = (env, repo, who) => hook('stop-gate.mjs', env, { cwd: repo, ...who });
 const bindCmd = (worktree, script = RUN_CONTEXT) => `node "${script}" bind --worktree ${worktree}`;
 const listBindings = (env) => {
 	try {
-		return fs.readdirSync(bindingsDir(env)).sort();
+		// the bindings themselves, not the claims folder beside them
+		return fs
+			.readdirSync(bindingsDir(env))
+			.filter((f) => f.endsWith('.json'))
+			.sort();
 	} catch {
 		return [];
 	}
@@ -155,6 +160,11 @@ test('a bind chained with another command is not the bind command', () => {
 		`echo $(${bindCmd(one)})`,
 		`${bindCmd(one)}\necho x`,
 		`echo x; ${bindCmd(one)}`,
+		`${bindCmd(one)}\rid`,
+		`${bindCmd(one)} & id`,
+		`${bindCmd(one)} > /tmp/x`,
+		`bash <<EOF\n${bindCmd(one)}\nEOF`,
+		`bash -c '${bindCmd(one)}'`,
 	]) {
 		const r = bash(env, repo, who, command);
 		assert.equal(r.status, 2, command);
@@ -197,11 +207,13 @@ test('the stop gate removes the binding of an agent it lets stop, and keeps it w
 	const { base, repo, env } = fixture();
 	const research = addWorktree(base, 'APP-4', { role: 'researcher' });
 	const who = agent(RESEARCHER, 's1');
-	assert.equal(bash(env, repo, who, bindCmd(research)).status, 0);
+	// bound only through the tools a researcher has: its first Write
+	assert.equal(edit(env, repo, who, path.join(research, 'docs/plans/APP-4/research.md')).status, 0);
+	assert.deepEqual(listBindings(env), ['s1.json']);
 	const held = stop(env, repo, who);
 	assert.equal(held.status, 2, held.stderr);
 	assert.deepEqual(listBindings(env), ['s1.json'], 'an agent told to carry on is still bound');
-	assert.equal(bash(env, repo, who, 'ls').status, 0);
+	assert.equal(edit(env, repo, who, path.join(research, '.dev-factory/blocked.json')).status, 0);
 	fs.writeFileSync(path.join(research, '.dev-factory', 'blocked.json'), '{}');
 	assert.equal(stop(env, repo, who).status, 0);
 	assert.deepEqual(listBindings(env), [], 'a finished agent leaves no binding behind');
@@ -255,4 +267,115 @@ test('a hook that fails on a factory agent refuses rather than allows', () => {
 		// an unbound agent is refused before anything can fail
 		assert.equal(hook(script, env, { cwd: repo, ...agent(BUILDER, 'f2'), ...extra }).status, 2);
 	}
+});
+
+// A researcher has no Bash tool (agents/factory-researcher.md), so it cannot run the bind command: its first Write binds it.
+test('a researcher is bound by its first Write, and only by a Write into a free researcher run', () => {
+	const { base, repo, env, one } = fixture();
+	const res = addWorktree(base, 'APP-6', { role: 'researcher' });
+	const held = addWorktree(base, 'APP-8', { role: 'researcher' });
+	const Q = agent(RESEARCHER, 'q1');
+	const refusedWrite = (who, file, reason, tool) => {
+		const before = listBindings(env);
+		const r = edit(env, repo, who, file, tool);
+		assert.equal(r.status, 2, `${file}: ${r.stderr}`);
+		if (reason) assert.match(r.stderr, reason, file);
+		assert.deepEqual(listBindings(env), before, `${file}: nothing recorded`);
+	};
+	// another researcher holds APP-8
+	assert.equal(edit(env, repo, agent(RESEARCHER, 'q0'), path.join(held, 'docs/plans/APP-8/research.md')).status, 0);
+	assert.deepEqual(listBindings(env), ['q0.json']);
+	refusedWrite(Q, path.join(held, 'docs/plans/APP-8/research.md'), /already bound/);
+	// a relative path cannot name a run
+	refusedWrite(Q, 'docs/plans/APP-6/research.md', /absolute path/);
+	// the nearest run above the file is a builder's
+	refusedWrite(Q, path.join(one, 'docs/plans/APP-1/research.md'), /builder role, and this agent is a researcher/);
+	// `..` is judged by where it leads: out of APP-6 into APP-1's builder run, and out of every run
+	refusedWrite(Q, path.join(res, '..', 'APP-1', 'docs', 'research.md'), /builder role/);
+	refusedWrite(Q, path.join(res, '..', '..', 'repo', 'notes.md'), /no folder above/);
+	// only the Write tool binds, and only a researcher
+	refusedWrite(Q, path.join(res, 'docs/plans/APP-6/research.md'), /not bound/, 'Edit');
+	refusedWrite(Q, path.join(res, 'docs/plans/APP-6/research.md'), /not bound/, 'MultiEdit');
+	for (const [role, key] of [
+		['builder', 'APP-11'],
+		['reviewer', 'APP-12'],
+		['debugger', 'APP-13'],
+		['improver', 'APP-14'],
+		['promoter', 'APP-15'],
+	]) {
+		const w = addWorktree(base, key, { role });
+		refusedWrite(agent(`dev-factory:factory-${role}`, `x-${role}`), path.join(w, 'AGENTS.md'), /not bound/);
+	}
+	// the first Write binds and is judged under the run it bound: research.md passes
+	assert.equal(edit(env, repo, Q, path.join(res, 'docs/plans/APP-6/research.md')).status, 0);
+	assert.deepEqual(listBindings(env), ['q0.json', 'q1.json']);
+	// from then on the researcher's limits hold
+	const src = edit(env, repo, Q, path.join(res, 'src/x.js'));
+	assert.equal(src.status, 2);
+	assert.match(src.stderr, /a researcher writes only docs\/plans\/APP-6\/research\.md/);
+	// a first Write the researcher limits refuse is refused, though the binding it made stays for the next one
+	const R = agent(RESEARCHER, 'q2');
+	const res2 = addWorktree(base, 'APP-9', { role: 'researcher' });
+	const wrong = edit(env, repo, R, path.join(res2, 'src/x.js'));
+	assert.equal(wrong.status, 2);
+	assert.match(wrong.stderr, /a researcher writes only/);
+	assert.ok(listBindings(env).includes('q2.json'));
+	// the stop gate removes the binding when it lets the researcher go
+	fs.writeFileSync(path.join(res, '.dev-factory', 'blocked.json'), '{}');
+	assert.equal(stop(env, repo, Q).status, 0);
+	assert.ok(!listBindings(env).includes('q1.json'));
+});
+
+test('a bound agent does not bind to a second worktree, and rebinding its own is fine', () => {
+	const { repo, env, one, two } = fixture();
+	const A = agent(BUILDER, 'm1');
+	assert.equal(bash(env, repo, A, bindCmd(one)).status, 0);
+	const moved = bash(env, repo, A, bindCmd(two));
+	assert.equal(moved.status, 2);
+	assert.match(moved.stderr, /already bound to/);
+	assert.equal(bash(env, repo, A, bindCmd(one)).status, 0);
+	assert.match(bash(env, repo, A, 'git push origin feat/APP-2').stderr, /feat\/APP-1/, 'still judged by its first run');
+	// the second worktree is still free for another agent
+	assert.equal(bash(env, repo, agent(BUILDER, 'm2'), bindCmd(two)).status, 0);
+});
+
+test('three agents binding one worktree at once: at most one is accepted, every round', async () => {
+	const { repo, env, one } = fixture();
+	const bindAt = (id) =>
+		new Promise((resolve) => {
+			const c = spawn(process.execPath, [path.join(SCRIPTS, 'guard-bash.mjs')], { env });
+			c.stdin.end(JSON.stringify({ cwd: repo, tool_input: { command: bindCmd(one) }, ...agent(BUILDER, id) }));
+			c.on('exit', (code) => resolve(code));
+		});
+	for (let round = 0; round < 25; round++) {
+		fs.rmSync(bindingsDir(env), { recursive: true, force: true });
+		const codes = await Promise.all(['a', 'b', 'c'].map((s) => bindAt(`P${round}${s}`)));
+		const accepted = codes.filter((c) => c === 0).length;
+		assert.ok(accepted <= 1, `round ${round}: ${codes.join(',')}`);
+		assert.ok(
+			codes.every((c) => c === 0 || c === 2),
+			`round ${round}: ${codes.join(',')}`,
+		);
+		assert.equal(listBindings(env).length, accepted, `round ${round}: one binding for the one accepted`);
+	}
+});
+
+test('an event that is null, a list or a bare value is let through by every hook without a crash', () => {
+	const { env } = fixture();
+	for (const script of ['guard-bash.mjs', 'edit-guard.mjs', 'mcp-guard.mjs', 'stop-gate.mjs'])
+		for (const raw of ['null', '[]', '"x"', '7', 'true', '', '{']) {
+			const r = spawnSync(process.execPath, [path.join(SCRIPTS, script)], { input: raw, env, encoding: 'utf8' });
+			assert.equal(r.status, 0, `${script} ${raw}: ${r.stderr}`);
+			assert.equal(r.stderr, '', `${script} ${raw}`);
+		}
+});
+
+test('a bound agent whose session is in another worktree is judged by that worktree, as the run in cwd wins', () => {
+	const { repo, env, one, two } = fixture();
+	const A = agent(BUILDER, 'w1');
+	assert.equal(bash(env, repo, A, bindCmd(one)).status, 0);
+	const fromTwo = hook('guard-bash.mjs', env, { cwd: two, tool_input: { command: 'git push origin feat/APP-1' }, ...A });
+	assert.equal(fromTwo.status, 2);
+	assert.match(fromTwo.stderr, /only the ticket branch feat\/APP-2 may be pushed/);
+	assert.equal(hook('guard-bash.mjs', env, { cwd: two, tool_input: { command: 'git push origin feat/APP-2' }, ...A }).status, 0);
 });

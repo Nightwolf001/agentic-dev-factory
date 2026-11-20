@@ -32,6 +32,8 @@ process.stdin
 		} catch {
 			process.exit(0);
 		}
+		// null, a list or a bare value is no event either
+		if (evt === null || typeof evt !== 'object' || Array.isArray(evt)) process.exit(0);
 		const { root: cwd, run } = resolveRun({ cwd: evt.cwd || process.cwd(), agentType: evt.agent_type, agentId: evt.agent_id });
 		// every way the gate lets the agent stop goes through here
 		const letGo = () => {

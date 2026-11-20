@@ -11,12 +11,11 @@ import { fileURLToPath } from 'node:url';
 import { get } from './config.mjs';
 import { evaluate } from './guard-lib.mjs';
 import { takeoverOn } from './takeover.mjs';
-import { FACTORY_AGENT, bindAgent, parseBindCommand, resolveRun, unboundReason } from './run-context.mjs';
+import { FACTORY_AGENT, bindAgent, judgedRole, parseBindCommand, resolveRun, unboundReason } from './run-context.mjs';
 
 // The run-context.mjs beside this hook. The bind command runs once this hook allows it, so the script it names must be this file:
 // any other file of that name would run unchecked.
 const OWN_RUN_CONTEXT = path.join(path.dirname(fileURLToPath(import.meta.url)), 'run-context.mjs');
-const BIND_SCRIPT = /^[ \t]*node[ \t]+"([^"]*)"/;
 const realOrNull = (p) => {
 	try {
 		return fs.realpathSync(p);
@@ -41,10 +40,10 @@ function judge(evt, factory) {
 	if (factory && typeof command === 'string') {
 		const bind = parseBindCommand(command);
 		if (bind) {
-			const script = BIND_SCRIPT.exec(command)?.[1];
+			const { script } = bind;
 			if (!isOwnRunContext(script))
 				refuse(
-					`dev-factory guard: the bind names ${JSON.stringify(script ?? '')}, which is not this plugin's own run-context.mjs (${OWN_RUN_CONTEXT}); bind with that file, by its absolute path.`,
+					`dev-factory guard: the bind names ${JSON.stringify(script)}, which is not this plugin's own run-context.mjs (${OWN_RUN_CONTEXT}); bind with that file, by its absolute path.`,
 				);
 			const r = bindAgent({ agentId: evt.agent_id, agentType: evt.agent_type, worktree: bind.worktree });
 			if (!r.ok) refuse(`dev-factory guard: the bind was refused: ${r.reason}`);
@@ -81,8 +80,7 @@ function judge(evt, factory) {
 		trackerHosts,
 		branch: run?.branch,
 		key: run?.key,
-		// a factory agent's run with no role is a builder's, as the binding and the stop gate read it, so it gets the builder limits
-		role: factory && run ? run.role ?? 'builder' : run?.role,
+		role: factory && run ? judgedRole(run) : run?.role,
 		containerOnly,
 		service: environment.service,
 		noAttribution,
@@ -103,6 +101,8 @@ process.stdin
 			// nothing to judge, and no way to tell whose event it was
 			process.exit(0);
 		}
+		// null, a list or a bare value is no event either
+		if (evt === null || typeof evt !== 'object' || Array.isArray(evt)) process.exit(0);
 		const factory = typeof evt?.agent_type === 'string' && FACTORY_AGENT.test(evt.agent_type);
 		try {
 			judge(evt, factory);

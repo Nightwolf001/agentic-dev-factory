@@ -20,6 +20,7 @@
 // a factory agent is not allowed to run (scripts/guard-lib.mjs), changes it. A `write` that sets a role starts a new stage, so it drops
 // that worktree's bindings: the next agent binds afresh and never meets its predecessor's record.
 import { execFileSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -59,6 +60,9 @@ const sameFolder = (a, b) => {
 const here = (cwd) => (typeof cwd === 'string' && cwd ? cwd : process.cwd());
 // A run with no role is a builder's, as the stop gate's ownsRun reads it.
 const runRoleOf = (run) => run.role ?? 'builder';
+// The role whose limits the hooks apply to a factory agent working in `run`: the same reading, so a builder in a run with no role is
+// held to the builder limits rather than to none.
+export const judgedRole = (run) => runRoleOf(run);
 
 const readJson = (f) => {
 	try {
@@ -158,9 +162,20 @@ export function bindAgent({ agentId, agentType, worktree, env = process.env }) {
 			ok: false,
 			reason: `The run in ${dir} is for the ${runRole} role, and this agent is a ${role}: an agent binds only to a run of its own role.`,
 		};
+	// one agent works in one run: a live binding of its own to another worktree is not moved by a second bind
+	const current = liveBinding(agentId, role, env);
+	if (current && current.root !== dir)
+		return {
+			ok: false,
+			reason: `This agent is already bound to ${current.root}, and an agent works in one run: it does not bind to ${dir} as well.`,
+		};
 	if (holderOf(agentId, role, dir, env)) return alreadyBound(role, dir);
 	const binding = { worktree: dir, role, at: new Date().toISOString() };
 	const file = path.join(bindingsDir(env), `${agentId}.json`);
+	// a binding of its own that no longer resolves (its run moved on) gives up its claim before the agent claims anew
+	const previous = readJson(file);
+	if (isObject(previous) && typeof previous.worktree === 'string' && typeof previous.role === 'string' && !sameFolder(previous.worktree, dir))
+		dropClaim(previous.worktree, previous.role, agentId, env);
 	// written beside the file and renamed over it, so a hook never reads half of it
 	const tmp = `${file}.${process.pid}.tmp`;
 	try {
@@ -175,8 +190,18 @@ export function bindAgent({ agentId, agentType, worktree, env = process.env }) {
 		}
 		return { ok: false, reason: `The binding could not be recorded in ${bindingsDir(env)} (${e.code || e.message}).` };
 	}
-	const settled = settleBinding(agentId, env);
-	return settled.ok ? { ok: true, binding } : settled;
+	// Two agents of one role binding to one worktree at the same moment can both pass the check above before either writes, so the
+	// claim, created exclusively, settles it: the first to create it wins, whatever the clocks say (this replaces a look-again that
+	// ordered the bindings by time). The binding is written before the claim, so a claim on record names an agent whose binding was
+	// written first, and one whose binding is gone left its claim behind.
+	const claimed = claim(agentId, role, dir, env);
+	if (claimed.ok) return { ok: true, binding };
+	try {
+		fs.rmSync(file, { force: true });
+	} catch {
+		// a binding left behind without its claim still meets the holder check of the next bind
+	}
+	return claimed;
 }
 
 // Another agent's binding of `role` to the folder `dir`, as [agentId, binding], or undefined.
@@ -185,31 +210,103 @@ const alreadyBound = (role, dir) => ({
 	ok: false,
 	reason: `Another ${role} agent is already bound to ${dir}, and one run has one agent of each role.`,
 });
-const earlier = ([idA, a], [idB, b]) => String(a.at ?? '') < String(b.at ?? '') || (String(a.at ?? '') === String(b.at ?? '') && idA < idB);
 
-// The check after a binding is in place: two agents of one role binding to one worktree at the same moment can both pass the check
-// before the write, so each looks again, and the one that bound later (by time, then agent id) removes its own record and is
-// refused. Exported for its test; bindAgent calls it. -> { ok: true } or the refusal.
-export function settleBinding(agentId, env = process.env) {
-	if (!validId(agentId)) return { ok: false, reason: 'The agent id may hold only letters, digits, "_" and "-", at most 128 of them.' };
-	const all = bindings(env);
-	const mine = all.find(([id]) => id === agentId);
-	if (!mine) return { ok: false, reason: 'The binding is no longer on record, so the bind did not take.' };
-	const first = all.find(
-		([id, b]) => id !== agentId && b.role === mine[1].role && sameFolder(b.worktree, mine[1].worktree) && earlier([id, b], mine),
-	);
-	if (!first) return { ok: true };
+// The agent's own binding while it still resolves (its run is still for its role), as { root, run }, or null.
+const liveBinding = (agentId, role, env) => {
 	try {
-		fs.rmSync(path.join(bindingsDir(env), `${agentId}.json`), { force: true });
+		return boundRun(agentId, `factory-${role}`, env);
 	} catch {
-		// a record left behind is still the later one, so it loses the same check again
+		return null;
 	}
-	return alreadyBound(mine[1].role, canon(mine[1].worktree));
+};
+
+// One claim per worktree and role: <state>/agents/claims/<sha256 of the canonical worktree>.<role>, holding the agent id.
+const claimsDir = (env) => path.join(bindingsDir(env), 'claims');
+const worktreeHash = (dir) => crypto.createHash('sha256').update(dir).digest('hex');
+const claimFile = (dir, role, env) => path.join(claimsDir(env), `${worktreeHash(canon(dir))}.${role}`);
+const readClaim = (f) => {
+	try {
+		return fs.readFileSync(f, 'utf8').trim();
+	} catch {
+		return null;
+	}
+};
+// Whether the claim's holder still has a binding of that role to that worktree; a claim without one was left behind.
+const holdsClaim = (holder, role, dir, env) => {
+	if (!validId(holder)) return false;
+	const b = readJson(path.join(bindingsDir(env), `${holder}.json`));
+	return isObject(b) && b.role === role && typeof b.worktree === 'string' && sameFolder(b.worktree, dir);
+};
+// Exclusive and whole: the id is written to a file of its own and linked into place, which fails if the name exists, so no reader
+// ever meets a claim that is there but still empty.
+const createClaim = (f, agentId) => {
+	const tmp = `${f}.${agentId}.${process.pid}.tmp`;
+	fs.writeFileSync(tmp, agentId, { flag: 'w' });
+	try {
+		fs.linkSync(tmp, f);
+	} finally {
+		fs.rmSync(tmp, { force: true });
+	}
+};
+
+// -> { ok: true } or a refusal. A claim left behind is replaced only under a takeover file, itself created exclusively, so two agents
+// that find the same leftover claim cannot both remove it and both win; the one that loses is refused and may bind again.
+function claim(agentId, role, dir, env) {
+	const f = claimFile(dir, role, env);
+	const lost = (reason = alreadyBound(role, dir).reason) => ({ ok: false, reason });
+	try {
+		fs.mkdirSync(claimsDir(env), { recursive: true });
+		createClaim(f, agentId);
+		return { ok: true };
+	} catch (e) {
+		if (e.code !== 'EEXIST') return lost(`The claim on ${dir} could not be recorded in ${claimsDir(env)} (${e.code || e.message}).`);
+	}
+	const holder = readClaim(f);
+	if (holder === agentId) return { ok: true };
+	if (holder === null || holdsClaim(holder, role, dir, env)) return lost();
+	const takeover = `${f}.takeover`;
+	try {
+		createClaim(takeover, agentId);
+	} catch {
+		return lost(`Another ${role} agent is binding to ${dir} at this moment, so this bind did not take; bind again.`);
+	}
+	try {
+		if (readClaim(f) !== holder) return lost();
+		fs.rmSync(f, { force: true });
+		createClaim(f, agentId);
+		return { ok: true };
+	} catch {
+		return lost();
+	} finally {
+		try {
+			fs.rmSync(takeover, { force: true });
+		} catch {
+			// a takeover file left behind goes with the worktree's other claims when its stage ends (unbindWorktree)
+		}
+	}
 }
 
-// Drops every binding to `worktree`, however either path was written.
+// Removes the claim on `worktree` for `role` when `agentId` holds it. Never throws.
+function dropClaim(worktree, role, agentId, env) {
+	try {
+		const f = claimFile(worktree, role, env);
+		if (readClaim(f) === agentId) fs.rmSync(f, { force: true });
+	} catch {
+		// a claim that cannot be removed is replaced at a later bind once its holder's binding is gone
+	}
+}
+
+// Drops every binding to `worktree`, however either path was written, and every claim on it whatever the role.
 export function unbindWorktree(worktree, env = process.env) {
 	for (const [id, b] of bindings(env)) if (sameFolder(b.worktree, worktree)) fs.rmSync(path.join(bindingsDir(env), `${id}.json`), { force: true });
+	let names;
+	try {
+		names = fs.readdirSync(claimsDir(env));
+	} catch {
+		return;
+	}
+	const hashes = new Set([...pathNames(worktree)].map(worktreeHash));
+	for (const name of names) if (hashes.has(name.split('.')[0])) fs.rmSync(path.join(claimsDir(env), name), { force: true });
 }
 
 export const clearBindings = (env = process.env) => fs.rmSync(bindingsDir(env), { recursive: true, force: true });
@@ -219,7 +316,11 @@ export const clearBindings = (env = process.env) => fs.rmSync(bindingsDir(env), 
 export function unbindAgent(agentId, env = process.env) {
 	if (!validId(agentId)) return;
 	try {
-		fs.rmSync(path.join(bindingsDir(env), `${agentId}.json`), { force: true });
+		const file = path.join(bindingsDir(env), `${agentId}.json`);
+		const b = readJson(file);
+		// the claim goes first: while the binding is still on record, no other agent takes the claim for one left behind
+		if (isObject(b) && typeof b.worktree === 'string' && typeof b.role === 'string') dropClaim(b.worktree, b.role, agentId, env);
+		fs.rmSync(file, { force: true });
 	} catch {
 		// a file that cannot be removed is still checked on every use: its role and run must match again
 	}
@@ -249,15 +350,15 @@ export function workRoot({ cwd, env = process.env } = {}) {
 
 // The bind command, exactly: node "<...>/run-context.mjs" bind --worktree <absolute path>, the path bare or in single or double
 // quotes. Anything else (a chain, a pipe, a redirect, a substitution, a glob, an extra flag or word) is not the bind command, so the
-// hook judges it like any other command. -> { worktree } or null.
+// hook judges it like any other command. -> { worktree, script } (the script path as written) or null.
 const SHELL_SPECIAL = /[;|&<>$`()\\\n\r*?[\]{}!#~]/;
-const BIND_FORM = /^node[ \t]+"[^"]*\/run-context\.mjs"[ \t]+bind[ \t]+--worktree[ \t]+(?:'([^']+)'|"([^"]+)"|([^\s'"]+))$/;
+const BIND_FORM = /^node[ \t]+"([^"]*\/run-context\.mjs)"[ \t]+bind[ \t]+--worktree[ \t]+(?:'([^']+)'|"([^"]+)"|([^\s'"]+))$/;
 export function parseBindCommand(command) {
 	if (typeof command !== 'string' || SHELL_SPECIAL.test(command)) return null;
 	const m = BIND_FORM.exec(command.replace(/^[ \t]+|[ \t]+$/g, ''));
 	if (!m) return null;
-	const worktree = m[1] ?? m[2] ?? m[3];
-	return path.isAbsolute(worktree) ? { worktree } : null;
+	const worktree = m[2] ?? m[3] ?? m[4];
+	return path.isAbsolute(worktree) ? { worktree, script: m[1] } : null;
 }
 
 // Kept for one release so an older caller still loads; nothing reads the pointer any more.
