@@ -13,6 +13,7 @@ import {
 	pointerFile,
 	resolveRun,
 	setPointer,
+	settleBinding,
 	unbindWorktree,
 	workRoot,
 } from '../scripts/run-context.mjs';
@@ -24,7 +25,9 @@ const REVIEWER = 'dev-factory:factory-reviewer';
 
 // A session started in `repo`, a worktree elsewhere holding run.json, and a state dir for the bindings.
 function fixture(run) {
-	const base = fs.mkdtempSync(path.join(os.tmpdir(), 'df-ctx-'));
+	// the canonical name of the folder (macOS keeps temp folders behind /var -> /private/var), since a binding records that name;
+	// the alias test below makes its own other names
+	const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'df-ctx-')));
 	const repo = path.join(base, 'repo');
 	const worktree = path.join(base, '.worktrees', 'APP-1');
 	fs.mkdirSync(repo, { recursive: true });
@@ -282,7 +285,7 @@ const readRun = (worktree) => JSON.parse(fs.readFileSync(path.join(worktree, '.d
 
 // A worktree as `worktree.mjs add` leaves it: a checkout with no .dev-factory folder yet.
 function freshWorktree() {
-	const base = fs.mkdtempSync(path.join(os.tmpdir(), 'df-write-'));
+	const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'df-write-')));
 	const worktree = path.join(base, '.worktrees', 'APP-7');
 	fs.mkdirSync(worktree, { recursive: true });
 	return { base, repo: path.join(base, 'repo'), worktree, env: { ...process.env, DF_STATE_DIR: path.join(base, 'state'), DF_ACTIVE: '1' } };
@@ -389,4 +392,108 @@ test('run-context.mjs bind --worktree <abs> says the guard records the binding, 
 	assert.equal(set.status, 0, set.stderr);
 	assert.match(set.stderr, /no longer used/);
 	assert.equal(fs.existsSync(pointerFile(env)), false, 'set writes no pointer');
+});
+
+// Another name for one folder: a symlink to it, and on case-insensitive storage the same path in another case.
+function aliases(base, worktree) {
+	const out = [];
+	const link = path.join(base, 'link-to-wt');
+	fs.symlinkSync(worktree, link);
+	out.push(['symlink', link]);
+	const swapped = path.join(path.dirname(worktree), path.basename(worktree).toUpperCase());
+	if (swapped !== worktree && fs.existsSync(swapped)) out.push(['case', swapped]);
+	return out;
+}
+
+test('a symlink or case alias of a bound worktree is the same worktree for the same-role check, unbindWorktree and workRoot', (t) => {
+	const { base, repo, worktree: wt0, env } = fixture({ role: 'builder' });
+	const worktree = path.join(path.dirname(wt0), 'app-1');
+	fs.renameSync(wt0, worktree);
+	const found = aliases(base, worktree);
+	if (!found.some(([kind]) => kind === 'case')) t.diagnostic('this file system tells case apart, so the case alias is not tested here');
+	for (const [kind, alias] of found) {
+		clearBindings(env);
+		const first = bound(bindAgent({ agentId: 'b1', agentType: BUILDER, worktree, env }));
+		assert.equal(first.worktree, fs.realpathSync.native(worktree), 'the binding holds the canonical path');
+		const second = bindAgent({ agentId: 'b2', agentType: BUILDER, worktree: alias, env });
+		assert.equal(second.ok, false, `${kind}: a second builder through the alias is refused`);
+		assert.match(second.reason, /already bound/);
+		assert.equal(resolveRun({ cwd: repo, agentType: BUILDER, agentId: 'b1', env }).root, first.worktree);
+		// two agents of other roles bound through two names of the folder count as one worktree
+		fs.writeFileSync(path.join(bindingsDir(env), 'r1.json'), JSON.stringify({ worktree: alias, role: 'reviewer', at: first.at }));
+		assert.equal(workRoot({ cwd: repo, env }), first.worktree, `${kind}: one folder, one worktree`);
+		unbindWorktree(alias, env);
+		assert.deepEqual(listBindings(env), [], `${kind}: unbinding through the alias removes both`);
+	}
+});
+
+test('after the rename the later of two same-role binds to one worktree removes its own file and is refused', () => {
+	const { worktree, env } = fixture({ role: 'builder' });
+	const real = fs.realpathSync.native(worktree);
+	fs.mkdirSync(bindingsDir(env), { recursive: true });
+	const plant = (id, at) => fs.writeFileSync(path.join(bindingsDir(env), `${id}.json`), JSON.stringify({ worktree: real, role: 'builder', at }));
+	plant('b0', '2026-11-20T10:00:00.000Z');
+	plant('b1', '2026-11-20T10:00:01.000Z');
+	const lost = settleBinding('b1', env);
+	assert.equal(lost.ok, false);
+	assert.match(lost.reason, /already bound/);
+	assert.deepEqual(listBindings(env), ['b0.json']);
+	// the earlier one keeps its binding when it looks again
+	assert.equal(settleBinding('b0', env).ok, true);
+	assert.deepEqual(listBindings(env), ['b0.json']);
+	// with the same time the lower agent id wins
+	plant('a9', '2026-11-20T10:00:00.000Z');
+	assert.equal(settleBinding('b0', env).ok, false);
+	assert.deepEqual(listBindings(env), ['a9.json']);
+});
+
+test("a binding made before the run's role changed no longer resolves", () => {
+	const { repo, worktree, env } = fixture({ role: 'builder' });
+	bound(bindAgent({ agentId: 'b1', agentType: BUILDER, worktree, env }));
+	const runJson = path.join(worktree, '.dev-factory', 'run.json');
+	fs.writeFileSync(runJson, JSON.stringify({ key: 'APP-1', role: 'reviewer' }));
+	const r = resolveRun({ cwd: repo, agentType: BUILDER, agentId: 'b1', env });
+	assert.equal(r.run, null);
+	assert.equal(r.unbound, true);
+	// a run with no role is a builder's, as the stop gate and the bind check read it
+	fs.writeFileSync(runJson, JSON.stringify({ key: 'APP-1' }));
+	assert.equal(resolveRun({ cwd: repo, agentType: BUILDER, agentId: 'b1', env }).via, 'binding');
+});
+
+test('bindAgent never throws: a too-long agent id and a state folder that cannot be written give a reason', () => {
+	const { base, worktree, env } = fixture({ role: 'builder' });
+	const long = bindAgent({ agentId: 'a'.repeat(300), agentType: BUILDER, worktree, env });
+	assert.equal(long.ok, false);
+	assert.match(long.reason, /agent id/);
+	assert.equal(bindAgent({ agentId: 'a'.repeat(128), agentType: BUILDER, worktree, env }).ok, true);
+	fs.writeFileSync(path.join(base, 'a-file'), 'x');
+	const blocked = { ...env, DF_STATE_DIR: path.join(base, 'a-file', 'state') };
+	let r;
+	assert.doesNotThrow(() => (r = bindAgent({ agentId: 'b1', agentType: BUILDER, worktree, env: blocked })));
+	assert.equal(r.ok, false);
+	assert.match(r.reason, /\.$/);
+	assert.match(r.reason, /binding/);
+});
+
+test('resolveRun and workRoot take a missing or non-string cwd as the process directory', () => {
+	const { env } = fixture({ role: 'builder' });
+	for (const cwd of [undefined, null, 42, '']) {
+		assert.doesNotThrow(() => resolveRun({ cwd, agentType: BUILDER, agentId: 'b1', env }));
+		assert.equal(resolveRun({ cwd, agentType: BUILDER, agentId: 'b1', env }).unbound, true);
+		assert.equal(typeof workRoot({ cwd, env }), 'string');
+	}
+	assert.doesNotThrow(() => resolveRun());
+	assert.doesNotThrow(() => workRoot());
+});
+
+test('workRoot skips a corrupt or foreign file in the bindings folder', () => {
+	const { repo, worktree, env } = fixture({ role: 'builder' });
+	fs.mkdirSync(bindingsDir(env), { recursive: true });
+	fs.writeFileSync(path.join(bindingsDir(env), 'bad.json'), '{nope');
+	fs.writeFileSync(path.join(bindingsDir(env), 'arr.json'), '[1]');
+	fs.writeFileSync(path.join(bindingsDir(env), 'rel.json'), JSON.stringify({ worktree: 'rel/dir', role: 'builder' }));
+	fs.writeFileSync(path.join(bindingsDir(env), 'notes.txt'), 'x');
+	assert.equal(workRoot({ cwd: repo, env }), repo);
+	bound(bindAgent({ agentId: 'b1', agentType: BUILDER, worktree, env }));
+	assert.equal(workRoot({ cwd: repo, env }), fs.realpathSync.native(worktree));
 });

@@ -32,9 +32,32 @@ const roleOf = (agentType) => (typeof agentType === 'string' ? FACTORY_AGENT.exe
 const stateDir = (env) => env.DF_STATE_DIR || path.join(os.homedir(), '.dev-factory');
 export const pointerFile = (env = process.env) => path.join(stateDir(env), 'active-run.json');
 export const bindingsDir = (env = process.env) => path.join(stateDir(env), 'agents');
-// An agent id becomes a file name, so only these characters are accepted.
-const AGENT_ID = /^[A-Za-z0-9_-]+$/;
+// An agent id becomes a file name, so only these characters, and not too many of them, are accepted.
+const AGENT_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const validId = (agentId) => typeof agentId === 'string' && AGENT_ID.test(agentId);
+// One name for a folder however it was written: a symlink, /tmp for /private/tmp, or another case on case-insensitive storage all
+// name the same worktree, and bindings compare worktrees by this name. A folder that cannot be resolved keeps its written form.
+const canon = (p) => {
+	const abs = path.resolve(p);
+	try {
+		return fs.realpathSync.native(abs);
+	} catch {
+		try {
+			return fs.realpathSync(abs);
+		} catch {
+			return abs;
+		}
+	}
+};
+// The names a path may be stored or given under, so a binding written before paths were resolved is still found.
+const pathNames = (p) => new Set([path.resolve(p), canon(p)]);
+const sameFolder = (a, b) => {
+	const nb = pathNames(b);
+	return [...pathNames(a)].some((n) => nb.has(n));
+};
+const here = (cwd) => (typeof cwd === 'string' && cwd ? cwd : process.cwd());
+// A run with no role is a builder's, as the stop gate's ownsRun reads it.
+const runRoleOf = (run) => run.role ?? 'builder';
 
 const readJson = (f) => {
 	try {
@@ -76,21 +99,26 @@ function bindings(env) {
 	return out;
 }
 
-// The binding of one agent, used only when it was made for the agent's own role and its worktree still holds a run.
+// The binding of one agent, used only when it was made for the agent's own role, its worktree still holds a run, and that run is
+// still for this role (a binding from before a role change is never used, even if nothing removed it).
 function boundRun(agentId, agentType, env) {
 	if (!validId(agentId)) return null;
 	const b = readJson(path.join(bindingsDir(env), `${agentId}.json`));
 	if (!isObject(b) || typeof b.worktree !== 'string' || !path.isAbsolute(b.worktree)) return null;
 	if (b.role !== roleOf(agentType)) return null;
-	const run = readRun(b.worktree);
-	return run ? { root: b.worktree, run } : null;
+	const root = canon(b.worktree);
+	const run = readRun(root);
+	if (!run || runRoleOf(run) !== b.role) return null;
+	return { root, run };
 }
 
 // -> { root, run, via, unbound? } where run is null when the event is not part of a factory run. A factory agent that has no usable
-// binding is marked `unbound`, so the hooks can refuse it rather than take it for the scheduler. Never throws.
-export function resolveRun({ cwd, agentType = null, agentId = null, env = process.env }) {
-	const here = readJson(path.join(cwd, '.dev-factory', 'run.json'));
-	if (here) return { root: cwd, run: here, via: 'cwd' };
+// binding is marked `unbound`, so the hooks can refuse it rather than take it for the scheduler. Never throws; a missing cwd is the
+// process directory.
+export function resolveRun({ cwd, agentType = null, agentId = null, env = process.env } = {}) {
+	cwd = here(cwd);
+	const inCwd = readJson(path.join(cwd, '.dev-factory', 'run.json'));
+	if (inCwd) return { root: cwd, run: inCwd, via: 'cwd' };
 	if (roleOf(agentType)) {
 		let found = null;
 		try {
@@ -112,34 +140,75 @@ export function bindAgent({ agentId, agentType, worktree, env = process.env }) {
 	if (!role) return { ok: false, reason: `Only a factory agent binds to a run, and ${JSON.stringify(agentType ?? null)} is not one.` };
 	if (agentId === undefined || agentId === null || agentId === '')
 		return { ok: false, reason: 'The bind needs the agent id that the hook event carries, and this event has none.' };
-	if (!validId(agentId)) return { ok: false, reason: 'The agent id may hold only letters, digits, "_" and "-", since it names the binding file.' };
+	if (!validId(agentId))
+		return {
+			ok: false,
+			reason: 'The agent id may hold only letters, digits, "_" and "-", at most 128 of them, since it names the binding file.',
+		};
 	if (typeof worktree !== 'string' || !path.isAbsolute(worktree))
 		return { ok: false, reason: 'The worktree must be an absolute path: pass the one your dispatch names.' };
-	const dir = path.resolve(worktree);
-	const run = readRun(dir);
-	if (!run) return { ok: false, reason: `There is no .dev-factory/run.json in ${dir}, so it is not a run to bind to.` };
-	const runRole = run.role ?? 'builder';
+	const run = readRun(path.resolve(worktree));
+	if (!run) return { ok: false, reason: `There is no .dev-factory/run.json in ${path.resolve(worktree)}, so it is not a run to bind to.` };
+	// the folder exists now, so its canonical name is the one every comparison uses
+	const dir = canon(worktree);
+	const runRole = runRoleOf(run);
 	if (runRole !== role)
 		return {
 			ok: false,
 			reason: `The run in ${dir} is for the ${runRole} role, and this agent is a ${role}: an agent binds only to a run of its own role.`,
 		};
-	const holder = bindings(env).find(([id, b]) => id !== agentId && b.role === role && path.resolve(b.worktree) === dir);
-	if (holder) return { ok: false, reason: `Another ${role} agent is already bound to ${dir}, and one run has one agent of each role.` };
+	if (holderOf(agentId, role, dir, env)) return alreadyBound(role, dir);
 	const binding = { worktree: dir, role, at: new Date().toISOString() };
-	fs.mkdirSync(bindingsDir(env), { recursive: true });
 	const file = path.join(bindingsDir(env), `${agentId}.json`);
 	// written beside the file and renamed over it, so a hook never reads half of it
 	const tmp = `${file}.${process.pid}.tmp`;
-	fs.writeFileSync(tmp, JSON.stringify(binding) + '\n');
-	fs.renameSync(tmp, file);
-	return { ok: true, binding };
+	try {
+		fs.mkdirSync(bindingsDir(env), { recursive: true });
+		fs.writeFileSync(tmp, JSON.stringify(binding) + '\n');
+		fs.renameSync(tmp, file);
+	} catch (e) {
+		try {
+			fs.rmSync(tmp, { force: true });
+		} catch {
+			// nothing more can be done about a folder that cannot be written
+		}
+		return { ok: false, reason: `The binding could not be recorded in ${bindingsDir(env)} (${e.code || e.message}).` };
+	}
+	const settled = settleBinding(agentId, env);
+	return settled.ok ? { ok: true, binding } : settled;
 }
 
-// Drops every binding to `worktree`.
+// Another agent's binding of `role` to the folder `dir`, as [agentId, binding], or undefined.
+const holderOf = (agentId, role, dir, env) => bindings(env).find(([id, b]) => id !== agentId && b.role === role && sameFolder(b.worktree, dir));
+const alreadyBound = (role, dir) => ({
+	ok: false,
+	reason: `Another ${role} agent is already bound to ${dir}, and one run has one agent of each role.`,
+});
+const earlier = ([idA, a], [idB, b]) => String(a.at ?? '') < String(b.at ?? '') || (String(a.at ?? '') === String(b.at ?? '') && idA < idB);
+
+// The check after a binding is in place: two agents of one role binding to one worktree at the same moment can both pass the check
+// before the write, so each looks again, and the one that bound later (by time, then agent id) removes its own record and is
+// refused. Exported for its test; bindAgent calls it. -> { ok: true } or the refusal.
+export function settleBinding(agentId, env = process.env) {
+	if (!validId(agentId)) return { ok: false, reason: 'The agent id may hold only letters, digits, "_" and "-", at most 128 of them.' };
+	const all = bindings(env);
+	const mine = all.find(([id]) => id === agentId);
+	if (!mine) return { ok: false, reason: 'The binding is no longer on record, so the bind did not take.' };
+	const first = all.find(
+		([id, b]) => id !== agentId && b.role === mine[1].role && sameFolder(b.worktree, mine[1].worktree) && earlier([id, b], mine),
+	);
+	if (!first) return { ok: true };
+	try {
+		fs.rmSync(path.join(bindingsDir(env), `${agentId}.json`), { force: true });
+	} catch {
+		// a record left behind is still the later one, so it loses the same check again
+	}
+	return alreadyBound(mine[1].role, canon(mine[1].worktree));
+}
+
+// Drops every binding to `worktree`, however either path was written.
 export function unbindWorktree(worktree, env = process.env) {
-	const dir = path.resolve(worktree);
-	for (const [id, b] of bindings(env)) if (path.resolve(b.worktree) === dir) fs.rmSync(path.join(bindingsDir(env), `${id}.json`), { force: true });
+	for (const [id, b] of bindings(env)) if (sameFolder(b.worktree, worktree)) fs.rmSync(path.join(bindingsDir(env), `${id}.json`), { force: true });
 }
 
 export const clearBindings = (env = process.env) => fs.rmSync(bindingsDir(env), { recursive: true, force: true });
@@ -147,9 +216,10 @@ export const clearBindings = (env = process.env) => fs.rmSync(bindingsDir(env), 
 // Root for a factory tool (qa.mjs, coverage.mjs) run from a dispatched agent. Such a tool has no agent identity, and a subagent's
 // Bash call always starts in the session directory, so without --worktree: a run.json in the cwd wins, then the worktree of the
 // only live binding; with live bindings to two or more worktrees the tool cannot tell which is meant and stops.
-export function workRoot({ cwd, env = process.env }) {
+export function workRoot({ cwd, env = process.env } = {}) {
+	cwd = here(cwd);
 	if (fs.existsSync(path.join(cwd, '.dev-factory', 'run.json'))) return gitRoot(cwd);
-	const live = [...new Set(bindings(env).map(([, b]) => path.resolve(b.worktree)))].filter((w) => readRun(w));
+	const live = [...new Set(bindings(env).map(([, b]) => canon(b.worktree)))].filter((w) => readRun(w));
 	if (live.length === 1) return live[0];
 	if (live.length > 1)
 		throw new Error(
