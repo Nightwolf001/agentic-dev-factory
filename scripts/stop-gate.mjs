@@ -11,13 +11,15 @@
 // blocked.json naming what was unmet, so the scheduler hears about it at once instead of waiting out its stall window. A clean stop
 // clears the count, so one phase's nudges are not charged to the next. An agent whose type names a different factory role than
 // run.json is let go before any of that: the scheduler has already taken its hand-off and moved the run on to another role, so its
-// stop is not the run's and must not be nudged, counted, have its files moved aside or leave a block behind.
+// stop is not the run's and must not be nudged, counted, have its files moved aside or leave a block behind. Whenever the gate lets a
+// factory agent stop, that agent's binding is removed, so a finished agent never leaves one behind; a stop it refuses keeps it, since
+// the agent carries on. A factory agent with no usable binding has no run to finish here, and is let go.
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { status } from './debug-lib.mjs';
-import { REFUSED, checksBuild, decide, mayRecordBlock, ownsRun } from './stop-gate-lib.mjs';
-import { resolveRun } from './run-context.mjs';
+import { REFUSED, agentRoleOf, checksBuild, decide, mayRecordBlock, ownsRun } from './stop-gate-lib.mjs';
+import { resolveRun, unbindAgent } from './run-context.mjs';
 
 const MAX = Number(process.env.DF_STOP_GATE_MAX || 6);
 let input = '';
@@ -30,9 +32,14 @@ process.stdin
 		} catch {
 			process.exit(0);
 		}
-		const { root: cwd, run } = resolveRun({ cwd: evt.cwd || process.cwd(), agentType: evt.agent_type });
-		if (!run) process.exit(0);
-		if (!ownsRun(evt.agent_type, run)) process.exit(0);
+		const { root: cwd, run } = resolveRun({ cwd: evt.cwd || process.cwd(), agentType: evt.agent_type, agentId: evt.agent_id });
+		// every way the gate lets the agent stop goes through here
+		const letGo = () => {
+			if (agentRoleOf(evt.agent_type)) unbindAgent(evt.agent_id);
+			process.exit(0);
+		};
+		if (!run) letGo();
+		if (!ownsRun(evt.agent_type, run)) letGo();
 		const dir = path.join(cwd, '.dev-factory');
 		const has = (f) => fs.existsSync(path.join(dir, f));
 		const counter = path.join(dir, 'stop-nudges');
@@ -41,7 +48,7 @@ process.stdin
 			try {
 				head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf8' }).trim();
 			} catch {
-				process.exit(0);
+				letGo();
 			}
 		}
 		const debug = status(cwd);
@@ -60,7 +67,7 @@ process.stdin
 		const { finished, next, unmet } = decide({ run, has, head, debug, build });
 		if (finished) {
 			fs.rmSync(counter, { force: true });
-			process.exit(0);
+			letGo();
 		}
 		// Not finished in a build phase: a build.done still here was refused, and must not be read as a hand-off.
 		if (checksBuild(run) && has('build.done')) {
@@ -81,7 +88,7 @@ process.stdin
 						decision: 'Finish what the reason names by hand and resume the ticket, or close it.',
 					}),
 				);
-			process.exit(0);
+			letGo();
 		}
 		process.stderr.write(`dev-factory: the run is not finished (${n}/${MAX}). ${next}\n`);
 		process.exit(2);

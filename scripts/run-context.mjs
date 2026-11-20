@@ -23,6 +23,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { isMain } from './is-main.mjs';
 
 export const FACTORY_AGENT = /(^|:)factory-(builder|reviewer|debugger|researcher|improver|promoter)$/;
@@ -212,6 +213,24 @@ export function unbindWorktree(worktree, env = process.env) {
 }
 
 export const clearBindings = (env = process.env) => fs.rmSync(bindingsDir(env), { recursive: true, force: true });
+
+// Forgets one agent's binding: the stop gate calls it when it lets a factory agent stop, so a finished agent never leaves a binding
+// for workRoot to count. Never throws; an id that cannot name a binding file, or a binding already gone, leaves nothing to do.
+export function unbindAgent(agentId, env = process.env) {
+	if (!validId(agentId)) return;
+	try {
+		fs.rmSync(path.join(bindingsDir(env), `${agentId}.json`), { force: true });
+	} catch {
+		// a file that cannot be removed is still checked on every use: its role and run must match again
+	}
+}
+
+// The hooks' refusal for a factory agent with no usable binding. The command named is this plugin's own script (this file), so it
+// can be run as given; `how` says where to run it from, for the hooks that have no bind command of their own.
+const OWN_SCRIPT = fileURLToPath(import.meta.url);
+export const bindCommand = (worktree = '<the absolute worktree path your dispatch names>') => `node "${OWN_SCRIPT}" bind --worktree ${worktree}`;
+export const unboundReason = (how = 'Run it now') =>
+	`dev-factory guard: this factory agent is not bound to a run, and a run's limits must be known before any command or edit is allowed. ${how}, as your first command: ${bindCommand()}`;
 
 // Root for a factory tool (qa.mjs, coverage.mjs) run from a dispatched agent. Such a tool has no agent identity, and a subagent's
 // Bash call always starts in the session directory, so without --worktree: a run.json in the cwd wins, then the worktree of the
