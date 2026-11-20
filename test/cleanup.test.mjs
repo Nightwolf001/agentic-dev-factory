@@ -106,6 +106,61 @@ test('portsFor collects the config ports, Metro (only with an app), the web addr
 	assert.deepEqual(portsFor({ cfg: load(), worktree: dir, run }), [], 'nothing configured, nothing to free');
 });
 
+test('a run recorded as none or direct frees neither the web address port nor the compose-file ports, and keeps the rest', () => {
+	const dir = tmp();
+	fs.writeFileSync(path.join(dir, 'compose.yml'), 'services: {}\n');
+	const cfg = merge(load(), {
+		cleanup: { ports: [9229] },
+		mobile: { appDir: 'app', metroPort: 8089 },
+		environment: { type: 'compose', composeFile: 'compose.yml', webBaseUrl: 'http://localhost:3000' },
+	});
+	const run = (cmd, args) => ({
+		status: 0,
+		stderr: '',
+		stdout: args.includes('config') ? JSON.stringify({ services: { web: { ports: [{ published: 3000 }, '1337:1337'] } } }) : '',
+	});
+	const ports = (recordedPorts) => portsFor({ cfg, worktree: dir, extra: [5555], run, recordedPorts }).sort((a, b) => a - b);
+	for (const recordedPorts of ['none', 'direct'])
+		assert.deepEqual(ports(recordedPorts), [5555, 8089, 9229], `${recordedPorts}: only the explicit, configured and Metro ports`);
+	const before = [1337, 3000, 5555, 8089, 9229];
+	for (const recordedPorts of ['canonical', undefined, '', 'isolated', 'Direct'])
+		assert.deepEqual(ports(recordedPorts), before, `${JSON.stringify(recordedPorts)}: as without a record`);
+});
+
+test('a run recorded as direct stops nothing on the compose-file ports under takeover; recorded as canonical it does', async () => {
+	const setup = (ports) => {
+		const wt = tmp();
+		fs.mkdirSync(path.join(wt, '.dev-factory'));
+		fs.writeFileSync(path.join(wt, '.dev-factory', 'env.json'), JSON.stringify({ project: 'df-app-1', ports }));
+		fs.writeFileSync(path.join(wt, 'compose.yml'), 'services: {}\n');
+		const cfg = merge(load(), { environment: { type: 'compose', composeFile: 'compose.yml' } });
+		const base = machine({
+			ps: [{ pid: 900, ppid: 1, command: 'node dev.js' }],
+			ports: { 3000: [{ pid: 900, name: 'node' }] },
+			containers: { 3000: [{ id: 'abc', name: 'someone-elses-web' }] },
+		});
+		// the compose file publishes 3000; every other command is the scripted machine's, so no real docker or ps runs
+		const run = (cmd, args, opts) =>
+			cmd === 'docker' && args[0] === 'compose'
+				? { status: 0, stderr: '', stdout: JSON.stringify({ services: { web: { ports: [{ published: 3000 }] } } }) }
+				: base.run(cmd, args, opts);
+		return { wt, cfg, run, base };
+	};
+	const direct = setup('direct');
+	const r = await cleanup({ worktree: direct.wt, takeover: true, run: direct.run, stop: direct.base.stop, state: tmp(), cfg: direct.cfg });
+	assert.deepEqual(direct.base.stopped, [], "the process holding the canonical port is not this run's to stop");
+	assert.ok(!direct.base.calls.some((c) => c[0] === 'docker' && c[1] === 'stop'), 'nor the container');
+	assert.ok(!r.left.some((l) => l.what === 'port'), 'and it is not reported as a left-over port of this run');
+	const none = setup('none');
+	await cleanup({ worktree: none.wt, takeover: true, run: none.run, stop: none.base.stop, state: tmp(), cfg: none.cfg });
+	assert.deepEqual(none.base.stopped, []);
+
+	const canonical = setup('canonical');
+	await cleanup({ worktree: canonical.wt, takeover: true, run: canonical.run, stop: canonical.base.stop, state: tmp(), cfg: canonical.cfg });
+	assert.deepEqual(canonical.base.stopped, [900], 'a canonical run still frees its published port');
+	assert.ok(canonical.base.calls.some((c) => c.join(' ') === 'docker stop abc'));
+});
+
 test('stopProcess terms, waits, then kills what is still alive', async () => {
 	const sent = [];
 	const run = (c, a) => (sent.push(a.join(' ')), { status: 0, stdout: '', stderr: '' });

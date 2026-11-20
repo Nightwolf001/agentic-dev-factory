@@ -11,7 +11,9 @@
 //   the factory booted, stale locks and orphaned stacks. Nothing here belongs to anyone else.
 // Takeover scope: the above, plus
 //   - the listener on each port the run publishes or serves on (a container is stopped, any other process gets TERM and
-//     then KILL), the ports being those of the compose file, mobile.metroPort, the web address, and cleanup.ports
+//     then KILL), the ports being those of the compose file, mobile.metroPort, the web address, and cleanup.ports. A run
+//     whose stack was recorded as `none` or `direct` publishes no host port, so the compose file's ports and the web
+//     address's port are left alone: what holds them is not this run's (another ticket's stack, the developer's own app)
 //   - browsers started by Playwright and drivers started by Maestro (their MCP servers stay: the session uses them)
 //   - the simulator recorded for the run
 // Never touched, even in takeover: this process and its parents, Claude itself, shells and terminals, system services.
@@ -97,11 +99,17 @@ export function containersOn(port, run = defaultRun) {
 export const isLocalHost = (host) => /^(localhost|127(\.\d+){3}|0\.0\.0\.0|\[?::1\]?|[^/]+\.(local|localhost|test))$/i.test(host);
 
 // Ports the run needs: the compose file's published ports, Metro, the web address when it is local, and cleanup.ports.
-export function portsFor({ cfg, worktree, extra = [], run = defaultRun }) {
+// `recordedPorts` is the mode its stack was started in (`ports` in env.json). A stack started with none or direct publishes no
+// host port and takes no ports lock, so the compose file's ports and the web address's port are not its to free: whatever holds
+// them is another ticket's canonical stack or the developer's own copy of the app. The explicit ports, cleanup.ports and Metro
+// (a device run's own dev server) stay. With no record, or any other mode, nothing changes.
+export function portsFor({ cfg, worktree, extra = [], run = defaultRun, recordedPorts }) {
 	const ports = new Set(extra.map(Number));
 	for (const p of get('cleanup.ports', { config: cfg }) ?? []) ports.add(Number(p));
 	const metro = get('mobile.metroPort', { config: cfg });
 	if (get('mobile.appDir', { config: cfg }) && metro) ports.add(Number(metro));
+	const publishesNothing = recordedPorts === 'none' || recordedPorts === 'direct';
+	if (publishesNothing) return [...ports].filter((n) => Number.isInteger(n) && n > 0 && n < 65536);
 	const web = get('environment.webBaseUrl', { config: cfg });
 	if (web) {
 		try {
@@ -279,7 +287,7 @@ export async function cleanup({
 	);
 
 	// ---- whatever stands in the way ----
-	const ports = portsFor({ cfg, worktree, extra: extraPorts, run });
+	const ports = portsFor({ cfg, worktree, extra: extraPorts, run, recordedPorts: recorded.ports });
 	const procs = processes(run);
 	const keep = lineage(procs);
 	for (const port of ports) {
