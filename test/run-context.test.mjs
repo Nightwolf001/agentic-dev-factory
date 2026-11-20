@@ -5,11 +5,24 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { clearPointer, pointerFile, resolveRun, setPointer } from '../scripts/run-context.mjs';
+import {
+	bindAgent,
+	bindingsDir,
+	clearBindings,
+	parseBindCommand,
+	pointerFile,
+	resolveRun,
+	setPointer,
+	unbindWorktree,
+	workRoot,
+} from '../scripts/run-context.mjs';
 
 const SCRIPTS = new URL('../scripts/', import.meta.url).pathname;
+const RUN_CONTEXT = path.join(SCRIPTS, 'run-context.mjs');
+const BUILDER = 'dev-factory:factory-builder';
+const REVIEWER = 'dev-factory:factory-reviewer';
 
-// A session started in `repo`, a worktree elsewhere holding run.json, and a state dir for the pointer.
+// A session started in `repo`, a worktree elsewhere holding run.json, and a state dir for the bindings.
 function fixture(run) {
 	const base = fs.mkdtempSync(path.join(os.tmpdir(), 'df-ctx-'));
 	const repo = path.join(base, 'repo');
@@ -18,28 +31,142 @@ function fixture(run) {
 	fs.mkdirSync(path.join(worktree, '.dev-factory'), { recursive: true });
 	fs.writeFileSync(path.join(worktree, '.dev-factory', 'run.json'), JSON.stringify({ key: 'APP-1', ...run }));
 	const env = { ...process.env, DF_STATE_DIR: path.join(base, 'state'), DF_ACTIVE: '1' };
-	return { repo, worktree, env };
+	return { base, repo, worktree, env };
 }
+
+// A further worktree beside the fixture's, holding its own run.json.
+function addWorktree(base, key, run) {
+	const worktree = path.join(base, '.worktrees', key);
+	fs.mkdirSync(path.join(worktree, '.dev-factory'), { recursive: true });
+	fs.writeFileSync(path.join(worktree, '.dev-factory', 'run.json'), JSON.stringify({ key, ...run }));
+	return worktree;
+}
+
+const bound = (r) => {
+	assert.equal(r.ok, true, r.reason);
+	return r.binding;
+};
+const listBindings = (env) => {
+	try {
+		return fs.readdirSync(bindingsDir(env)).sort();
+	} catch {
+		return [];
+	}
+};
 
 const hook = (script, env, evt) => spawnSync('node', [path.join(SCRIPTS, script)], { input: JSON.stringify(evt), env, encoding: 'utf8' });
 
-test('a factory agent resolves the worktree through the pointer, the scheduler session does not', () => {
+test('two agents of one role, bound to two worktrees, each resolve to their own run', () => {
+	const { base, repo, worktree: one, env } = fixture({ role: 'builder', branch: 'feat/APP-1' });
+	const two = addWorktree(base, 'APP-2', { role: 'builder', branch: 'feat/APP-2' });
+	bound(bindAgent({ agentId: 'agentA', agentType: BUILDER, worktree: one, env }));
+	bound(bindAgent({ agentId: 'agentB', agentType: BUILDER, worktree: two, env }));
+	// events arrive alternately from the two agents, in both orders, and each sees only its own run
+	for (const order of [
+		['agentA', 'agentB', 'agentA', 'agentB'],
+		['agentB', 'agentA', 'agentB', 'agentA'],
+	]) {
+		for (const agentId of order) {
+			const r = resolveRun({ cwd: repo, agentType: BUILDER, agentId, env });
+			assert.equal(r.via, 'binding');
+			assert.equal(r.unbound, undefined);
+			if (agentId === 'agentA') {
+				assert.equal(r.root, one);
+				assert.equal(r.run.key, 'APP-1');
+				assert.equal(r.run.branch, 'feat/APP-1');
+			} else {
+				assert.equal(r.root, two);
+				assert.equal(r.run.key, 'APP-2');
+				assert.equal(r.run.branch, 'feat/APP-2');
+			}
+		}
+	}
+});
+
+test('an unbound factory agent resolves to no run and is marked unbound; a non-factory agent and the main session are not', () => {
 	const { repo, worktree, env } = fixture({ role: 'reviewer', axis: 'spec' });
-	assert.equal(resolveRun({ cwd: repo, agentType: 'dev-factory:factory-reviewer', env }).run, null);
+	// a leftover pointer is never read: the pointer is retired, so it cannot stand in for a binding
 	setPointer(worktree, env);
-	const r = resolveRun({ cwd: repo, agentType: 'dev-factory:factory-reviewer', env });
-	assert.equal(r.via, 'pointer');
-	assert.equal(r.root, worktree);
-	assert.equal(r.run.role, 'reviewer');
-	assert.equal(resolveRun({ cwd: repo, env }).run, null, 'main session has no agent_type');
-	assert.equal(resolveRun({ cwd: repo, agentType: 'general-purpose', env }).run, null, 'other agents are not factory agents');
-	clearPointer(env);
-	assert.equal(fs.existsSync(pointerFile(env)), false);
+	const agent = resolveRun({ cwd: repo, agentType: REVIEWER, agentId: 'r1', env });
+	assert.equal(agent.run, null);
+	assert.equal(agent.via, 'none');
+	assert.equal(agent.unbound, true);
+	const noId = resolveRun({ cwd: repo, agentType: REVIEWER, env });
+	assert.equal(noId.run, null);
+	assert.equal(noId.unbound, true, 'a factory agent type with no agent id is unbound too');
+	for (const r of [resolveRun({ cwd: repo, env }), resolveRun({ cwd: repo, agentType: 'general-purpose', agentId: 'g1', env })]) {
+		assert.equal(r.run, null);
+		assert.equal(r.via, 'none');
+		assert.equal('unbound' in r, false);
+	}
+	// an agent id that is not a safe file name never reaches the file system and resolves as unbound
+	bound(bindAgent({ agentId: 'r1', agentType: REVIEWER, worktree, env }));
+	const odd = resolveRun({ cwd: repo, agentType: REVIEWER, agentId: '../agents/r1', env });
+	assert.equal(odd.run, null);
+	assert.equal(odd.unbound, true);
+	// a binding is used only by an agent of the role it was made for
+	const other = resolveRun({ cwd: repo, agentType: BUILDER, agentId: 'r1', env });
+	assert.equal(other.run, null);
+	assert.equal(other.unbound, true);
+});
+
+test('bindAgent accepts a matching role and refuses each failing rule with a reason', () => {
+	const { base, repo, worktree, env } = fixture({ role: 'builder' });
+	const reviewing = addWorktree(base, 'APP-3', { role: 'reviewer' });
+	const refused = (args, pattern) => {
+		const r = bindAgent({ env, ...args });
+		assert.equal(r.ok, false);
+		assert.equal(typeof r.reason, 'string');
+		assert.match(r.reason, pattern);
+		assert.match(r.reason, /\.$/, 'a reason is a sentence');
+	};
+	refused({ agentType: BUILDER, worktree }, /agent id/);
+	refused({ agentId: '', agentType: BUILDER, worktree }, /agent id/);
+	refused({ agentId: '../x', agentType: BUILDER, worktree }, /agent id/);
+	refused({ agentId: 'a b', agentType: BUILDER, worktree }, /agent id/);
+	refused({ agentId: 'g1', agentType: 'general-purpose', worktree }, /factory agent/);
+	refused({ agentId: 'm1', worktree }, /factory agent/);
+	refused({ agentId: 'b1', agentType: BUILDER, worktree: 'rel/dir' }, /absolute/);
+	refused({ agentId: 'b1', agentType: BUILDER }, /absolute/);
+	refused({ agentId: 'b1', agentType: BUILDER, worktree: repo }, /run\.json/);
+	refused({ agentId: 'b1', agentType: BUILDER, worktree: reviewing }, /role/);
+	assert.deepEqual(listBindings(env), [], 'no refusal records anything');
+
+	const first = bound(bindAgent({ agentId: 'b1', agentType: BUILDER, worktree, env }));
+	assert.equal(first.worktree, worktree);
+	assert.equal(first.role, 'builder');
+	assert.equal(typeof first.at, 'string');
+	const file = path.join(bindingsDir(env), 'b1.json');
+	assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), first);
+	// the same agent binding again is accepted and leaves one binding
+	bound(bindAgent({ agentId: 'b1', agentType: BUILDER, worktree, env }));
+	assert.deepEqual(listBindings(env), ['b1.json']);
+	// a second agent of the same role on a worktree another holds is refused
+	refused({ agentId: 'b2', agentType: BUILDER, worktree }, /already bound/);
+	// written beside the file and renamed, so nothing but the binding is left in the folder
+	assert.deepEqual(listBindings(env), ['b1.json']);
+	// an agent of another role on its own run is accepted beside it
+	bound(bindAgent({ agentId: 'r1', agentType: REVIEWER, worktree: reviewing, env }));
+	assert.deepEqual(listBindings(env), ['b1.json', 'r1.json']);
+});
+
+test('a binding to a worktree that lost its run.json is treated as unbound', () => {
+	const { repo, worktree, env } = fixture({ role: 'builder' });
+	bound(bindAgent({ agentId: 'b1', agentType: BUILDER, worktree, env }));
+	assert.equal(resolveRun({ cwd: repo, agentType: BUILDER, agentId: 'b1', env }).via, 'binding');
+	fs.rmSync(path.join(worktree, '.dev-factory', 'run.json'));
+	const r = resolveRun({ cwd: repo, agentType: BUILDER, agentId: 'b1', env });
+	assert.equal(r.run, null);
+	assert.equal(r.unbound, true);
+	// a corrupt binding file does not crash resolution either
+	fs.writeFileSync(path.join(bindingsDir(env), 'b1.json'), '{nope');
+	assert.equal(resolveRun({ cwd: repo, agentType: BUILDER, agentId: 'b1', env }).unbound, true);
 });
 
 test('a run.json in the session directory still wins (interactive build in a worktree)', () => {
 	const { worktree, env } = fixture({ role: 'builder' });
 	assert.equal(resolveRun({ cwd: worktree, env }).via, 'cwd');
+	assert.equal(resolveRun({ cwd: worktree, agentType: BUILDER, agentId: 'b9', env }).via, 'cwd');
 });
 
 test('set refuses a relative path or a directory without run.json', () => {
@@ -48,44 +175,109 @@ test('set refuses a relative path or a directory without run.json', () => {
 	assert.throws(() => setPointer(repo, env));
 });
 
+// These two drive the hook scripts, which pass the event's agent_id once they resolve through the binding.
 test('the bash hook applies the reviewer rules to a reviewer agent even though cwd is the repo root', () => {
 	const { repo, worktree, env } = fixture({ role: 'reviewer', axis: 'spec' });
-	setPointer(worktree, env);
+	bound(bindAgent({ agentId: 'a1', agentType: REVIEWER, worktree, env }));
 	const evt = (command, agent_type) => ({ cwd: repo, tool_input: { command }, ...(agent_type ? { agent_type, agent_id: 'a1' } : {}) });
-	assert.equal(hook('guard-bash.mjs', env, evt('rm -rf services', 'dev-factory:factory-reviewer')).status, 2);
-	assert.equal(hook('guard-bash.mjs', env, evt('git diff origin/develop...HEAD', 'dev-factory:factory-reviewer')).status, 0);
+	assert.equal(hook('guard-bash.mjs', env, evt('rm -rf services', REVIEWER)).status, 2);
+	assert.equal(hook('guard-bash.mjs', env, evt('git diff origin/develop...HEAD', REVIEWER)).status, 0);
 	// the scheduler's own wait loop in the main session is not judged as the reviewer
 	assert.equal(hook('guard-bash.mjs', env, evt('until [ -f x ]; do sleep 5; done')).status, 0);
 });
 
 test('the edit hook protects the worktree of the dispatched role, and the stop gate holds a reviewer until its record exists', () => {
 	const { repo, worktree, env } = fixture({ role: 'researcher' });
-	setPointer(worktree, env);
+	const RESEARCHER = 'dev-factory:factory-researcher';
+	bound(bindAgent({ agentId: 's1', agentType: RESEARCHER, worktree, env }));
 	const edit = (file) =>
-		hook('edit-guard.mjs', env, { cwd: repo, agent_type: 'dev-factory:factory-researcher', tool_input: { file_path: file, content: 'x' } });
+		hook('edit-guard.mjs', env, { cwd: repo, agent_type: RESEARCHER, agent_id: 's1', tool_input: { file_path: file, content: 'x' } });
 	assert.equal(edit(path.join(worktree, 'services/api/a.js')).status, 2);
 	assert.equal(edit(path.join(worktree, 'docs/plans/APP-1/research.md')).status, 0);
 	assert.equal(edit(path.join(worktree, '.dev-factory/blocked.json')).status, 0);
-	const stop = hook('stop-gate.mjs', env, { cwd: repo, agent_type: 'dev-factory:factory-researcher' });
+	const stop = hook('stop-gate.mjs', env, { cwd: repo, agent_type: RESEARCHER, agent_id: 's1' });
 	assert.equal(stop.status, 2);
 	fs.writeFileSync(path.join(worktree, '.dev-factory', 'blocked.json'), '{}');
-	assert.equal(hook('stop-gate.mjs', env, { cwd: repo, agent_type: 'dev-factory:factory-researcher' }).status, 0);
+	assert.equal(hook('stop-gate.mjs', env, { cwd: repo, agent_type: RESEARCHER, agent_id: 's1' }).status, 0);
 });
 
-test('qa.mjs reads the dispatched worktree through the pointer when run from the repo root', async () => {
-	const { workRoot } = await import('../scripts/run-context.mjs');
-	const { repo, worktree, env } = fixture({ role: 'reviewer' });
-	assert.notEqual(workRoot({ cwd: repo, env }), worktree);
+test('workRoot: cwd run, one binding, two bindings throw naming --worktree, none falls to the git root', () => {
+	const { base, repo, worktree, env } = fixture({ role: 'builder' });
+	const two = addWorktree(base, 'APP-2', { role: 'builder' });
+	// no bindings: the git root of the cwd (a plain folder here, so the folder itself), and a leftover pointer is not read
 	setPointer(worktree, env);
+	assert.equal(workRoot({ cwd: repo, env }), repo);
+	// the cwd run wins over any binding
+	bound(bindAgent({ agentId: 'b1', agentType: BUILDER, worktree, env }));
+	assert.equal(workRoot({ cwd: two, env }), two);
+	// exactly one binding is used
 	assert.equal(workRoot({ cwd: repo, env }), worktree);
-	assert.equal(workRoot({ cwd: worktree, env }), worktree);
+	// two bindings to two worktrees cannot be told apart without --worktree
+	bound(bindAgent({ agentId: 'b2', agentType: BUILDER, worktree: two, env }));
+	assert.throws(() => workRoot({ cwd: repo, env }), /--worktree/);
+	assert.equal(workRoot({ cwd: worktree, env }), worktree, 'the cwd run still wins with two bindings');
+	// a binding whose run is gone does not count
+	fs.rmSync(path.join(two, '.dev-factory', 'run.json'));
+	assert.equal(workRoot({ cwd: repo, env }), worktree);
+	clearBindings(env);
+	assert.equal(workRoot({ cwd: repo, env }), repo);
+});
+
+test('parseBindCommand accepts the exact form and rejects chains, pipes, extra flags, relative paths and command substitution', () => {
+	const script = '/Users/me/.claude/plugins/dev-factory/scripts/run-context.mjs';
+	const ok = (command, worktree) => assert.deepEqual(parseBindCommand(command), { worktree }, command);
+	ok(`node "${script}" bind --worktree /w/APP-1`, '/w/APP-1');
+	ok(`node "${script}" bind --worktree '/w/APP 1'`, '/w/APP 1');
+	ok(`node "${script}" bind --worktree "/w/APP 1"`, '/w/APP 1');
+	ok(`  node "${script}"  bind   --worktree /w/APP-1  `, '/w/APP-1');
+	for (const command of [
+		`node "${script}" bind --worktree /w; rm -rf /`,
+		`node "${script}" bind --worktree /w && rm -rf /`,
+		`node "${script}" bind --worktree /w || true`,
+		`node "${script}" bind --worktree /w & rm -rf /`,
+		`node "${script}" bind --worktree /w | cat`,
+		`echo x | node "${script}" bind --worktree /w`,
+		`node "${script}" bind --worktree /w > /tmp/x`,
+		`node "${script}" bind --worktree /w < /tmp/x`,
+		`node "${script}" bind --worktree /w\nrm -rf /`,
+		`node "${script}" bind --worktree /w\rrm -rf /`,
+		`node "${script}" bind --worktree /w --json '{}'`,
+		`node "${script}" bind --force --worktree /w`,
+		`node "${script}" bind --worktree /w extra`,
+		`node "${script}" bind --worktree`,
+		`node "${script}" bind`,
+		`node "${script}" bind --worktree rel/dir`,
+		`node "${script}" bind --worktree ./w`,
+		`node "${script}" bind --worktree ~/w`,
+		`node "${script}" bind --worktree "$(pwd)"`,
+		`node "${script}" bind --worktree /w/$(id)`,
+		`node "${script}" bind --worktree /w/\`id\``,
+		`node "${script}" bind --worktree "$HOME/w"`,
+		`node "${script}" bind --worktree /w/\\;x`,
+		`node "${script}" bind --worktree /w/*`,
+		`node "${script}" bind --worktree '/w/a'b`,
+		`node "${script}" bind --worktree "/w/a`,
+		`node "${script}" bind --worktree ( /w )`,
+		`node "${script}" write --worktree /w --json '{"role":"builder"}'`,
+		`node "${script}" set --worktree /w`,
+		`node "/x/other.mjs" bind --worktree /w`,
+		`node "/x/not-run-context.mjs" bind --worktree /w`,
+		`node /x/run-context.mjs bind --worktree /w`,
+		`FOO=1 node "${script}" bind --worktree /w`,
+		`nodejs "${script}" bind --worktree /w`,
+		`bash -c 'node "${script}" bind --worktree /w'`,
+		'',
+		null,
+		undefined,
+		42,
+	])
+		assert.equal(parseBindCommand(command), null, String(command));
 });
 
 // The scheduler session cannot create or change run.json with the edit tools: the hook protects run state during a scheduled pass
 // (DF_ACTIVE=1), so `write` is the one way it records a run.
-const RUN_CONTEXT = path.join(SCRIPTS, 'run-context.mjs');
-const write = (env, worktree, patch) =>
-	spawnSync('node', [RUN_CONTEXT, 'write', '--worktree', worktree, '--json', JSON.stringify(patch)], { env, encoding: 'utf8' });
+const cli = (env, ...args) => spawnSync('node', [RUN_CONTEXT, ...args], { env, encoding: 'utf8' });
+const write = (env, worktree, patch) => cli(env, 'write', '--worktree', worktree, '--json', JSON.stringify(patch));
 const readRun = (worktree) => JSON.parse(fs.readFileSync(path.join(worktree, '.dev-factory', 'run.json'), 'utf8'));
 
 // A worktree as `worktree.mjs add` leaves it: a checkout with no .dev-factory folder yet.
@@ -93,10 +285,10 @@ function freshWorktree() {
 	const base = fs.mkdtempSync(path.join(os.tmpdir(), 'df-write-'));
 	const worktree = path.join(base, '.worktrees', 'APP-7');
 	fs.mkdirSync(worktree, { recursive: true });
-	return { repo: path.join(base, 'repo'), worktree, env: { ...process.env, DF_STATE_DIR: path.join(base, 'state'), DF_ACTIVE: '1' } };
+	return { base, repo: path.join(base, 'repo'), worktree, env: { ...process.env, DF_STATE_DIR: path.join(base, 'state'), DF_ACTIVE: '1' } };
 }
 
-test('during a scheduled pass the edit hook refuses run.json but write creates it and set points the hooks at it', () => {
+test('during a scheduled pass the edit hook refuses run.json but write creates it and an agent binds to it', () => {
 	const { repo, worktree, env } = freshWorktree();
 	const runJson = path.join(worktree, '.dev-factory', 'run.json');
 	assert.equal(
@@ -107,9 +299,9 @@ test('during a scheduled pass the edit hook refuses run.json but write creates i
 	const made = write(env, worktree, { key: 'APP-7', role: 'builder', until: 'build', mode: 'scheduled', runId: '1793873600' });
 	assert.equal(made.status, 0, made.stderr);
 	assert.deepEqual(readRun(worktree), { key: 'APP-7', role: 'builder', until: 'build', mode: 'scheduled', runId: '1793873600' });
-	setPointer(worktree, env);
-	const r = resolveRun({ cwd: repo, agentType: 'dev-factory:factory-builder', env });
-	assert.equal(r.via, 'pointer');
+	bound(bindAgent({ agentId: 'b1', agentType: BUILDER, worktree, env }));
+	const r = resolveRun({ cwd: repo, agentType: BUILDER, agentId: 'b1', env });
+	assert.equal(r.via, 'binding');
 	assert.equal(r.run.key, 'APP-7');
 });
 
@@ -135,12 +327,66 @@ test('write refuses what would leave a run that no hook can trust', () => {
 	refused(write(env, worktree, { key: '' }));
 	refused(write(env, 'rel/dir', { key: 'APP-7' }));
 	refused(write(env, path.join(worktree, 'missing'), { key: 'APP-7' }));
-	refused(spawnSync('node', [RUN_CONTEXT, 'write', '--worktree', worktree, '--json', '[1]'], { env, encoding: 'utf8' }));
-	refused(spawnSync('node', [RUN_CONTEXT, 'write', '--worktree', worktree, '--json', '{nope'], { env, encoding: 'utf8' }));
-	refused(spawnSync('node', [RUN_CONTEXT, 'write', '--worktree', worktree], { env, encoding: 'utf8' }));
+	refused(cli(env, 'write', '--worktree', worktree, '--json', '[1]'));
+	refused(cli(env, 'write', '--worktree', worktree, '--json', '{nope'));
+	refused(cli(env, 'write', '--worktree', worktree));
 	assert.equal(fs.existsSync(runJson), false);
 	// the same command with a good patch succeeds, so the refusals above are about the input, not a command that does not exist
 	assert.equal(write(env, worktree, { key: 'APP-7', role: 'builder' }).status, 0);
 	refused(write(env, worktree, { role: 'admin' })); // a bad patch leaves the earlier file as it was
 	assert.deepEqual(readRun(worktree), { key: 'APP-7', role: 'builder' });
+});
+
+test("write with a role clears that worktree's bindings only", () => {
+	const { base, worktree, env } = freshWorktree();
+	const other = path.join(base, '.worktrees', 'APP-8');
+	fs.mkdirSync(other, { recursive: true });
+	assert.equal(write(env, worktree, { key: 'APP-7', role: 'builder' }).status, 0);
+	assert.equal(write(env, other, { key: 'APP-8', role: 'builder' }).status, 0);
+	bound(bindAgent({ agentId: 'b7', agentType: BUILDER, worktree, env }));
+	bound(bindAgent({ agentId: 'b8', agentType: BUILDER, worktree: other, env }));
+	// a write without a role is not a new stage and clears nothing
+	assert.equal(write(env, worktree, { until: 'ship' }).status, 0);
+	assert.deepEqual(listBindings(env), ['b7.json', 'b8.json']);
+	// a refused write clears nothing either
+	assert.equal(write(env, worktree, { role: 'admin' }).status, 3);
+	assert.deepEqual(listBindings(env), ['b7.json', 'b8.json']);
+	assert.equal(write(env, worktree, { role: 'reviewer', axis: 'spec' }).status, 0);
+	assert.deepEqual(listBindings(env), ['b8.json']);
+	// the same holds for the function, and for the same role written again
+	unbindWorktree(other, env);
+	assert.deepEqual(listBindings(env), []);
+});
+
+test('clear removes all bindings and a leftover pointer', () => {
+	const { base, worktree, env } = fixture({ role: 'builder' });
+	const two = addWorktree(base, 'APP-2', { role: 'reviewer' });
+	bound(bindAgent({ agentId: 'b1', agentType: BUILDER, worktree, env }));
+	bound(bindAgent({ agentId: 'r1', agentType: REVIEWER, worktree: two, env }));
+	setPointer(worktree, env);
+	const r = cli(env, 'clear');
+	assert.equal(r.status, 0, r.stderr);
+	assert.equal(fs.existsSync(bindingsDir(env)), false);
+	assert.equal(fs.existsSync(pointerFile(env)), false);
+	// clearing nothing is fine
+	assert.equal(cli(env, 'clear').status, 0);
+	clearBindings(env);
+});
+
+test('run-context.mjs bind --worktree <abs> says the guard records the binding, and set is no longer used', () => {
+	const { worktree, env } = fixture({ role: 'builder' });
+	const r = cli(env, 'bind', '--worktree', worktree);
+	assert.equal(r.status, 0, r.stderr);
+	assert.match(r.stdout, /guard records/);
+	assert.equal(r.stdout.trim().split('\n').length, 1, 'one line');
+	assert.equal(fs.existsSync(bindingsDir(env)), false, 'the command records nothing itself');
+	for (const bad of [cli(env, 'bind'), cli(env, 'bind', '--worktree'), cli(env, 'bind', '--worktree', 'rel/dir')]) {
+		assert.equal(bad.status, 3);
+		assert.match(bad.stderr, /^run-context: /);
+	}
+	assert.match(cli(env, 'bind').stderr, /usage/);
+	const set = cli(env, 'set', '--worktree', worktree);
+	assert.equal(set.status, 0, set.stderr);
+	assert.match(set.stderr, /no longer used/);
+	assert.equal(fs.existsSync(pointerFile(env)), false, 'set writes no pointer');
 });
