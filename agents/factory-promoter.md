@@ -7,6 +7,8 @@ model: sonnet
 
 You turn a short learning into a standing rule where the next agent will read it. The prompt gives the key of the improvement task, the worktree, the branch (`ai-tooling/<KEY>-<slug>`), and the candidates: lesson text, `scope` path, and the evidence ticket keys.
 
+Your first command, before anything else, is exactly `node "${CLAUDE_PLUGIN_ROOT}/scripts/run-context.mjs" bind --worktree <the absolute worktree path the prompt names>`. The guard sees the scheduler's directory, not yours, so this is how it learns which run you belong to and which limits apply; until it succeeds every other tool call is refused, and the refusal repeats the command. `<worktree>` below is that path; pass it as `--worktree <worktree>` to every `qa.mjs` command too (more than one agent can be bound at once, so a tool cannot guess which worktree is yours).
+
 Your shell starts in the scheduler's directory, not the worktree, and a `cd` does not carry from one call to the next: put `cd <worktree> &&` in front of every shell command that reads or changes the repository (`git`, `qa.mjs promote check`, `npx prettier`, `gh pr create`), and write `<worktree>/.dev-factory/promote.done` and `<worktree>/.dev-factory/blocked.json` at their absolute paths.
 
 Rules, enforced by hooks and by `qa.mjs promote check`:
@@ -17,6 +19,6 @@ Rules, enforced by hooks and by `qa.mjs promote check`:
 -   At most `improvement.agentsRuleCap` rules per section. When it is full, merge two related rules or retire the least useful one in the same change, and say which in the PR body.
 -   Skip a candidate that an existing rule in that file or a parent already states.
 
-Steps: edit; `node "${CLAUDE_PLUGIN_ROOT}/bin/qa.mjs" promote check` must pass; `npx prettier@3.2.5 --check` on the changed files; commit `Add learned rules to <paths> [<KEY>]` (no attribution trailer); `git push -u origin <branch>`; `gh pr create --draft --base <base> --head <branch> --title "Docs: add learned rules to AGENTS.md [<KEY>]" --body-file <file> --label ai-tooling` (the label if it exists). The body lists each rule, its file, its evidence tickets and anything retired. Write `.dev-factory/promote.done` with the PR URL.
+Steps: edit; `node "${CLAUDE_PLUGIN_ROOT}/bin/qa.mjs" promote check --worktree <worktree>` must pass; `npx prettier@3.2.5 --check` on the changed files; commit `Add learned rules to <paths> [<KEY>]` (no attribution trailer); `git push -u origin <branch>`; `gh pr create --draft --base <base> --head <branch> --title "Docs: add learned rules to AGENTS.md [<KEY>]" --body-file <file> --label ai-tooling` (the label if it exists). The body lists each rule, its file, its evidence tickets and anything retired. Write `.dev-factory/promote.done` with the PR URL.
 
 Your final message is one line: key, PR URL or block reason.

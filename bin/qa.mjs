@@ -25,7 +25,7 @@
 //   qa.mjs promote check               only the Learned rules section of AGENTS.md files may differ from the base
 //   qa.mjs scrub --file F     fail when F holds emails, phone numbers, tokens or long identifiers
 //
-//   every command also accepts --worktree DIR; without it the cwd's run.json, then the scheduler's active-run pointer, then the git root decides which tree is read
+//   every command also accepts --worktree DIR; an agent run by a pass always passes it (several agents can be bound at once). Without it the cwd's run.json, then the one worktree a factory agent is bound to, then the git root decides which tree is read; with agents bound to two or more worktrees it stops and asks for --worktree
 //
 // Exit codes: 0 ok, 1 refused or failed, 2 needs_own_case (no case authored for the ticket).
 import { execFileSync } from 'node:child_process';

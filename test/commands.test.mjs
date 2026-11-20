@@ -287,3 +287,91 @@ test('the tick asks for direct ports only for a web ticket when more than one ta
 	assert.match(step, /exit 1, for example because the address did not answer/, 'the cause is worded neutrally');
 	assert.match(step, /Environments section of `docs\/reference\.md`/, 'points at what is not settled');
 });
+
+// A factory agent is dispatched by a session whose hook events carry the scheduler's directory, so the hook learns which run an agent
+// belongs to only from the agent's first command, which names its worktree. Until that command has run every other tool call is refused.
+test("every factory agent's instructions start with the bind command", () => {
+	const dir = new URL('../agents/', import.meta.url);
+	const agents = fs.readdirSync(dir).filter((f) => /^factory-.*\.md$/.test(f));
+	assert.equal(agents.length, 6, 'six factory agents');
+	for (const f of agents) {
+		const text = fs.readFileSync(new URL(f, dir), 'utf8');
+		const tools = text.match(/^tools: (.*)$/m)?.[1] ?? '';
+		const body = text.replace(/^---\n[\s\S]*?\n---\n/, '');
+		const phases = body.search(/^(\d+\.|#{1,6}) /m);
+		if (f === 'factory-researcher.md') {
+			assert.doesNotMatch(tools, /\bBash\b/, 'the researcher has no shell');
+			assert.ok(!body.includes('run-context.mjs" bind'), 'the researcher is not told to run a bind command');
+			const first = body.indexOf('first file write');
+			assert.ok(first >= 0, 'the researcher is told its first file write binds it');
+			const near = body.slice(Math.max(0, first - 300), first + 500);
+			assert.match(near, /absolute path/, 'and that the path is absolute');
+			assert.match(near, /docs\/plans\/<KEY>\/research\.md/, 'inside its worktree');
+			assert.match(near, /refused/, 'and what happens otherwise');
+			if (phases >= 0) assert.ok(first < phases, 'before anything else');
+			continue;
+		}
+		// the bind command is a shell command, so an agent without the Bash tool could not run it
+		assert.match(tools, /\bBash\b/, `${f} has the Bash tool the bind command needs`);
+		const bind = body.indexOf('run-context.mjs" bind --worktree');
+		assert.ok(bind >= 0, `${f} names the bind command`);
+		assert.match(body.slice(bind - 200, bind + 400), /first command/, `${f} says it is the first command`);
+		// before the phases: no numbered step, heading or other plugin script comes earlier
+		if (phases >= 0) assert.ok(bind < phases, `${f}: the bind command comes before the phases`);
+		const other = body.search(/\$\{CLAUDE_PLUGIN_ROOT\}\/(?!scripts\/run-context\.mjs)/);
+		if (other >= 0) assert.ok(bind < other, `${f}: the bind command comes before any other command`);
+		assert.match(body, /every other tool call is refused/, `${f} says what happens until it has run`);
+		assert.match(body, /<the absolute worktree path the prompt names>/, `${f} takes the path from the prompt`);
+	}
+});
+
+test('every dispatch site names the worktree to the agent, and the tick says once how the binding works', () => {
+	for (const f of ['tick.md', 'build.md', 'quick.md', 'improve.md', 'validate.md']) assert.match(read(f), /absolute worktree path/, f);
+	const tick = read('tick.md');
+	assert.match(tick, /binds itself first/, 'tick.md section 4 says the agent binds itself first');
+	assert.match(tick, /clears the previous agent's binding/, 'tick.md says why every dispatch writes role, even unchanged');
+});
+
+// The hooks keep no pointer to the run any more, so a command that sets one has nothing to do and the prose around it would mislead.
+test('no command sets the retired run pointer', () => {
+	for (const f of ['tick.md', 'build.md', 'quick.md', 'improve.md', 'validate.md'])
+		assert.doesNotMatch(read(f), /run-context\.mjs" set\b|active-run|run pointer|that pointer/, f);
+});
+
+// Two agents can be bound at once, so a tool an agent runs cannot fall back to "the only live binding": it names its worktree.
+// The rule, by how invocations are written in agents/*.md and skills/*/SKILL.md: an inline code span (or a line of a fenced block)
+// is an invocation when it starts with `node "${CLAUDE_PLUGIN_ROOT}/bin/qa.mjs"` or `node "${CLAUDE_PLUGIN_ROOT}/scripts/coverage.mjs"`,
+// or with the shorthand `qa.mjs <word>` / `coverage.mjs <word>` and then carries at least one `--flag`. An invocation must pass
+// `--worktree`. Not invocations: the bare tool name (`qa.mjs`, `bin/qa.mjs`) and a bare sub-command named in prose (`qa.mjs verify`,
+// `qa.mjs review status`), which name what the full command above or below does and carry no arguments; prose that only
+// mentions the tool (a description line, "records through qa.mjs") has no code span at all. Skipped: `skills/task-source` and
+// `skills/improve`, which the scheduling session itself follows (reading a ticket, posting an issue) with no worktree and no
+// binding, so there is no worktree to name.
+test('no qa.mjs or coverage.mjs invocation in an agent or a skill lacks --worktree', () => {
+	const root = new URL('../', import.meta.url);
+	const files = [
+		...fs
+			.readdirSync(new URL('agents/', root))
+			.filter((f) => f.endsWith('.md'))
+			.map((f) => `agents/${f}`),
+		...fs
+			.readdirSync(new URL('skills/', root), { recursive: true })
+			.filter((f) => f.endsWith('SKILL.md') && !/^(task-source|improve)[/\\]/.test(f))
+			.map((f) => `skills/${f}`),
+	];
+	const full = /^node "\$\{CLAUDE_PLUGIN_ROOT\}\/(bin\/qa|scripts\/coverage)\.mjs"/;
+	const short = /^(qa|coverage)\.mjs [a-z][\w-]*/;
+	let seen = 0;
+	for (const f of files) {
+		const text = fs.readFileSync(new URL(f, root), 'utf8');
+		const pieces = [];
+		for (const m of text.matchAll(/```[^\n]*\n([\s\S]*?)```|`([^`\n]+)`/g))
+			pieces.push(...(m[1] !== undefined ? m[1].split('\n').map((l) => l.trim()) : [m[2]]));
+		for (const p of pieces) {
+			if (!(full.test(p) || (short.test(p) && /--[a-z]/.test(p)))) continue;
+			seen++;
+			assert.match(p, /--worktree /, `${f}: ${p}`);
+		}
+	}
+	assert.ok(seen > 25, `the rule found the invocations (${seen})`);
+});

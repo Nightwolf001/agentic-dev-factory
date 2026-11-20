@@ -26,6 +26,7 @@ fi
 trap 'df_lock_release "$STATE"' EXIT
 
 rm -f "$STATE/active-run.json"
+rm -rf "$STATE/agents"
 cd "$REPO" || exit 1
 echo "$(date -u +%FT%TZ) improve start" >> "$LOG"
 bash "$DIR/scripts/doctor.sh" --ci >> "$LOG" 2>&1 || {
