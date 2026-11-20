@@ -4,7 +4,7 @@
 #   type compose   a docker compose project named df-<key>: build, up, the `setup` commands inside `service`, a
 #                  readiness poll of `pingUrl`, and an optional `processCheck` command that must exit 0
 #
-#   e2e-env.sh up     [--worktree DIR] --key KEY [--ports canonical|none] [--device]   start and verify
+#   e2e-env.sh up     [--worktree DIR] --key KEY [--ports canonical|direct|none] [--device]   start and verify
 #   e2e-env.sh verify [--worktree DIR]                        re-check the environment contract
 #   e2e-env.sh down   [--worktree DIR]                        down -v and forget
 #   e2e-env.sh sweep                                          remove df-* projects with no live owner
@@ -14,6 +14,11 @@
 # included) can reach the stack. --ports canonical keeps the published ports so the host can
 # reach environment.webBaseUrl like a developer does; it takes a machine-wide lock, one such
 # environment per Mac. --device implies canonical because the mobile app has the ports baked in.
+# --ports direct strips the published ports as none does, and records the stack's own address instead: environment.webBaseUrl
+# with its host replaced by environment.directHost ({service}.{project}.orb.local by default, the name an engine such as
+# OrbStack gives each container). up probes that address itself from this machine (pingUrl stays the check inside the
+# service) and counts any HTTP answer below 500 as reachable; no connection or a 5xx until the ready timeout fails, with no
+# fallback. No lock: any number of direct environments coexist (they still count against the cap). Not with --device yet.
 #
 # Remote QA: `up --remote ENV [--account NAME] [--device]` starts nothing. It checks that the deployed address in
 # environments.ENV.remote.url answers, and records mode remote in env.json with the NAMES of the variables that hold the QA
@@ -51,7 +56,7 @@ refuse() { echo "e2e-env: $*" >&2; exit 75; }
 log()  { echo "e2e-env: $*" >&2; }
 
 cmd="${1:-}"; [ -n "$cmd" ] && shift
-WORKTREE="$(pwd)"; KEY=""; DEVICE=0; PORTS=none; REMOTE=""; ACCOUNT=""
+WORKTREE="$(pwd)"; KEY=""; DEVICE=0; PORTS=none; PORTS_FLAG=""; REMOTE=""; ACCOUNT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --worktree) WORKTREE="$(cd "$2" && pwd)"; shift 2 ;;
@@ -59,10 +64,12 @@ while [ $# -gt 0 ]; do
     --device) DEVICE=1; PORTS=canonical; shift ;;
     --remote) REMOTE="${2:-}"; shift 2 ;;
     --account) ACCOUNT="${2:-}"; shift 2 ;;
-    --ports) case "$2" in canonical|none) PORTS="$2" ;; *) die "--ports must be canonical or none" ;; esac; shift 2 ;;
+    --ports) case "${2:-}" in canonical|direct|none) PORTS="$2"; PORTS_FLAG="$2" ;; *) die "--ports must be canonical, direct or none" ;; esac; shift 2 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
+# --device sets canonical ports, so a --ports direct before it is remembered in PORTS_FLAG: refused in either order
+if [ "$DEVICE" = 1 ] && [ "$PORTS_FLAG" = direct ]; then die "--ports direct is not supported with --device yet: a device run keeps the canonical ports"; fi
 
 # the remote environment and account name reach variable names and config paths: letters, digits, - and _ only
 if [ -n "$REMOTE" ] && ! printf '%s' "$REMOTE" | grep -Eq '^[A-Za-z0-9_-]+$'; then die "--remote must be an environment name (letters, digits, - and _)"; fi
@@ -113,7 +120,7 @@ write_override() {
       echo "      dev-factory: \"1\""
       echo "      dev-factory.owner: \"$owner\""
       echo "      dev-factory.worktree: \"$wt\""
-      [ "$PORTS" = none ] && echo "    ports: !reset []"
+      case "$PORTS" in none|direct) echo "    ports: !reset []" ;; esac
     done
   } > "$OVERRIDE"
 }
@@ -152,6 +159,44 @@ wait_ping() { # inside the service, as the stack's own hostnames resolve there
   local project="$1" end=$((SECONDS + READY_TIMEOUT))
   [ -n "$PING_URL" ] || return 0
   until compose "$project" "${EXEC_ARGS[@]}" curl -ksf -o /dev/null "$PING_URL" </dev/null; do
+    [ "$SECONDS" -ge "$end" ] && return 1
+    sleep 5
+  done
+}
+
+# direct_url BASEURL PROJECT: BASEURL with its host replaced by environment.directHost, {service} (environment.service) and
+# {project} filled in; scheme, port, path and query kept. Exit 2 when BASEURL is not an http(s) address; exit 1, printing the
+# host it made (printable characters only), when that is not a valid host name.
+direct_url() {
+  node -e '
+    const [base, tpl, service, project] = process.argv.slice(1);
+    let u;
+    try { u = new URL(base); } catch (e) { process.exit(2); }
+    if (!/^https?:$/.test(u.protocol)) process.exit(2);
+    const host = tpl.replaceAll("{service}", service).replaceAll("{project}", project);
+    const bad = () => { process.stdout.write(host.replace(/[^\x21-\x7e]/g, "?").slice(0, 200)); process.exit(1); };
+    if (!/^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$/.test(host)) bad();
+    const out = u.protocol + "//" + host + (u.port ? ":" + u.port : "") + (u.pathname === "/" ? "" : u.pathname) + u.search + u.hash;
+    try { if (new URL(out).hostname !== host.toLowerCase()) bad(); } catch (e) { bad(); }
+    process.stdout.write(out);' "$1" "$(cfg directHost)" "$SERVICE" "$2"
+}
+# url_shown URL: origin and path only, for logs and messages (a query can carry a token)
+url_shown() { node -e 'try{const u=new URL(process.argv[1]);process.stdout.write(u.origin+(u.pathname==="/"?"":u.pathname))}catch(e){process.stdout.write("(not an address)")}' "$1"; }
+
+# The probe from this machine checks reachability only, as remote_answers does: any HTTP answer below 500 means the engine routes
+# to the stack (a login redirect, a 401 and a 404 all count); 000 (no connection) and 5xx do not. pingUrl is not used here: it
+# stays the readiness check inside the service, and its query can carry a token.
+direct_status() { # prints the HTTP status, 000 for no connection
+  local code; code="$(curl -ks -o /dev/null -m 10 -w '%{http_code}' "$1" </dev/null 2>/dev/null)"
+  case "$code" in [0-9][0-9][0-9]) printf '%s' "$code" ;; *) printf '000' ;; esac
+}
+direct_reachable() { case "$1" in 000|5*) return 1 ;; esac; return 0; }
+DIRECT_CODE=000
+wait_direct() { # wait_direct URL: until it answers below 500 or READY_TIMEOUT passes; the last status is left in DIRECT_CODE
+  local url="$1" end=$((SECONDS + READY_TIMEOUT))
+  while :; do
+    DIRECT_CODE="$(direct_status "$url")"
+    direct_reachable "$DIRECT_CODE" && return 0
     [ "$SECONDS" -ge "$end" ] && return 1
     sleep 5
   done
@@ -202,7 +247,20 @@ do_verify() {
     compose "$project" "${EXEC_ARGS[@]}" bash -c "$PROCESS_CHECK" </dev/null >/dev/null 2>&1 || add "process check failed: $PROCESS_CHECK"
   fi
   if [ -n "$PING_URL" ]; then
-    compose "$project" "${EXEC_ARGS[@]}" curl -ksf -o /dev/null "$PING_URL" </dev/null || add "ping failed: $PING_URL"
+    compose "$project" "${EXEC_ARGS[@]}" curl -ksf -o /dev/null "$PING_URL" </dev/null || add "ping failed: $(url_shown "$PING_URL")"
+  fi
+  # the direct address is worked out again from the settings, never read back from env.json, which the run can write
+  if [ "$(env_get mode)" = direct ]; then
+    local addr code
+    if ! valid_project "$project"; then
+      add "the recorded project is not one this script makes (df-<key>): no direct address was probed"
+    elif ! addr="$(direct_url "$WEB_BASE_URL" "$project")"; then
+      add "environment.webBaseUrl and environment.directHost do not make a direct address"
+    else
+      code="$(direct_status "$addr")"
+      if [ "$code" = 000 ]; then add "direct address does not answer: $(url_shown "$addr")"
+      elif ! direct_reachable "$code"; then add "direct address answered HTTP $code: $(url_shown "$addr")"; fi
+    fi
   fi
 
   if [ -n "$problems" ]; then
@@ -232,7 +290,9 @@ busy_ports() {
         s.once("error",e=>{if(e.code==="EADDRINUSE")console.log(n);r()});s.once("listening",()=>s.close(()=>r()));s.listen(n)})})'
 }
 
-mode_rank() { case "$1" in device) echo 2 ;; canonical) echo 1 ;; *) echo 0 ;; esac; }
+mode_rank() { case "$1" in device) echo 3 ;; canonical) echo 2 ;; direct) echo 1 ;; *) echo 0 ;; esac; }
+# the mode this run asks for
+want_mode() { if [ "$DEVICE" = 1 ]; then echo device; else case "$PORTS" in canonical|direct) echo "$PORTS" ;; *) echo isolated ;; esac; fi; }
 
 # environment.setup: each entry is a command (a string, which may span lines) or {"run": "...", "user": "root"} to run as
 # another user than environment.user. Every step runs in full: the steps are read by index, not from a stream the first
@@ -295,13 +355,22 @@ do_up() {
   [ "$ENV_TYPE" = none ] && { do_up_none; return 0; }
   [ -f "$COMPOSE_FILE" ] || die "missing $COMPOSE_FILE (run from a worktree of the repository)"
   local project; project="$(project_for "$KEY")"
+  local direct="" rc
+  if [ "$PORTS" = direct ]; then
+    [ -n "$WEB_BASE_URL" ] || die "--ports direct needs environment.webBaseUrl (the address a browser would use, with its port)"
+    direct="$(direct_url "$WEB_BASE_URL" "$project")" || {
+      rc=$?
+      [ "$rc" = 2 ] && die "environment.webBaseUrl must be an http(s) address for --ports direct"
+      die "environment.directHost ($(cfg directHost)) with {service} = environment.service ($SERVICE) and {project} = $project makes $direct, which is not a valid host name: a service name with _ (or another character a host name cannot have) is not a valid host label, so put the name of the service that serves the web in environment.directHost instead (web.{project}.orb.local)"
+    }
+  fi
 
   # Idempotent: a resumed ticket finds its stack still healthy and just takes ownership of it again. A stack started with
-  # fewer ports than this run needs (isolated < canonical < device) is not reused: a browser or device ticket would find
-  # no ports or no simulator. It is taken down and replaced.
+  # fewer ports than this run needs (isolated < direct < canonical < device) is not reused: a browser or device ticket would
+  # find no address, no ports or no simulator. It is taken down and replaced.
   local recorded; recorded="$(env_get project)"
   local want have
-  want="$(mode_rank "$([ "$DEVICE" = 1 ] && echo device || { [ "$PORTS" = canonical ] && echo canonical || echo isolated; })")"
+  want="$(mode_rank "$(want_mode)")"
   have="$(mode_rank "$(env_get mode)")"
   if [ "$recorded" = "$project" ] && [ "$have" -lt "$want" ]; then
     log "recorded stack is $(env_get mode), this run needs more: replacing $project"
@@ -315,7 +384,7 @@ do_up() {
       device|canonical) mkdir -p "$STATE_DIR/ports.lock"; echo "${DF_OWNER_PID:-$PPID}" > "$STATE_DIR/ports.lock/owner" ;;
     esac
     [ "$(env_get mode)" = device ] && { ( cd "$WORKTREE" && bash "$SELF_DIR/mobile-env.sh" up --worktree "$WORKTREE" ) || die "mobile lane failed"; }
-    log "ready (reused): $project"
+    log "ready (reused, $(env_get mode)): $project"
     return 0
   fi
 
@@ -342,9 +411,10 @@ do_up() {
   fi
 
   write_override
+  local web=""
+  case "$PORTS" in canonical) web="$WEB_BASE_URL" ;; direct) web="$direct" ;; esac
   write_env project="$project" key="$KEY" worktree="$WORKTREE" composeFile="$COMPOSE_FILE" override="$OVERRIDE" \
-    mode="$([ "$DEVICE" = 1 ] && echo device || { [ "$PORTS" = canonical ] && echo canonical || echo isolated; })" \
-    ports="$PORTS" webBaseUrl="$([ "$PORTS" = canonical ] && echo "$WEB_BASE_URL")"
+    mode="$(want_mode)" ports="$PORTS" webBaseUrl="$web"
   mark_live "$project"
 
   local ok=0
@@ -359,6 +429,14 @@ do_up() {
   # setup steps may refresh lockfiles: seal them so QA does not read them as the ticket's edits
   node "$SELF_DIR/env-build-files.mjs" seal --worktree "$WORKTREE" >&2 || true
   wait_ping "$project" || die "timed out waiting for the ping URL"
+  if [ "$PORTS" = direct ]; then
+    local shown; shown="$(url_shown "$direct")"
+    log "probing the direct address from this machine: $shown"
+    if ! wait_direct "$direct"; then
+      [ "$DIRECT_CODE" = 000 ] && die "the engine did not make the stack reachable from this machine: $shown did not answer within ${READY_TIMEOUT}s (environment.directHost is $(cfg directHost); an engine that does not name containers that way needs another value)"
+      die "the stack is reachable at its direct address but not serving: $shown still answered HTTP $DIRECT_CODE after ${READY_TIMEOUT}s"
+    fi
+  fi
   if [ "$DEVICE" = 1 ]; then
     ( cd "$WORKTREE" && bash "$SELF_DIR/mobile-env.sh" up --worktree "$WORKTREE" ) || { rc=$?; [ "$rc" = 75 ] && refuse "Metro port busy"; die "mobile lane failed"; }
   fi
@@ -368,12 +446,19 @@ do_up() {
   log "ready: $project"
 }
 
+# do_down_quiet PROJECT: every caller runs it while env.json still records the stack being taken down (do_down and the
+# replace path remove the record after it; the EXIT trap of up runs after write_env), so the recorded mode says whether the
+# stack held the ports lock: only a canonical or device stack takes it. The same owner pid can hold the lock for a canonical
+# stack elsewhere, and a direct or isolated stack going down must not release that.
 do_down_quiet() {
   local project="$1"
   compose "$project" down -v --remove-orphans >/dev/null 2>&1 || \
     docker ps -aq --filter "label=com.docker.compose.project=$project" | xargs -r docker rm -f >/dev/null 2>&1
   forget_live "$project"
-  [ -d "$STATE_DIR/ports.lock" ] && [ "$(cat "$STATE_DIR/ports.lock/owner" 2>/dev/null)" = "${DF_OWNER_PID:-$PPID}" ] && rm -rf "$STATE_DIR/ports.lock"
+  case "$(env_get mode)" in
+    canonical|device)
+      [ -d "$STATE_DIR/ports.lock" ] && [ "$(cat "$STATE_DIR/ports.lock/owner" 2>/dev/null)" = "${DF_OWNER_PID:-$PPID}" ] && rm -rf "$STATE_DIR/ports.lock" ;;
+  esac
   return 0
 }
 
@@ -444,5 +529,5 @@ case "$cmd" in
   verify) do_verify ;;
   down) do_down ;;
   sweep) do_sweep ;;
-  *) echo "usage: e2e-env.sh up|verify|down|sweep [--worktree DIR] [--key KEY] [--ports canonical|none] [--device] [--remote ENV [--account NAME]]" >&2; exit 3 ;;
+  *) echo "usage: e2e-env.sh up|verify|down|sweep [--worktree DIR] [--key KEY] [--ports canonical|direct|none] [--device] [--remote ENV [--account NAME]]" >&2; exit 3 ;;
 esac
