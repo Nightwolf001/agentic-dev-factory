@@ -365,15 +365,138 @@ function notionUpload(cmd, args) {
 	return urls === 1;
 }
 
+// Tokens of a graphql document. Commas, whitespace and # comments are ignored, as the graphql grammar ignores them, so neither
+// can hide a field; strings are one token, so a keyword inside one is not a keyword. Anything else throws: what cannot be read
+// is not judged harmless.
+function graphqlTokens(doc) {
+	const out = [];
+	let i = 0;
+	while (i < doc.length) {
+		const c = doc[i];
+		if (/[\s,﻿]/.test(c)) i++;
+		else if (c === '#') while (i < doc.length && doc[i] !== '\n' && doc[i] !== '\r') i++;
+		else if (doc.startsWith('"""', i)) {
+			let j = i + 3;
+			while (j < doc.length && !doc.startsWith('"""', j)) j += doc.startsWith('\\"""', j) ? 4 : 1;
+			if (j >= doc.length) throw new Error('unterminated block string');
+			out.push({ kind: 'string' });
+			i = j + 3;
+		} else if (c === '"') {
+			let j = i + 1;
+			while (j < doc.length && doc[j] !== '"' && doc[j] !== '\n' && doc[j] !== '\r') j += doc[j] === '\\' ? 2 : 1;
+			if (doc[j] !== '"') throw new Error('unterminated string');
+			out.push({ kind: 'string' });
+			i = j + 1;
+		} else if (doc.startsWith('...', i)) {
+			out.push({ kind: 'punct', value: '...' });
+			i += 3;
+		} else if ('!$&()[]{}:=@|'.includes(c)) {
+			out.push({ kind: 'punct', value: c });
+			i++;
+		} else {
+			const m =
+				/^[_A-Za-z][_0-9A-Za-z]*/.exec(doc.slice(i)) ?? /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?(?![_A-Za-z0-9.])/.exec(doc.slice(i));
+			if (!m) throw new Error(`cannot read ${c}`);
+			out.push({ kind: /^[_A-Za-z]/.test(m[0]) ? 'name' : 'number', value: m[0] });
+			i += m[0].length;
+		}
+	}
+	return out;
+}
+
+// True for a read-only document (one query operation, or the {...} shorthand), or for exactly one mutation whose only top-level
+// field, aliased or not, is resolveReviewThread. No fragments and no second operation: either could carry another field.
+function graphqlAllowed(doc) {
+	const t = graphqlTokens(doc);
+	const is = (i, value) => t[i]?.kind === 'punct' && t[i].value === value;
+	const PAIRS = { '(': ')', '[': ']', '{': '}' };
+	// index past the bracket that closes the one at i
+	const skip = (i) => {
+		const stack = [];
+		for (let j = i; j < t.length; j++) {
+			if (t[j].kind !== 'punct') continue;
+			if (PAIRS[t[j].value]) stack.push(PAIRS[t[j].value]);
+			else if (')]}'.includes(t[j].value) && stack.pop() !== t[j].value) throw new Error('unbalanced');
+			if (!stack.length) return j + 1;
+		}
+		throw new Error('unbalanced');
+	};
+	const name = (i) => {
+		if (t[i]?.kind !== 'name') throw new Error('a name was expected');
+		return t[i].value;
+	};
+	const directives = (i) => {
+		while (is(i, '@')) {
+			name(i + 1);
+			i = is(i + 2, '(') ? skip(i + 2) : i + 2;
+		}
+		return i;
+	};
+	const ops = [];
+	for (let i = 0; i < t.length; ) {
+		let type = 'query';
+		if (!is(i, '{')) {
+			type = name(i);
+			if (!['query', 'mutation', 'subscription'].includes(type)) return false;
+			i++;
+			if (t[i]?.kind === 'name') i++;
+			if (is(i, '(')) i = skip(i);
+			i = directives(i);
+			if (!is(i, '{')) return false;
+		}
+		ops.push({ type, at: i });
+		i = skip(i);
+	}
+	if (ops.length !== 1) return false;
+	const [op] = ops;
+	if (op.type === 'query') return true;
+	if (op.type !== 'mutation') return false;
+	const fields = [];
+	let i = op.at + 1;
+	while (!is(i, '}')) {
+		if (is(i, '...')) return false;
+		let field = name(i);
+		i++;
+		if (is(i, ':')) {
+			field = name(i + 1);
+			i += 2;
+		}
+		if (is(i, '(')) i = skip(i);
+		i = directives(i);
+		if (is(i, '{')) i = skip(i);
+		fields.push(field);
+	}
+	return fields.length === 1 && fields[0] === 'resolveReviewThread';
+}
+
+// The value of every field named query, in each spelling gh accepts (-f k=v, -fk=v, -f=k=v, --field k=v, --field=k=v, and the
+// same for -F and --raw-field). gh sends the last of a repeated key, so each one counts. A word is read both as a flag and as
+// the value of the flag before it: reading too many is refused below, reading too few would let one through unseen.
+function graphqlQueries(args) {
+	const out = [];
+	for (let i = 0; i < args.length; i++) {
+		const a = args[i].replace(/^-i+(?=[fF])/, '-');
+		const attached = /^(?:-[fF]=?|--(?:field|raw-field)=)([^]+)$/.exec(a);
+		const field = /^(-f|-F|--field|--raw-field)$/.test(a) ? unquote(args[i + 1] ?? '') : attached ? unquote(attached[1]) : null;
+		// query[]= and query[k]= send query as well, as an array or an object
+		if (field !== null && /^query(=|\[)/.test(field)) out.push(field.replace(/^query(\[[^\]]*\])*=/, ''));
+	}
+	return out;
+}
+
 // The scheduler resolves the review threads it has answered, and reads them; a graphql mutation is allowed only for that.
+// graphql through a field is a POST on its own, so no method flag is ever needed, and a query from a file or stdin (@) is
+// one the guard cannot read.
 function schedulerGraphql(args) {
 	if (ghPositionals(args)[1] !== 'graphql') return false;
-	if (args.some((a) => /^(--input|-X|--method)(=|$)/.test(a))) return false;
-	const q = args.map((a, i) => (/^(-f|-F|--field|--raw-field)$/.test(args[i - 1] ?? '') ? unquote(a) : '')).find((a) => a.startsWith('query='));
-	if (!q) return false;
-	if (!/\bmutation\b/.test(q)) return true;
-	const fields = [...q.matchAll(/(\w+)\s*\(\s*input\s*:/g)].map((m) => m[1]);
-	return fields.length === 1 && fields[0] === 'resolveReviewThread';
+	if (args.some((a) => /^(-i*X|--method|--input)/.test(a))) return false;
+	const queries = graphqlQueries(args);
+	if (queries.length !== 1 || queries[0].startsWith('@')) return false;
+	try {
+		return graphqlAllowed(queries[0]);
+	} catch {
+		return false;
+	}
 }
 
 const FACTORY_ROLES = new Set(['builder', 'reviewer', 'debugger', 'researcher', 'improver', 'promoter']);

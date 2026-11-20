@@ -965,6 +965,114 @@ test('the scheduler may read review threads and resolve one; no other graphql wr
 		assert.equal(evaluate(c, {}).deny, true, c);
 });
 
+// The graphql exception is the scheduler's alone: every shape below is refused for each factory role, allowed or not.
+const GRAPHQL_ROLES = ['builder', 'reviewer', 'debugger', 'researcher', 'improver', 'promoter'];
+const gqlRefused = (c) => {
+	// refused by the gh api rule itself, not by some other rule the command happens to trip
+	assert.match(evaluate(c, {}).reason ?? '', /gh api writes are not allowed/, `scheduler: ${c}`);
+	for (const role of GRAPHQL_ROLES) assert.equal(evaluate(c, { role, branch: 'task/APP-12-x' }).deny, true, `${role}: ${c}`);
+};
+const gqlAllowed = (c) => {
+	assert.equal(evaluate(c, {}).deny, false, `scheduler: ${c}`);
+	for (const role of GRAPHQL_ROLES) assert.equal(evaluate(c, { role, branch: 'task/APP-12-x' }).deny, true, `${role}: ${c}`);
+};
+const HARMLESS = `-f query='query{viewer{login}}'`;
+const DELETE_REPO = `mutation{deleteRepository(input:{repositoryId:"x"}){clientMutationId}}`;
+
+test('graphql: gh sends the last of a repeated query field, so every query field is read and only one is allowed', () => {
+	gqlRefused(`gh api graphql -f query='query{viewer{login}}' -f query='${DELETE_REPO}'`);
+	gqlRefused(`gh api graphql -f query='query{viewer{login}}' -F query='${DELETE_REPO}'`);
+	gqlRefused(`gh api graphql -f query='query{viewer{login}}' --raw-field query='${DELETE_REPO}'`);
+	gqlRefused(`gh api graphql ${HARMLESS} ${HARMLESS}`);
+	gqlRefused(`gh api graphql -f query='query{viewer{login}}' -f 'query[]=${DELETE_REPO}'`);
+	gqlRefused(`gh api graphql -f owner=o -F n=7`);
+});
+
+test('graphql: the attached spellings of a field flag are query fields too', () => {
+	for (const attached of [
+		`-fquery='${DELETE_REPO}'`,
+		`-Fquery='${DELETE_REPO}'`,
+		`--field=query='${DELETE_REPO}'`,
+		`--raw-field=query='${DELETE_REPO}'`,
+		`-f=query='${DELETE_REPO}'`,
+		`-ifquery='${DELETE_REPO}'`,
+	]) {
+		gqlRefused(`gh api graphql ${HARMLESS} ${attached}`);
+		gqlRefused(`gh api graphql ${attached} ${HARMLESS}`);
+		gqlRefused(`gh api graphql ${attached}`);
+	}
+});
+
+test('graphql: a query read from a file or stdin cannot be judged', () => {
+	gqlRefused('gh api graphql -F query=@q.graphql');
+	gqlRefused('gh api graphql -F query=@-');
+	gqlRefused('gh api graphql --field query=@x');
+	gqlRefused('gh api graphql -f query=@x');
+});
+
+test('graphql: no method flag in any form, a graphql call through a field is a POST on its own', () => {
+	for (const m of ['-XPOST', '-X=POST', '--method=POST', '--method POST', '-X POST', '-XGET', '-iXPOST', '--input=q.json', '--input -'])
+		gqlRefused(`gh api graphql ${m} ${HARMLESS}`);
+});
+
+test('graphql: a comma or a comment cannot hide a second mutation field', () => {
+	const resolve = `resolveReviewThread(input:{threadId:"a"}){clientMutationId}`;
+	gqlRefused(`gh api graphql -f query='mutation{${resolve} deleteIssue(,input:{issueId:"x"}){clientMutationId}}'`);
+	gqlRefused(`gh api graphql -f query='mutation{${resolve} deleteIssue(# c\n input:{issueId:"x"}){clientMutationId}}'`);
+	gqlRefused(
+		`gh api graphql -f query='mutation{${resolve}\n# deleteIssue(input: is only a comment here\ndeleteIssue(input:{issueId:"x"}){clientMutationId}}'`,
+	);
+	gqlRefused(`gh api graphql -f query='mutation{${resolve},deleteIssue(input:{issueId:"x"}){clientMutationId}}'`);
+	gqlRefused(`gh api graphql -f query='mutation{${resolve} deleteIssue{clientMutationId}}'`);
+});
+
+test('graphql: fragments, several operations, subscriptions and aliases are refused', () => {
+	const resolve = `resolveReviewThread(input:{threadId:"a"}){clientMutationId}`;
+	for (const doc of [
+		`mutation{...F} fragment F on Mutation{deleteIssue(input:{issueId:"x"}){clientMutationId}}`,
+		`mutation{${resolve} ...F} fragment F on Mutation{deleteIssue(input:{issueId:"x"}){clientMutationId}}`,
+		`mutation{... on Mutation{deleteIssue(input:{issueId:"x"}){clientMutationId}}}`,
+		`mutation{${resolve} ... on Mutation{deleteIssue(input:{issueId:"x"}){clientMutationId}}}`,
+		`query{viewer{login}} fragment F on Mutation{deleteIssue(input:{issueId:"x"}){clientMutationId}}`,
+		`query{viewer{login}} mutation{deleteIssue(input:{issueId:"x"}){clientMutationId}}`,
+		`mutation A{${resolve}} mutation B{deleteIssue(input:{issueId:"x"}){clientMutationId}}`,
+		`mutation{${resolve}} {viewer{login}}`,
+		`subscription{issueUpdated{id}}`,
+		`mutation{resolveReviewThread: deleteIssue(input:{issueId:"x"}){clientMutationId}}`,
+		`mutation M($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{id}} mergePullRequest(input:{pullRequestId:"x"}){clientMutationId}}`,
+		`mutation{}`,
+		`mutation{${resolve}`,
+		`mutation{${resolve}}}`,
+		`mutation{${resolve}} extra`,
+		`mutation{resolveReviewThread(input:{threadId:"a}){clientMutationId}}`,
+		`mutation @x{${resolve}} @`,
+		``,
+	])
+		gqlRefused(`gh api graphql -f query='${doc}'`);
+	// quotes the shell leaves in the value are not graphql
+	gqlRefused(`gh api graphql -f query="'query{viewer{login}}'"`);
+});
+
+test('graphql: what the scheduler sends is still allowed', () => {
+	gqlAllowed(
+		`gh api graphql -f query='query{repository(owner:"o",name:"r"){pullRequest(number:7){reviewThreads(first:50){nodes{id isResolved}}}}}'`,
+	);
+	gqlAllowed(`gh api graphql -f query='mutation{resolveReviewThread(input:{threadId:"PRRT_x"}){thread{isResolved}}}'`);
+	gqlAllowed(`gh api graphql -f query='mutation Resolve($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' -F id=PRRT_x`);
+	gqlAllowed(`gh api graphql -f query='mutation{r: resolveReviewThread(input:{threadId:"PRRT_x"}){thread{isResolved}}}'`);
+	gqlAllowed(`gh api graphql -f query='query{search(query:"mutation{deleteIssue(input:{})}",type:ISSUE,first:1){issueCount}}'`);
+	gqlAllowed(`gh api graphql -f query='query{search(query:"""a block "string" with mutation""",type:ISSUE,first:1){issueCount}}'`);
+	gqlAllowed(`gh api graphql -f query='query{viewer{login}} # mutation{deleteIssue(input:{issueId:"x"}){clientMutationId}}'`);
+	gqlAllowed(`gh api graphql -F query='query{viewer{login}}'`);
+	gqlAllowed(`gh api graphql -Fquery='query{viewer{login}}'`);
+	gqlAllowed(`gh api graphql --field=query='{viewer{login}}'`);
+	gqlAllowed(`gh api graphql --raw-field query='query Q { viewer { login } }' -f owner=o`);
+	gqlAllowed(`gh api graphql -f query='mutation @a {resolveReviewThread(input:{threadId:"PRRT_x"}) @b {thread{isResolved}}}'`);
+	gqlAllowed(
+		`gh api graphql -f query='query($owner: String!, $name: String!, $n: Int!) {\n  # the threads of one PR, mutation-free\n  repository(owner: $owner, name: $name) {\n    pullRequest(number: $n) { reviewThreads(first: 50) { nodes { id, isResolved, isOutdated } } }\n  }\n}' -f owner=o -f name=r -F n=7`,
+	);
+});
+
 test('the upload URL the Notion MCP server returns is allowed, with its lower-case authorization header', () => {
 	const url = 'https://api.notion.com/v1/mcp/file_uploads/40682a3e-9a5b-81c4-814a-00b27bb31b58/send';
 	const file = '/w/.worktrees/TASK-26/.dev-factory/evidence/TASK-26/run-1/pencil-card-nav-hover-1.png';
