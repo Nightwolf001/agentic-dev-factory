@@ -473,7 +473,7 @@ test('engine control is refused however the command is written or wrapped, and f
 	])
 		denied(c);
 	for (const c of ['orbctl stop', 'orb run rm -rf ~/work', 'colima stop', 'docker desktop stop', 'sudo limactl stop default']) {
-		assert.equal(evaluate(c, {}).deny, true, `should be refused with no role: ${c}`);
+		assert.equal(evaluate(c, { cwd: '/work/app' }).deny, true, `should be refused with no role: ${c}`);
 		for (const role of ['reviewer', 'debugger', 'researcher', 'promoter', 'improver'])
 			assert.equal(run(c, { role }).deny, true, `should be refused for ${role}: ${c}`);
 	}
@@ -521,7 +521,7 @@ test('ssh, scp, sftp and rsync to an OrbStack machine name are refused, one asse
 	assert.match(run('ssh orb ls').reason, /the container engine is not controlled from a run \(ssh\)/);
 	assert.match(run('rsync -a src/ orb:/tmp/x').reason, /\(rsync\)/);
 	for (const c of ['ssh orb ls', 'scp dev@orb:/tmp/x .', 'ssh dev@web.orb.local'])
-		assert.equal(evaluate(c, {}).deny, true, `should be refused with no role: ${c}`);
+		assert.equal(evaluate(c, { cwd: '/work/app' }).deny, true, `should be refused with no role: ${c}`);
 });
 
 test('everyday ssh, scp and rsync keep working', () => {

@@ -366,7 +366,7 @@ test('an attached -X method on gh api is a write', () => {
 	for (const c of ['gh api -XGET repos/o/r/pulls', 'gh api repos/o/r/pulls', 'gh api -X GET repos/o/r/pulls', 'gh api -Xget repos/o/r/pulls'])
 		allowed(c);
 	// the scheduler keeps only its strict graphql exception: an attached method opens nothing else to it
-	const sched = (c) => evaluate(c, {}).deny;
+	const sched = (c) => evaluate(c, { cwd: '/work/app' }).deny;
 	assert.equal(sched('gh api -XPOST repos/o/r/issues'), true);
 	assert.equal(sched('gh api repos/o/r/issues -XPATCH'), true);
 	assert.equal(sched(`gh api graphql -XPOST -f query='mutation{mergePullRequest(input:{pullRequestId:"x"}){clientMutationId}}'`), true);
@@ -384,7 +384,7 @@ test('a method or body field behind the boolean -i on gh api is a write', () => 
 		'gh api -iXPOST repos/o/r/issues',
 	];
 	for (const c of writes) denied(c);
-	for (const c of writes) assert.equal(evaluate(c, {}).deny, true, `the scheduler is refused too: ${c}`);
+	for (const c of writes) assert.equal(evaluate(c, { cwd: '/work/app' }).deny, true, `the scheduler is refused too: ${c}`);
 	for (const c of [
 		'gh api -i repos/o/r/pulls',
 		'gh api -iXGET repos/o/r/pulls',
