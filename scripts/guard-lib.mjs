@@ -365,19 +365,24 @@ function notionUpload(cmd, args) {
 	return urls === 1;
 }
 
-// Tokens of a graphql document. Commas, whitespace and # comments are ignored, as the graphql grammar ignores them, so neither
-// can hide a field; strings are one token, so a keyword inside one is not a keyword. Anything else throws: what cannot be read
-// is not judged harmless.
+// Tokens of a graphql document. Commas, space, tab, CR, LF and # comments are ignored, as the graphql grammar ignores them, so
+// neither can hide a field; other characters a regular expression calls whitespace (a no-break space, a line separator) are
+// not ignored by graphql and throw here. Strings are one token, so a keyword inside one is not a keyword. An escaped \""" in a
+// block string throws too: a server that ends the string there would read the rest as fields. Anything else throws: what cannot
+// be read is not judged harmless.
 function graphqlTokens(doc) {
 	const out = [];
 	let i = 0;
 	while (i < doc.length) {
 		const c = doc[i];
-		if (/[\s,﻿]/.test(c)) i++;
+		if (' \t\r\n,'.includes(c)) i++;
 		else if (c === '#') while (i < doc.length && doc[i] !== '\n' && doc[i] !== '\r') i++;
 		else if (doc.startsWith('"""', i)) {
 			let j = i + 3;
-			while (j < doc.length && !doc.startsWith('"""', j)) j += doc.startsWith('\\"""', j) ? 4 : 1;
+			while (j < doc.length && !doc.startsWith('"""', j)) {
+				if (doc.startsWith('\\"""', j)) throw new Error('an escaped block-string quote');
+				j++;
+			}
 			if (j >= doc.length) throw new Error('unterminated block string');
 			out.push({ kind: 'string' });
 			i = j + 3;
@@ -469,29 +474,97 @@ function graphqlAllowed(doc) {
 	return fields.length === 1 && fields[0] === 'resolveReviewThread';
 }
 
-// The value of every field named query, in each spelling gh accepts (-f k=v, -fk=v, -f=k=v, --field k=v, --field=k=v, and the
-// same for -F and --raw-field). gh sends the last of a repeated key, so each one counts. A word is read both as a flag and as
-// the value of the flag before it: reading too many is refused below, reading too few would let one through unseen.
-function graphqlQueries(args) {
-	const out = [];
+// The flags of `gh api` the graphql exception knows. A value flag's value is the next word, or attached (--jq=.x, -q.x, -q=.x);
+// -i is the only boolean short flag, so it may lead a cluster (-iq.x). Every other flag is unknown: it might take a value and
+// so swallow a word, which would make another word the endpoint (`gh api -t graphql repos/o/r/merges ...` posts to /merges).
+const GH_API_VALUE = new Set([
+	'-H',
+	'--header',
+	'-q',
+	'--jq',
+	'-t',
+	'--template',
+	'-p',
+	'--preview',
+	'--cache',
+	'--hostname',
+	'-R',
+	'--repo',
+	'-f',
+	'-F',
+	'--field',
+	'--raw-field',
+]);
+const GH_API_BOOL = new Set(['-i', '--include', '--paginate', '--slurp', '--silent', '--verbose']);
+
+// -> { positionals, flags: [[flag, value]] } for the words after `gh`, or null for a flag outside the tables above.
+function ghApiWords(args) {
+	const positionals = [];
+	const flags = [];
 	for (let i = 0; i < args.length; i++) {
-		const a = args[i].replace(/^-i+(?=[fF])/, '-');
-		const attached = /^(?:-[fF]=?|--(?:field|raw-field)=)([^]+)$/.exec(a);
-		const field = /^(-f|-F|--field|--raw-field)$/.test(a) ? unquote(args[i + 1] ?? '') : attached ? unquote(attached[1]) : null;
-		// query[]= and query[k]= send query as well, as an array or an object
-		if (field !== null && /^query(=|\[)/.test(field)) out.push(field.replace(/^query(\[[^\]]*\])*=/, ''));
+		if (!args[i].startsWith('-')) {
+			positionals.push(args[i]);
+			continue;
+		}
+		const a = args[i].replace(/^-i+(?=[A-Za-z])/, '-');
+		let m;
+		if (GH_API_BOOL.has(a)) continue;
+		if (GH_API_VALUE.has(a)) {
+			if (i + 1 >= args.length) return null;
+			flags.push([a, args[++i]]);
+		} else if ((m = /^(--[a-z-]+)=([^]*)$/.exec(a)) && GH_API_VALUE.has(m[1])) flags.push([m[1], m[2]]);
+		else if ((m = /^(-[HqtpRfF])=?([^]+)$/.exec(a))) flags.push([m[1], m[2]]);
+		else return null;
 	}
-	return out;
+	return { positionals, flags };
+}
+
+// $ or a backquote outside single quotes in the raw text of the command: the shell expands it after the guard has read the
+// words, so the document gh sends would not be the one judged. A backslash-escaped one counts too (it is never needed); an
+// unclosed quote cannot be judged.
+function shellExpands(raw) {
+	let q = null;
+	for (let i = 0; i < raw.length; i++) {
+		const c = raw[i];
+		if (q === "'") {
+			if (c === "'") q = null;
+		} else if (c === '$' || c === '`') return true;
+		else if (c === '\\') {
+			if (raw[i + 1] === '$' || raw[i + 1] === '`') return true;
+			i++;
+		} else if (q === '"') {
+			if (c === '"') q = null;
+		} else if (c === "'" || c === '"') q = c;
+	}
+	return q !== null;
 }
 
 // The scheduler resolves the review threads it has answered, and reads them; a graphql mutation is allowed only for that.
-// graphql through a field is a POST on its own, so no method flag is ever needed, and a query from a file or stdin (@) is
-// one the guard cannot read.
-function schedulerGraphql(args) {
-	if (ghPositionals(args)[1] !== 'graphql') return false;
-	if (args.some((a) => /^(-i*X|--method|--input)/.test(a))) return false;
-	const queries = graphqlQueries(args);
-	if (queries.length !== 1 || queries[0].startsWith('@')) return false;
+// - Exactly `gh api graphql`, with only the flags gh api has (see GH_API_VALUE). graphql through a field is a POST on its own,
+//   so no method flag or --input is ever needed.
+// - Exactly one field named query (gh sends the last of a repeated key, query[]= sends it too), read in full by graphqlAllowed.
+//   No {owner}, {repo} or {branch} in it: gh fills those after the guard has read it.
+// - No -F or --field value from a file or stdin (@): gh would read and send what the guard cannot see, a secret included.
+// - No host but github.com, and a repository only as owner/name (HOST/owner/name names another host).
+// - Typed at the top of the command, with nothing the shell expands: a gh call inside `bash -c "..."`, `$(...)` or backquotes
+//   is read by that shell after its own expansion, so the quotes the guard sees are not the ones that count.
+function schedulerGraphql(args, seg = '', nested = true) {
+	if (nested || shellExpands(seg)) return false;
+	const words = ghApiWords(args);
+	if (!words) return false;
+	const { positionals, flags } = words;
+	if (positionals.length !== 2 || positionals[0] !== 'api' || positionals[1] !== 'graphql') return false;
+	const queries = [];
+	for (const [flag, value] of flags) {
+		if ((flag === '--hostname' && value !== 'github.com') || (/^(-R|--repo)$/.test(flag) && !/^[\w.-]+\/[\w.-]+$/.test(value))) return false;
+		if (!/^(-f|-F|--field|--raw-field)$/.test(flag)) continue;
+		const eq = value.indexOf('=');
+		if (eq < 1) return false;
+		const [key, v] = [value.slice(0, eq), value.slice(eq + 1)];
+		if ((flag === '-F' || flag === '--field') && v.startsWith('@')) return false;
+		if (/^query(\[|$)/.test(key)) queries.push(v);
+	}
+	if (queries.length !== 1 || queries[0].startsWith('@') || /\{(owner|repo|branch)\}/.test(queries[0])) return false;
 	try {
 		return graphqlAllowed(queries[0]);
 	} catch {
@@ -502,14 +575,14 @@ function schedulerGraphql(args) {
 const FACTORY_ROLES = new Set(['builder', 'reviewer', 'debugger', 'researcher', 'improver', 'promoter']);
 const ISSUE_WRITES = ['create', 'edit', 'close', 'reopen', 'comment', 'delete', 'transfer', 'lock', 'unlock', 'pin', 'unpin', 'develop'];
 
-function denyGh(args, ctx = {}, seg = '') {
+function denyGh(args, ctx = {}, seg = '', nested = false) {
 	const p = ghPositionals(args);
 	if (FACTORY_ROLES.has(ctx.role) && p[0] === 'issue' && ISSUE_WRITES.includes(p[1]))
 		return 'issues are the task tracker: only the scheduler writes to it, a factory agent does not (gh issue ' + p[1] + ')';
 	if (ctx.noAttribution && p[0] === 'pr' && ['create', 'edit', 'comment'].includes(p[1]) && AGENT_MARK.test(seg))
 		return 'PR text carries no Co-Authored-By or generated-by line (git.agentAttribution is false)';
 	if (p[0] === 'pr' && ['merge', 'review', 'ready', 'close', 'reopen'].includes(p[1])) return `gh pr ${p[1]} is reserved for people`;
-	if (p[0] === 'api' && ghApiWrites(args) && (FACTORY_ROLES.has(ctx.role) || !schedulerGraphql(args)))
+	if (p[0] === 'api' && ghApiWrites(args) && (FACTORY_ROLES.has(ctx.role) || !schedulerGraphql(args, seg, nested)))
 		return 'gh api writes are not allowed: no -X other than GET, no body field, no --input';
 	if (
 		p[0] === 'auth' &&
@@ -1073,10 +1146,13 @@ function judge(command, ctx) {
 	// the toggle is the owner's: an agent does not switch it on for itself, however the name is written
 	if (FACTORY_ROLES.has(ctx.role) && !ctx.takeover && triesTakeover(command)) return { deny: true, reason: TAKEOVER_REFUSAL };
 	const segs = segments(command);
+	// segments() lists the command's own segments first, then those nested in substitutions and `sh -c` strings; past depth 3
+	// it lists only its own, so this counts them
+	const topLevel = segments(command, 4).length;
 	if (segs.length > LIMITS.segments) throw new Unjudgeable(`more than ${LIMITS.segments} commands`);
 	const { home, stateDir } = envOf(ctx);
 	const st = { cwd: ctx.cwd || process.cwd(), vars: { HOME: home, DF_STATE_DIR: stateDir, PWD: ctx.cwd || process.cwd() } };
-	for (const seg of segs) {
+	for (const [index, seg] of segs.entries()) {
 		check();
 		const inv = invocation(seg);
 		const { cmd, args, tokens } = inv;
@@ -1124,7 +1200,7 @@ function judge(command, ctx) {
 		const body = [cmd, ...args].join(' ');
 		let reason = null;
 		if (cmd === 'git') reason = denyGit(args, ctx, seg);
-		else if (cmd === 'gh') reason = denyGh(args, ctx, seg);
+		else if (cmd === 'gh') reason = denyGh(args, ctx, seg, index >= topLevel);
 		if (!reason && hitsTrackerHost(inv, ctx, st.vars) && (FACTORY_ROLES.has(ctx.role) || !notionUpload(cmd, args)))
 			reason = 'direct task-tracker access is reserved for the scheduler, which sends only QA screenshots to a Notion upload URL';
 		if (!reason && FACTORY_ROLES.has(ctx.role) && /^node\s+\S*tasks\.mjs"?\s+(set-state|comment|label|link|block|create|init)\b/.test(seg))
