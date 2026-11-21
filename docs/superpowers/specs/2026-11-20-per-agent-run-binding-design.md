@@ -41,7 +41,7 @@ So the identity exists (`agent_id`), and the worktree has to come from the agent
 
 **Resolution.** `resolveRun({ cwd, agentType, agentId })`: a `run.json` in `cwd` still wins (an interactive session in a worktree). Otherwise a factory agent resolves through its own binding. A factory agent with no binding resolves to `{ run: null, unbound: true }`, and the Bash, edit and MCP hooks refuse its calls with: bind first (the exact command, the worktree being the absolute path the dispatch names), except the bind command itself. The pointer file is no longer read.
 
-**When bindings go.** `run-context.mjs write` with a `role` clears the worktree's bindings (a new stage is a new agent, and the scheduler writes the role before every dispatch). Starting a pass and `improve.sh` clear them all (the places that already delete `active-run.json`). A stale binding therefore never outlives its pass, and a re-dispatch never meets its predecessor's.
+**When bindings go.** `run-context.mjs write` with a `role` clears the worktree's bindings (a new stage is a new agent, and the scheduler writes the role before every dispatch), the stop gate removes a stopping agent's, and a binding expires after 12 hours. A re-dispatch therefore never meets its predecessor's, and a binding left by an agent that died stops counting on its own.
 
 **Tools that run inside an agent** (`qa.mjs`, `coverage.mjs`: `workRoot`) have no agent identity. Without `--worktree` they use the `cwd` run, then the only live binding if there is exactly one (today's sequential flow keeps working unchanged), and with two or more bindings they stop and say to pass `--worktree`. Agent instructions already name the worktree; the dispatch prompts and agent files are updated to pass it.
 
@@ -59,6 +59,7 @@ So the identity exists (`agent_id`), and the worktree has to come from the agent
 -   No token (approach 4): costs a determined, injected agent being able to try to adopt a run of its own role that no live same-role agent holds. Cheap to add later.
 -   The pointer is retired, not kept as a fallback: a fallback would be the fail-open path again. Cost: every dispatch site and agent file gains the bind line, and an agent that forgets is refused until it binds (the message says how).
 -   The sole-binding fallback for `workRoot` keeps the sequential flow working without touching every `qa.mjs` call.
+-   A pass does not clear bindings, because interactive sessions share the state folder: they take no lock, so a pass that wiped the folder would unbind their live agents. A binding left by an agent that died expires after 12 hours instead.
 
 ## What is left to the builder
 

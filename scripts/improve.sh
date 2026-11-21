@@ -25,8 +25,8 @@ if [ "$rc" != 0 ]; then
 fi
 trap 'df_lock_release "$STATE"' EXIT
 
+# the old pointer only; agent bindings stay, since interactive sessions share this folder (a binding expires on its own)
 rm -f "$STATE/active-run.json"
-rm -rf "$STATE/agents"
 cd "$REPO" || exit 1
 echo "$(date -u +%FT%TZ) improve start" >> "$LOG"
 bash "$DIR/scripts/doctor.sh" --ci >> "$LOG" 2>&1 || {

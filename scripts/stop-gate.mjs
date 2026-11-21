@@ -66,7 +66,7 @@ process.stdin
 				build = { problems: [`build.done could not be checked: ${e.message}`] };
 			}
 		}
-		const { finished, next, unmet } = decide({ run, has, head, debug, build });
+		const { finished, next, unmet } = decide({ run, has, head, debug, build, root: cwd });
 		if (finished) {
 			fs.rmSync(counter, { force: true });
 			letGo();

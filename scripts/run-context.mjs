@@ -10,10 +10,14 @@
 // role limits. A factory agent with no usable binding now resolves as `unbound`, which the hooks refuse.
 //
 //   run-context.mjs bind --worktree DIR    a factory agent's first command; the Bash hook records the binding, this prints one line
-//   run-context.mjs clear                  forget every binding (and a leftover pointer)
+//   run-context.mjs clear                  forget every binding (and a leftover pointer), every session's: a person's tool, not a pass's
 //   run-context.mjs write --worktree DIR --json '{"key":"APP-1","role":"builder"}'
 //                                          create DIR's .dev-factory/run.json, or merge these fields into it (null removes one)
 //   run-context.mjs set --worktree DIR     no longer used; kept for one release, does nothing
+//
+// A binding goes when the scheduler's role write starts the worktree's next stage, when the stop gate lets its agent stop, and when
+// it is older than MAX_BINDING_AGE_MS (twelve hours). A pass does not clear them: interactive builds share the state folder and take
+// no lock, so a pass that wiped the folder would unbind a live agent of another session.
 //
 // `write` exists because the edit hook and the shell hook protect run.json from every tool call once a scheduled pass is active
 // (DF_ACTIVE=1), the scheduler's own session included: the file is how a run's role and limits are recorded, so only this command, which
@@ -85,8 +89,18 @@ const gitRoot = (cwd) => {
 	}
 };
 
-// Every binding on record as [agentId, { worktree, role, at }]; unreadable or malformed files are skipped.
-function bindings(env) {
+// A pass does not clear the bindings, because interactive sessions share the state folder and take no lock: a binding left by an
+// agent that died (no stop, no role write after it) instead stops counting after this long. An agent's stage is far shorter.
+export const MAX_BINDING_AGE_MS = 12 * 60 * 60 * 1000;
+// Whether a binding is past its age, or carries no time that can be read: either way it is no binding.
+const expired = (b) => {
+	const t = Date.parse(b?.at);
+	return !Number.isFinite(t) || Date.now() - t > MAX_BINDING_AGE_MS;
+};
+
+// Every binding on record as [agentId, { worktree, role, at }]; unreadable or malformed files are skipped, and so are expired ones
+// unless `all` asks for them (the clean-up paths remove those too).
+function bindings(env, { all = false } = {}) {
 	let names;
 	try {
 		names = fs.readdirSync(bindingsDir(env));
@@ -99,17 +113,31 @@ function bindings(env) {
 		const id = name.slice(0, -'.json'.length);
 		if (!validId(id)) continue;
 		const b = readJson(path.join(bindingsDir(env), name));
-		if (isObject(b) && typeof b.worktree === 'string' && path.isAbsolute(b.worktree) && typeof b.role === 'string') out.push([id, b]);
+		if (isObject(b) && typeof b.worktree === 'string' && path.isAbsolute(b.worktree) && typeof b.role === 'string' && (all || !expired(b)))
+			out.push([id, b]);
 	}
 	return out;
 }
 
-// The binding of one agent, used only when it was made for the agent's own role, its worktree still holds a run, and that run is
-// still for this role (a binding from before a role change is never used, even if nothing removed it).
+// Removes the expired bindings and their claims. Never throws.
+function pruneExpired(env) {
+	for (const [id, b] of bindings(env, { all: true })) {
+		if (!expired(b)) continue;
+		dropClaim(b.worktree, b.role, id, env);
+		try {
+			fs.rmSync(path.join(bindingsDir(env), `${id}.json`), { force: true });
+		} catch {
+			// it is still skipped as expired wherever bindings are read
+		}
+	}
+}
+
+// The binding of one agent, used only when it was made for the agent's own role, is not past its age, its worktree still holds a
+// run, and that run is still for this role (a binding from before a role change is never used, even if nothing removed it).
 function boundRun(agentId, agentType, env) {
 	if (!validId(agentId)) return null;
 	const b = readJson(path.join(bindingsDir(env), `${agentId}.json`));
-	if (!isObject(b) || typeof b.worktree !== 'string' || !path.isAbsolute(b.worktree)) return null;
+	if (!isObject(b) || typeof b.worktree !== 'string' || !path.isAbsolute(b.worktree) || expired(b)) return null;
 	if (b.role !== roleOf(agentType)) return null;
 	const root = canon(b.worktree);
 	const run = readRun(root);
@@ -162,6 +190,8 @@ export function bindAgent({ agentId, agentType, worktree, env = process.env }) {
 			ok: false,
 			reason: `The run in ${dir} is for the ${runRole} role, and this agent is a ${role}: an agent binds only to a run of its own role.`,
 		};
+	// bindings past their age are removed here, where a bind looks at every other one anyway
+	pruneExpired(env);
 	// one agent works in one run: a live binding of its own to another worktree is not moved by a second bind
 	const current = liveBinding(agentId, role, env);
 	if (current && current.root !== dir)
@@ -235,7 +265,7 @@ const readClaim = (f) => {
 const holdsClaim = (holder, role, dir, env) => {
 	if (!validId(holder)) return false;
 	const b = readJson(path.join(bindingsDir(env), `${holder}.json`));
-	return isObject(b) && b.role === role && typeof b.worktree === 'string' && sameFolder(b.worktree, dir);
+	return isObject(b) && !expired(b) && b.role === role && typeof b.worktree === 'string' && sameFolder(b.worktree, dir);
 };
 // Exclusive and whole: the id is written to a file of its own and linked into place, which fails if the name exists, so no reader
 // ever meets a claim that is there but still empty.
@@ -333,7 +363,8 @@ function dropClaim(worktree, role, agentId, env) {
 
 // Drops every binding to `worktree`, however either path was written, and every claim on it whatever the role.
 export function unbindWorktree(worktree, env = process.env) {
-	for (const [id, b] of bindings(env)) if (sameFolder(b.worktree, worktree)) fs.rmSync(path.join(bindingsDir(env), `${id}.json`), { force: true });
+	for (const [id, b] of bindings(env, { all: true }))
+		if (sameFolder(b.worktree, worktree)) fs.rmSync(path.join(bindingsDir(env), `${id}.json`), { force: true });
 	let names;
 	try {
 		names = fs.readdirSync(claimsDir(env));

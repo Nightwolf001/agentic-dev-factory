@@ -1185,6 +1185,17 @@ test('a factory agent runs run-context.mjs in no form at all; the scheduler runs
 		`echo ok; node run-context.mjs ${sub}`,
 		`bash -c 'node run-context.mjs ${sub}'`,
 		`node -e "import('${rc}')" ${sub}`,
+		// the other launchers of a script, and the ways one is started through another
+		`bun ${rc} ${sub}`,
+		`bunx ${rc} ${sub}`,
+		`deno run -A ${rc} ${sub}`,
+		`tsx ${rc} ${sub}`,
+		`ts-node ${rc} ${sub}`,
+		`npx node ${rc} ${sub}`,
+		`npm exec -- node ${rc} ${sub}`,
+		`pnpm exec node ${rc} ${sub}`,
+		`yarn node ${rc} ${sub}`,
+		`find ${PLUGIN_ROOT}/scripts -name run-context.mjs -exec node {} ${sub} \\;`,
 	];
 	const subs = [
 		'clear',
@@ -1207,7 +1218,13 @@ test('a factory agent runs run-context.mjs in no form at all; the scheduler runs
 			if (!command.includes(' -e ')) assert.equal(evaluate(command, { branch: 'task/APP-1-x' }).deny, false, `the scheduler may: ${command}`);
 		}
 	// the file named, not run, is not running it
-	for (const command of [`grep -n bindAgent ${rc}`, `cat ${rc}`, 'grep run-context.mjs README.md', `sed -n 1,20p scripts/run-context.mjs`])
+	for (const command of [
+		`grep -n bindAgent ${rc}`,
+		`cat ${rc}`,
+		'grep run-context.mjs README.md',
+		`sed -n 1,20p scripts/run-context.mjs`,
+		`find ${PLUGIN_ROOT}/scripts -name run-context.mjs`,
+	])
 		for (const role of ['builder', 'reviewer', 'debugger', 'researcher', 'improver'])
 			assert.equal(evaluate(command, { role, branch: 'task/APP-1-x', key: 'APP-1' }).deny, false, `${role}: ${command}`);
 	// its test file is not the file (the read-only roles run no tests under their own rules)

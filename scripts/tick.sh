@@ -22,8 +22,8 @@ export DF_OWNER_PID=$$
 df_lock_acquire "$STATE" "$LOG" pass || exit $?
 trap 'df_lock_release "$STATE"' EXIT
 
+# the old pointer only; agent bindings stay, since interactive sessions share this folder (a binding expires on its own)
 rm -f "$STATE/active-run.json"
-rm -rf "$STATE/agents"
 cd "$REPO" || exit 1
 STARTED="$(date -u +%FT%TZ)"
 echo "$STARTED pass start" >> "$LOG"

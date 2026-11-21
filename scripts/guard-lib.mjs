@@ -200,10 +200,18 @@ const WRAPPERS = {
 	stdbuf: ['-i', '-o', '-e'],
 };
 
-// Whether the command runs run-context.mjs: node (past its options, whatever they are) with the file named anywhere in its words,
-// or the file started as a program. A command that only names the file (grep, cat, sed) does not run it.
-const runsRunContext = (cmd, args) =>
-	cmd === 'run-context.mjs' || ((cmd === 'node' || cmd === 'nodejs') && args.some((a) => a.includes('run-context.mjs')));
+// Whether the command runs run-context.mjs: a launcher of scripts (node, bun, deno, tsx, npx and the rest of SCRIPT_RUNNERS, past
+// their options, whatever they are), a package manager's exec, or find with -exec, with the file named anywhere in its words; or the
+// file started as a program. A command that only names the file (grep, cat, sed, a find that only lists) does not run it.
+const PACKAGE_EXEC = new Set(['exec', 'x', 'dlx', 'node']);
+const runsRunContext = (cmd, args) => {
+	if (cmd === 'run-context.mjs') return true;
+	const runs =
+		SCRIPT_RUNNERS.has(cmd) ||
+		(['npm', 'pnpm', 'yarn'].includes(cmd) && args.some((a) => PACKAGE_EXEC.has(a))) ||
+		(cmd === 'find' && args.some((a) => /^-(exec|execdir|ok|okdir)$/.test(a)));
+	return runs && args.some((a) => a.toLowerCase().includes('run-context.mjs'));
+};
 
 // -> { cmd, args, tokens }: the command a segment really runs, past wrappers, with its basename.
 function invocation(seg) {

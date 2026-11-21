@@ -2,7 +2,8 @@
 # Single-flight lock shared by tick.sh and improve.sh (both create worktrees and talk to the task source).
 # Source it; do not run it.
 #   df_lock_acquire STATE LOG NAME   0 when taken, 75 when a live holder has it (one line logged)
-#   df_lock_release STATE            removes the lock, the old active-run pointer and every agent binding
+#   df_lock_release STATE            removes the lock and the old active-run pointer; agent bindings stay, since interactive
+#                                    sessions share the state folder and take no lock
 # A holder is live only when its pid is alive AND the process start time recorded with the lock still
 # matches, so a recycled pid never keeps the lock, and a crashed pass never blocks the next one.
 
@@ -56,5 +57,5 @@ df_lock_acquire() {
 }
 
 df_lock_release() {
-  rm -rf "$1/tick.lock" "$1/active-run.json" "$1/agents"
+  rm -rf "$1/tick.lock" "$1/active-run.json"
 }

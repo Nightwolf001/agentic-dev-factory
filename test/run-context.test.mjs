@@ -555,14 +555,22 @@ test('bindAgent never throws: a too-long agent id and a state folder that cannot
 });
 
 test('resolveRun and workRoot take a missing or non-string cwd as the process directory', () => {
-	const { env } = fixture({ role: 'builder' });
-	for (const cwd of [undefined, null, 42, '']) {
-		assert.doesNotThrow(() => resolveRun({ cwd, agentType: BUILDER, agentId: 'b1', env }));
-		assert.equal(resolveRun({ cwd, agentType: BUILDER, agentId: 'b1', env }).unbound, true);
-		assert.equal(typeof workRoot({ cwd, env }), 'string');
+	const { repo, env } = fixture({ role: 'builder' });
+	// the process directory is the fixture's session folder, which holds no run, whatever directory the suite was started in (the
+	// improver runs it from a worktree that holds one)
+	const was = process.cwd();
+	process.chdir(repo);
+	try {
+		for (const cwd of [undefined, null, 42, '']) {
+			assert.doesNotThrow(() => resolveRun({ cwd, agentType: BUILDER, agentId: 'b1', env }));
+			assert.equal(resolveRun({ cwd, agentType: BUILDER, agentId: 'b1', env }).unbound, true);
+			assert.equal(typeof workRoot({ cwd, env }), 'string');
+		}
+		assert.doesNotThrow(() => resolveRun());
+		assert.doesNotThrow(() => workRoot());
+	} finally {
+		process.chdir(was);
 	}
-	assert.doesNotThrow(() => resolveRun());
-	assert.doesNotThrow(() => workRoot());
 });
 
 test('workRoot skips a corrupt or foreign file in the bindings folder', () => {
@@ -574,5 +582,32 @@ test('workRoot skips a corrupt or foreign file in the bindings folder', () => {
 	fs.writeFileSync(path.join(bindingsDir(env), 'notes.txt'), 'x');
 	assert.equal(workRoot({ cwd: repo, env }), repo);
 	bound(bindAgent({ agentId: 'b1', agentType: BUILDER, worktree, env }));
+	assert.equal(workRoot({ cwd: repo, env }), fs.realpathSync.native(worktree));
+});
+
+// A pass does not clear bindings (interactive sessions share the state folder), so a binding left by an agent that died expires.
+test('a binding older than twelve hours is treated as gone everywhere and pruned; one eleven hours old still holds', () => {
+	const { base, repo, worktree, env } = fixture({ role: 'builder' });
+	const other = addWorktree(base, 'APP-2', { role: 'builder' });
+	const age = (id, hours) => {
+		const file = path.join(bindingsDir(env), `${id}.json`);
+		const b = JSON.parse(fs.readFileSync(file, 'utf8'));
+		fs.writeFileSync(file, JSON.stringify({ ...b, at: new Date(Date.now() - hours * 3600 * 1000).toISOString() }));
+	};
+	bound(bindAgent({ agentId: 'old', agentType: BUILDER, worktree, env }));
+	bound(bindAgent({ agentId: 'mid', agentType: BUILDER, worktree: other, env }));
+	age('old', 13);
+	age('mid', 11);
+	assert.equal(resolveRun({ cwd: repo, agentType: BUILDER, agentId: 'old', env }).unbound, true, 'an expired binding is unbound');
+	assert.equal(resolveRun({ cwd: repo, agentType: BUILDER, agentId: 'mid', env }).via, 'binding', 'eleven hours still holds');
+	assert.equal(workRoot({ cwd: repo, env }), fs.realpathSync.native(other), 'workRoot counts only the live binding');
+	// the expired one does not hold its worktree: another builder binds, and the old file and its claim go
+	bound(bindAgent({ agentId: 'new', agentType: BUILDER, worktree, env }));
+	assert.deepEqual(listBindings(env), ['mid.json', 'new.json']);
+	assert.equal(fs.readFileSync(claimPath(env, worktree, 'builder'), 'utf8'), 'new');
+	// a binding whose time cannot be read is no binding either
+	const file = path.join(bindingsDir(env), 'mid.json');
+	fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file, 'utf8')), at: 'yesterday' }));
+	assert.equal(resolveRun({ cwd: repo, agentType: BUILDER, agentId: 'mid', env }).unbound, true);
 	assert.equal(workRoot({ cwd: repo, env }), fs.realpathSync.native(worktree));
 });
