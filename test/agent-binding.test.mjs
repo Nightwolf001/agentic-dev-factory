@@ -245,7 +245,7 @@ test('a builder bound to a run with no role is judged by the builder limits', ()
 	assert.equal(bash(env, repo, who, bindCmd(roleless)).status, 0);
 	const write = bash(env, repo, who, `node "${RUN_CONTEXT}" write --worktree ${roleless} --json '{"role":"reviewer"}'`);
 	assert.equal(write.status, 2);
-	assert.match(write.stderr, /run state is written only by the scheduler/);
+	assert.match(write.stderr, /run-context\.mjs is run only by the scheduler/);
 	const sentry = mcp(env, repo, who);
 	assert.equal(sentry.status, 2);
 	assert.match(sentry.stderr, /the builder role may not read telemetry/);
@@ -381,6 +381,34 @@ test('a first Write through a symlink or another case of the path is never bound
 		if (!bound) assert.equal(edit(env, repo, who, path.join(R3, 'docs/plans/R-3/research.md')).status, 0);
 		fs.rmSync(bindingsDir(env), { recursive: true, force: true });
 	}
+});
+
+test('a bound builder cannot clear the bindings or rewrite a run through run-context.mjs, and every binding stays as it was', () => {
+	const { repo, env, one, two } = fixture();
+	const A = agent(BUILDER, 'c1');
+	const B = agent(BUILDER, 'c2');
+	assert.equal(bash(env, repo, A, bindCmd(one)).status, 0);
+	assert.equal(bash(env, repo, B, bindCmd(two)).status, 0);
+	const snapshot = () => listBindings(env).map((f) => [f, fs.readFileSync(path.join(bindingsDir(env), f), 'utf8')]);
+	const before = snapshot();
+	for (const command of [
+		`node "${RUN_CONTEXT}" clear`,
+		`node ${RUN_CONTEXT} clear`,
+		`cd ${SCRIPTS} && node run-context.mjs clear`,
+		`node --no-warnings "${RUN_CONTEXT}" write --worktree ${one} --json '{"branch":"feat/APP-2"}'`,
+		`env node "${RUN_CONTEXT}" write --worktree ${two} --json '{"role":"builder"}'`,
+	]) {
+		const r = bash(env, repo, A, command);
+		assert.equal(r.status, 2, command);
+		assert.match(r.stderr, /run-context\.mjs/, command);
+	}
+	assert.deepEqual(snapshot(), before);
+	// the bind itself still works for a bound agent, as the same binding
+	assert.equal(bash(env, repo, A, bindCmd(one)).status, 0);
+	assert.deepEqual(
+		snapshot().map(([f]) => f),
+		['c1.json', 'c2.json'],
+	);
 });
 
 test('three agents binding one worktree at once: at most one is accepted, every round', async () => {

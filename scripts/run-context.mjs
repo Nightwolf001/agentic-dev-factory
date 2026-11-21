@@ -251,11 +251,25 @@ const createClaim = (f, agentId) => {
 
 const TAKEOVER_STALE_MS = 10_000;
 const BUSY = (role, dir) => `Another bind of the ${role} of the run in ${dir} is being recorded; retry once in a few seconds.`;
-// Removes a takeover file older than TAKEOVER_STALE_MS (by mtime). -> whether it was stale (and is gone).
+// Removes a takeover file older than TAKEOVER_STALE_MS (by mtime). -> whether it was stale (and is gone). It is renamed to a name of
+// this process's own before anything else: a fresh takeover another agent created just after the age was read would otherwise be
+// removed with it. Only one rename of the stale file succeeds; the renamed file is checked again and put back if it is fresh.
 const removeStaleTakeover = (takeover) => {
 	try {
 		if (Date.now() - fs.statSync(takeover).mtimeMs <= TAKEOVER_STALE_MS) return false;
-		fs.rmSync(takeover, { force: true });
+		const mine = `${takeover}.${process.pid}.${Date.now()}.stale`;
+		fs.renameSync(takeover, mine);
+		if (Date.now() - fs.statSync(mine).mtimeMs <= TAKEOVER_STALE_MS) {
+			// a fresh one was moved: back under its name unless another took its place meanwhile
+			try {
+				fs.linkSync(mine, takeover);
+			} catch {
+				// the name is taken again, by a takeover that is fresh in its turn
+			}
+			fs.rmSync(mine, { force: true });
+			return false;
+		}
+		fs.rmSync(mine, { force: true });
 		return true;
 	} catch {
 		return false;

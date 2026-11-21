@@ -200,6 +200,11 @@ const WRAPPERS = {
 	stdbuf: ['-i', '-o', '-e'],
 };
 
+// Whether the command runs run-context.mjs: node (past its options, whatever they are) with the file named anywhere in its words,
+// or the file started as a program. A command that only names the file (grep, cat, sed) does not run it.
+const runsRunContext = (cmd, args) =>
+	cmd === 'run-context.mjs' || ((cmd === 'node' || cmd === 'nodejs') && args.some((a) => a.includes('run-context.mjs')));
+
 // -> { cmd, args, tokens }: the command a segment really runs, past wrappers, with its basename.
 function invocation(seg) {
 	const tokens = tokenize(seg).map(shellUnquote);
@@ -976,6 +981,11 @@ function judge(command, ctx) {
 		if (machine) return deny(machine);
 		const engine = denyEngineControl(cmd, args);
 		if (engine) return deny(engine);
+		// run-context.mjs holds the runs and the agents' bindings: `write` rewrites a run's branch or role, `clear` drops every agent's
+		// binding. An agent's one use of it is the exact bind, which the Bash hook takes before this function runs, so a factory agent
+		// runs it in no form (before the read-only roles' own rules, which would not stop it)
+		if (FACTORY_ROLES.has(ctx.role) && runsRunContext(cmd, args))
+			return deny('run-context.mjs is run only by the scheduler; a factory agent binds with the exact bind command and nothing else');
 		if (cmd === 'cd' || cmd === 'pushd') {
 			const target = args.find((a) => !a.startsWith('-'));
 			const to = target ? candidates(target, st.vars)[0] : home;
@@ -1012,9 +1022,6 @@ function judge(command, ctx) {
 		else if (merge === 'built')
 			reason =
 				"the script is built at run time, so it cannot be told from automerge.mjs, which only the scheduler runs; write the script's path out";
-		// run.json records the role and limits a run is judged by: a factory agent does not rewrite its own
-		if (!reason && FACTORY_ROLES.has(ctx.role) && /^node\s+\S*run-context\.mjs"?\s+write\b/.test(seg))
-			reason = 'run state is written only by the scheduler, not by a factory agent (run-context.mjs write)';
 		if (!reason && /^docker\s+(system|volume|image|builder|network|container)\s+prune/.test(body)) reason = 'docker prune is not allowed';
 		if (!reason && FACTORY_ROLES.has(ctx.role)) reason = denyProcessControl(seg, cmd, args, ctx);
 		if (
