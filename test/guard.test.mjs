@@ -3,7 +3,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { evaluate } from '../scripts/guard-lib.mjs';
+import { evaluate as evaluateIn } from '../scripts/guard-lib.mjs';
+
+// The guard resolves relative paths against the context's cwd and falls back to process.cwd(). A
+// checkout under a .claude/ folder (a worktree of an agent session) would then make every relative
+// write look like a write into that protected folder, so the verdict would depend on where the
+// repository sits. Every context gets a fixed directory that is neither under .claude/ nor on disk;
+// a test that cares about its directory passes its own cwd, which wins.
+const TEST_CWD = '/work/APP-12';
+const evaluate = (command, context = {}) => evaluateIn(command, { cwd: TEST_CWD, ...context });
 
 const ctx = { branch: 'task/APP-12-fix-thing', containerOnly: true, service: 'devcontainer' };
 const denied = (c) => assert.equal(evaluate(c, ctx).deny, true, c);
