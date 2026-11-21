@@ -249,6 +249,19 @@ const createClaim = (f, agentId) => {
 	}
 };
 
+const TAKEOVER_STALE_MS = 10_000;
+const BUSY = (role, dir) => `Another bind of the ${role} of the run in ${dir} is being recorded; retry once in a few seconds.`;
+// Removes a takeover file older than TAKEOVER_STALE_MS (by mtime). -> whether it was stale (and is gone).
+const removeStaleTakeover = (takeover) => {
+	try {
+		if (Date.now() - fs.statSync(takeover).mtimeMs <= TAKEOVER_STALE_MS) return false;
+		fs.rmSync(takeover, { force: true });
+		return true;
+	} catch {
+		return false;
+	}
+};
+
 // -> { ok: true } or a refusal. A claim left behind is replaced only under a takeover file, itself created exclusively, so two agents
 // that find the same leftover claim cannot both remove it and both win; the one that loses is refused and may bind again.
 function claim(agentId, role, dir, env) {
@@ -263,12 +276,20 @@ function claim(agentId, role, dir, env) {
 	}
 	const holder = readClaim(f);
 	if (holder === agentId) return { ok: true };
-	if (holder === null || holdsClaim(holder, role, dir, env)) return lost();
+	if (holder === null) return lost(`The claim for the ${role} of the run in ${dir} could not be read, so this bind did not take.`);
+	if (holdsClaim(holder, role, dir, env)) return lost();
 	const takeover = `${f}.takeover`;
 	try {
 		createClaim(takeover, agentId);
 	} catch {
-		return lost(`Another ${role} agent is binding to ${dir} at this moment, so this bind did not take; bind again.`);
+		// a takeover is over in milliseconds, so one older than TAKEOVER_STALE_MS was left by a hook that died: it is removed and the
+		// takeover tried once more
+		if (!removeStaleTakeover(takeover)) return lost(BUSY(role, dir));
+		try {
+			createClaim(takeover, agentId);
+		} catch {
+			return lost(BUSY(role, dir));
+		}
 	}
 	try {
 		if (readClaim(f) !== holder) return lost();

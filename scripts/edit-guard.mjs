@@ -19,7 +19,8 @@ function runFolderAbove(file) {
 	let dir = path.dirname(path.resolve(file));
 	while (!fs.existsSync(dir) && path.dirname(dir) !== dir) dir = path.dirname(dir);
 	try {
-		dir = fs.realpathSync(dir);
+		// the native call also settles the case of each name, the form the binding records and the later writes are judged against
+		dir = fs.realpathSync.native(dir);
 	} catch {
 		return null;
 	}
@@ -35,12 +36,32 @@ function runFolderAbove(file) {
 const RESEARCHER_UNBOUND =
 	"dev-factory guard: this researcher is not bound to a run, and a run's limits must be known before any edit is allowed. A researcher is bound by its first Write, which must name an absolute path inside the worktree your dispatch names (its research.md).";
 
-// A researcher's first Write binds it: -> nothing when bound, or refuses.
-function bindResearcherByWrite(evt, filePath) {
+const readRunAt = (worktree) => {
+	try {
+		const run = JSON.parse(fs.readFileSync(path.join(worktree, '.dev-factory', 'run.json'), 'utf8'));
+		return run !== null && typeof run === 'object' && !Array.isArray(run) ? run : null;
+	} catch {
+		return null;
+	}
+};
+
+// A researcher's first Write binds it, but only a Write its limits allow under the run it would bind to: the write is judged under
+// that run first, with nothing recorded, so a misdirected first Write is refused and leaves the agent unbound (bound to the wrong
+// run, it could neither reach its own run nor let that run's researcher bind). -> nothing when bound, or refuses.
+function bindResearcherByWrite(evt, filePath, verdictUnder) {
 	if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) refuse(RESEARCHER_UNBOUND);
 	const worktree = runFolderAbove(filePath);
 	if (!worktree)
 		refuse(`dev-factory guard: the bind was refused: no folder above ${filePath} holds a .dev-factory/run.json, so it is not in a run.`);
+	const run = readRunAt(worktree);
+	if (!run) refuse(`dev-factory guard: the bind was refused: the run file in ${worktree} could not be read.`);
+	const runRole = judgedRole(run);
+	if (runRole !== 'researcher')
+		refuse(
+			`dev-factory guard: the bind was refused: the run in ${worktree} is for the ${runRole} role, and this agent is a researcher: an agent binds only to a run of its own role.`,
+		);
+	const verdict = verdictUnder(worktree, { ...run, role: 'researcher' });
+	if (verdict.deny) refuse(`${verdict.reason} (nothing was bound: a researcher is bound by a first Write its limits allow)`);
 	const r = bindAgent({ agentId: evt.agent_id, agentType: evt.agent_type, worktree });
 	if (!r.ok) refuse(`dev-factory guard: the bind was refused: ${r.reason}`);
 }
@@ -49,23 +70,23 @@ function judge(evt, factory) {
 	const cwd = evt.cwd || process.cwd();
 	const ti = evt.tool_input || {};
 	const filePath = ti.file_path || ti.notebook_path;
+	const text = [ti.content, ti.new_string, ti.new_source, ...(Array.isArray(ti.edits) ? ti.edits.map((e) => e.new_string) : [])]
+		.filter(Boolean)
+		.join('\n');
+	const verdictUnder = (root, run) => evaluateEdit({ filePath, text, root, active: process.env.DF_ACTIVE === '1' || !!run, run });
 	const who = { cwd, agentType: evt.agent_type, agentId: evt.agent_id };
 	let resolved = resolveRun(who);
 	if (factory && resolved.unbound) {
 		const researcher = FACTORY_AGENT.exec(evt.agent_type)?.[2] === 'researcher';
 		if (!researcher) refuse(unboundReason('Bind first with the Bash tool'));
 		if (evt.tool_name !== 'Write') refuse(RESEARCHER_UNBOUND);
-		bindResearcherByWrite(evt, filePath);
-		// this write is then judged under the run just bound, so only the researcher's own paths pass
+		bindResearcherByWrite(evt, filePath, verdictUnder);
+		// judged again under the run now bound, as every later write is
 		resolved = resolveRun(who);
 		if (resolved.unbound) refuse(RESEARCHER_UNBOUND);
 	}
-	const { root } = resolved;
 	const run = factory && resolved.run ? { ...resolved.run, role: judgedRole(resolved.run) } : resolved.run;
-	const text = [ti.content, ti.new_string, ti.new_source, ...(Array.isArray(ti.edits) ? ti.edits.map((e) => e.new_string) : [])]
-		.filter(Boolean)
-		.join('\n');
-	const verdict = evaluateEdit({ filePath, text, root, active: process.env.DF_ACTIVE === '1' || !!run, run });
+	const verdict = verdictUnder(resolved.root, run);
 	if (verdict.deny) refuse(verdict.reason);
 	process.exit(0);
 }

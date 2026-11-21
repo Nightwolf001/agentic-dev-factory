@@ -313,12 +313,15 @@ test('a researcher is bound by its first Write, and only by a Write into a free 
 	const src = edit(env, repo, Q, path.join(res, 'src/x.js'));
 	assert.equal(src.status, 2);
 	assert.match(src.stderr, /a researcher writes only docs\/plans\/APP-6\/research\.md/);
-	// a first Write the researcher limits refuse is refused, though the binding it made stays for the next one
+	// a first Write the researcher limits refuse is refused, and binds nothing
 	const R = agent(RESEARCHER, 'q2');
 	const res2 = addWorktree(base, 'APP-9', { role: 'researcher' });
 	const wrong = edit(env, repo, R, path.join(res2, 'src/x.js'));
 	assert.equal(wrong.status, 2);
 	assert.match(wrong.stderr, /a researcher writes only/);
+	assert.match(wrong.stderr, /nothing was bound/);
+	assert.ok(!listBindings(env).includes('q2.json'));
+	assert.equal(edit(env, repo, R, path.join(res2, 'docs/plans/APP-9/research.md')).status, 0, 'its intended first Write still binds');
 	assert.ok(listBindings(env).includes('q2.json'));
 	// the stop gate removes the binding when it lets the researcher go
 	fs.writeFileSync(path.join(res, '.dev-factory', 'blocked.json'), '{}');
@@ -337,6 +340,47 @@ test('a bound agent does not bind to a second worktree, and rebinding its own is
 	assert.match(bash(env, repo, A, 'git push origin feat/APP-2').stderr, /feat\/APP-1/, 'still judged by its first run');
 	// the second worktree is still free for another agent
 	assert.equal(bash(env, repo, agent(BUILDER, 'm2'), bindCmd(two)).status, 0);
+});
+
+// A misdirected first Write must not bind: bound to the wrong run, the researcher could not reach its own, the other run's
+// researcher could not bind, and the stop gate would block the wrong ticket.
+test("a researcher's misdirected first Write binds nothing, so its own run and the other run's researcher are unaffected", () => {
+	const { base, repo, env: fixtureEnv } = fixture();
+	const env = { ...fixtureEnv, DF_STOP_GATE_MAX: '1' };
+	const R1 = addWorktree(base, 'R-1', { role: 'researcher' });
+	const R2 = addWorktree(base, 'R-2', { role: 'researcher' });
+	const m1 = agent(RESEARCHER, 'm1');
+	const first = edit(env, repo, m1, path.join(R2, 'notes.md'));
+	assert.equal(first.status, 2);
+	assert.match(first.stderr, /nothing was bound/);
+	assert.deepEqual(listBindings(env), []);
+	assert.equal(edit(env, repo, m1, path.join(R1, 'docs/plans/R-1/research.md')).status, 0, 'the intended first Write binds');
+	assert.deepEqual(listBindings(env), ['m1.json']);
+	assert.equal(edit(env, repo, agent(RESEARCHER, 'real2'), path.join(R2, 'docs/plans/R-2/research.md')).status, 0, "R-2's own researcher binds");
+	assert.deepEqual(listBindings(env), ['m1.json', 'real2.json']);
+	// m1's stop gate gives up on R-1, its own ticket, never on R-2
+	for (let i = 0; i < 3; i++) stop(env, repo, m1);
+	assert.equal(fs.existsSync(path.join(R1, '.dev-factory', 'blocked.json')), true);
+	assert.equal(fs.existsSync(path.join(R2, '.dev-factory', 'blocked.json')), false);
+});
+
+test('a first Write through a symlink or another case of the path is never bound and then refused', () => {
+	const { base, repo, env } = fixture();
+	const R3 = addWorktree(base, 'R-3', { role: 'researcher' });
+	const link = path.join(base, 'link-R3');
+	fs.symlinkSync(R3, link);
+	const variants = [path.join(link, 'docs/plans/R-3/research.md')];
+	const upper = path.join(path.dirname(R3), 'r-3');
+	if (fs.existsSync(upper)) variants.push(path.join(upper, 'docs/plans/R-3/research.md'));
+	for (const [i, file] of variants.entries()) {
+		const who = agent(RESEARCHER, `v${i}`);
+		const r = edit(env, repo, who, file);
+		const bound = listBindings(env).includes(`v${i}.json`);
+		assert.ok((r.status === 0 && bound) || (r.status === 2 && !bound), `${file}: exit ${r.status}, bound ${bound}: ${r.stderr}`);
+		// whatever happened, the agent can still reach its run by the real path
+		if (!bound) assert.equal(edit(env, repo, who, path.join(R3, 'docs/plans/R-3/research.md')).status, 0);
+		fs.rmSync(bindingsDir(env), { recursive: true, force: true });
+	}
 });
 
 test('three agents binding one worktree at once: at most one is accepted, every round', async () => {

@@ -461,17 +461,31 @@ test('a bind claims its worktree and role, a live claim refuses another agent, a
 	bound(bindAgent({ agentId: 'b2', agentType: BUILDER, worktree, env }));
 	assert.equal(fs.readFileSync(claimFile, 'utf8'), 'b2');
 	assert.deepEqual(listBindings(env), ['b2.json']);
-	// while another agent is replacing a leftover claim, a third is refused and told to bind again
+	// while another agent is replacing a leftover claim, a third is refused and told to retry in a moment
 	fs.rmSync(path.join(bindingsDir(env), 'b2.json'));
 	fs.writeFileSync(`${claimFile}.takeover`, 'b9');
 	const during = bindAgent({ agentId: 'b3', agentType: BUILDER, worktree, env });
 	assert.equal(during.ok, false);
-	assert.match(during.reason, /bind again/);
+	assert.match(during.reason, /being recorded; retry once in a few seconds/);
+	assert.doesNotMatch(during.reason, /already bound/);
 	assert.deepEqual(listBindings(env), []);
-	fs.rmSync(`${claimFile}.takeover`);
+	// a takeover file older than ten seconds was left by a hook that died: it is removed and the bind goes ahead
+	const old = (Date.now() - 11_000) / 1000;
+	fs.utimesSync(`${claimFile}.takeover`, old, old);
 	bound(bindAgent({ agentId: 'b3', agentType: BUILDER, worktree, env }));
 	assert.equal(fs.readFileSync(claimFile, 'utf8'), 'b3');
 	assert.deepEqual(claims(env), [path.basename(claimFile)], 'no takeover or temporary file is left');
+});
+
+test('a claim that cannot be read refuses the bind without saying anyone holds the run', () => {
+	const { worktree, env } = fixture({ role: 'builder' });
+	const claimFile = claimPath(env, worktree, 'builder');
+	fs.mkdirSync(claimFile, { recursive: true });
+	const r = bindAgent({ agentId: 'b1', agentType: BUILDER, worktree, env });
+	assert.equal(r.ok, false);
+	assert.match(r.reason, /could not be read/);
+	assert.doesNotMatch(r.reason, /already bound/);
+	assert.deepEqual(listBindings(env), []);
 });
 
 test('unbindAgent, unbindWorktree and clear remove the claims with the bindings', () => {
