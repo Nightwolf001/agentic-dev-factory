@@ -215,6 +215,19 @@ const WRAPPERS = {
 	stdbuf: ['-i', '-o', '-e'],
 };
 
+// Whether the command runs run-context.mjs: a launcher of scripts (node, bun, deno, tsx, npx and the rest of SCRIPT_RUNNERS, past
+// their options, whatever they are), a package manager's exec, or find with -exec, with the file named anywhere in its words; or the
+// file started as a program. A command that only names the file (grep, cat, sed, a find that only lists) does not run it.
+const PACKAGE_EXEC = new Set(['exec', 'x', 'dlx', 'node']);
+const runsRunContext = (cmd, args) => {
+	if (cmd === 'run-context.mjs') return true;
+	const runs =
+		SCRIPT_RUNNERS.has(cmd) ||
+		(['npm', 'pnpm', 'yarn'].includes(cmd) && args.some((a) => PACKAGE_EXEC.has(a))) ||
+		(cmd === 'find' && args.some((a) => /^-(exec|execdir|ok|okdir)$/.test(a)));
+	return runs && args.some((a) => a.toLowerCase().includes('run-context.mjs'));
+};
+
 // -> { cmd, args, tokens }: the command a segment really runs, past wrappers, with its basename.
 function invocation(seg) {
 	const tokens = tokenize(seg).map(shellUnquote);
@@ -1261,6 +1274,11 @@ function judge(command, ctx) {
 		if (machine) return deny(machine);
 		const engine = denyEngineControl(cmd, args);
 		if (engine) return deny(engine);
+		// run-context.mjs holds the runs and the agents' bindings: `write` rewrites a run's branch or role, `clear` drops every agent's
+		// binding. An agent's one use of it is the exact bind, which the Bash hook takes before this function runs, so a factory agent
+		// runs it in no form (before the read-only roles' own rules, which would not stop it)
+		if (FACTORY_ROLES.has(ctx.role) && runsRunContext(cmd, args))
+			return deny('run-context.mjs is run only by the scheduler; a factory agent binds with the exact bind command and nothing else');
 		if (cmd === 'cd' || cmd === 'pushd') {
 			const target = args.find((a) => !a.startsWith('-'));
 			const to = target ? candidates(target, st.vars)[0] : home;
@@ -1305,9 +1323,6 @@ function judge(command, ctx) {
 		else if (merge === 'built')
 			reason =
 				"the script is built at run time, so it cannot be told from automerge.mjs, which only the scheduler runs; write the script's path out";
-		// run.json records the role and limits a run is judged by: a factory agent does not rewrite its own
-		if (!reason && FACTORY_ROLES.has(ctx.role) && /^node\s+\S*run-context\.mjs"?\s+write\b/.test(seg))
-			reason = 'run state is written only by the scheduler, not by a factory agent (run-context.mjs write)';
 		if (!reason && /^docker\s+(system|volume|image|builder|network|container)\s+prune/.test(body)) reason = 'docker prune is not allowed';
 		if (!reason && FACTORY_ROLES.has(ctx.role)) reason = denyProcessControl(seg, cmd, args, ctx);
 		if (

@@ -9,8 +9,14 @@ test('every factory agent is told that its shell starts outside the worktree and
 	assert.ok(agents.length >= 6);
 	for (const f of agents) {
 		const text = fs.readFileSync(new URL(f, dir), 'utf8');
-		assert.match(text, /shell starts in the scheduler's directory, not the worktree/, `${f}: says where the shell starts`);
-		assert.match(text, /a `cd` does not carry from one call to the next/, `${f}: says cd does not persist`);
+		if (f === 'factory-researcher.md') {
+			// the researcher has no shell: it is told where its tools start and that it has no shell, not about `cd`
+			assert.match(text, /tools start in the scheduler's directory, not the worktree/, `${f}: says where its tools start`);
+			assert.match(text, /You have no shell/, `${f}: says it has no shell`);
+		} else {
+			assert.match(text, /shell starts in the scheduler's directory, not the worktree/, `${f}: says where the shell starts`);
+			assert.match(text, /a `cd` does not carry from one call to the next/, `${f}: says cd does not persist`);
+		}
 		// the reviewer records through qa.mjs and writes no hand-off file of its own
 		if (f !== 'factory-reviewer.md') assert.match(text, /`<worktree>\/(\.dev-factory|docs)\//, `${f}: names the absolute hand-off path`);
 	}

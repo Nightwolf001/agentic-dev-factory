@@ -1536,3 +1536,72 @@ test('run-context.mjs write is the scheduler’s: a factory agent may not rewrit
 	assert.equal(evaluate(write, { branch: 'task/APP-1-x' }).deny, false, 'the scheduler has no agent role');
 	assert.equal(evaluate(`FOO=1 ${write}`, { role: 'builder' }).deny, true, 'a leading variable does not hide it');
 });
+
+// The one use an agent has for run-context.mjs is the exact bind, which the Bash hook takes before evaluate runs. Every other way of
+// running it (clear wipes every agent's binding, write rewrites a run's branch or another worktree's role) is the scheduler's.
+test('a factory agent runs run-context.mjs in no form at all; the scheduler runs it freely, and reading the file is fine', () => {
+	const rc = `${PLUGIN_ROOT}/scripts/run-context.mjs`;
+	const forms = (sub) => [
+		`node run-context.mjs ${sub}`,
+		`node "${rc}" ${sub}`,
+		`node ${rc} ${sub}`,
+		`node '/a b/scripts/run-context.mjs' ${sub}`,
+		`node --no-warnings "${rc}" ${sub}`,
+		`node -r /tmp/x.js "${rc}" ${sub}`,
+		`env node "${rc}" ${sub}`,
+		`env -i node "${rc}" ${sub}`,
+		`/usr/local/bin/node --trace-warnings --enable-source-maps ${rc} ${sub}`,
+		`cd ${PLUGIN_ROOT}/scripts && node run-context.mjs ${sub}`,
+		`node ./run-context.mjs ${sub}`,
+		`node ../scripts/run-context.mjs ${sub}`,
+		`FOO=1 node run-context.mjs ${sub}`,
+		`exec node run-context.mjs ${sub}`,
+		`echo ok; node run-context.mjs ${sub}`,
+		`bash -c 'node run-context.mjs ${sub}'`,
+		`node -e "import('${rc}')" ${sub}`,
+		// the other launchers of a script, and the ways one is started through another
+		`bun ${rc} ${sub}`,
+		`bunx ${rc} ${sub}`,
+		`deno run -A ${rc} ${sub}`,
+		`tsx ${rc} ${sub}`,
+		`ts-node ${rc} ${sub}`,
+		`npx node ${rc} ${sub}`,
+		`npm exec -- node ${rc} ${sub}`,
+		`pnpm exec node ${rc} ${sub}`,
+		`yarn node ${rc} ${sub}`,
+		`find ${PLUGIN_ROOT}/scripts -name run-context.mjs -exec node {} ${sub} \\;`,
+	];
+	const subs = [
+		'clear',
+		'set --worktree /w/APP-1',
+		`write --worktree /w/APP-1 --json '{"branch":"feat/OTHER"}'`,
+		// a bind the hook does not take as the bind command (chained, extra words) reaches evaluate and is refused too
+		'bind --worktree /w/APP-1 --extra',
+		'bind --worktree relative/dir',
+		'frobnicate',
+		'',
+	];
+	for (const sub of subs)
+		for (const command of forms(sub)) {
+			for (const role of ['builder', 'reviewer', 'debugger', 'researcher', 'improver', 'promoter']) {
+				const v = evaluate(command, { role, branch: 'task/APP-1-x', key: 'APP-1' });
+				assert.equal(v.deny, true, `${role} may not: ${command}`);
+				assert.match(v.reason, /run-context\.mjs/, command);
+			}
+			// inline code (-e) is refused to everyone by its own rule, so it says nothing about this one
+			if (!command.includes(' -e ')) assert.equal(evaluate(command, { branch: 'task/APP-1-x' }).deny, false, `the scheduler may: ${command}`);
+		}
+	// the file named, not run, is not running it
+	for (const command of [
+		`grep -n bindAgent ${rc}`,
+		`cat ${rc}`,
+		'grep run-context.mjs README.md',
+		`sed -n 1,20p scripts/run-context.mjs`,
+		`find ${PLUGIN_ROOT}/scripts -name run-context.mjs`,
+	])
+		for (const role of ['builder', 'reviewer', 'debugger', 'researcher', 'improver'])
+			assert.equal(evaluate(command, { role, branch: 'task/APP-1-x', key: 'APP-1' }).deny, false, `${role}: ${command}`);
+	// its test file is not the file (the read-only roles run no tests under their own rules)
+	for (const role of ['builder', 'improver'])
+		assert.equal(evaluate('node --test test/run-context.test.mjs', { role, branch: 'task/APP-1-x', key: 'APP-1' }).deny, false, role);
+});

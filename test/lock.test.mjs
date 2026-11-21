@@ -14,12 +14,25 @@ function dirs() {
 	return { state, log: path.join(state, 'log') };
 }
 
-test('a free lock is taken and released, and release also forgets the pointer', () => {
+// Interactive builds share the state folder and take no lock, so a pass never removes the agent bindings: a live interactive agent
+// would lose its own. A binding goes with a role write, the stop gate or its age (scripts/run-context.mjs).
+test('a free lock is taken and released, and release forgets the pointer but keeps every agent binding', () => {
 	const { state, log } = dirs();
 	fs.writeFileSync(path.join(state, 'active-run.json'), '{}');
+	fs.mkdirSync(path.join(state, 'agents'));
+	fs.writeFileSync(path.join(state, 'agents', 'x.json'), '{}');
 	assert.equal(sh(`df_lock_acquire ${state} ${log} pass; test -d ${state}/tick.lock && df_lock_release ${state}`).status, 0);
 	assert.equal(fs.existsSync(path.join(state, 'tick.lock')), false);
 	assert.equal(fs.existsSync(path.join(state, 'active-run.json')), false);
+	assert.equal(fs.readFileSync(path.join(state, 'agents', 'x.json'), 'utf8'), '{}');
+});
+
+test('a pass and an improve pass forget the pointer and leave the agent bindings alone', () => {
+	for (const f of ['tick.sh', 'improve.sh', 'lock.sh']) {
+		const text = fs.readFileSync(new URL(`../scripts/${f}`, import.meta.url), 'utf8');
+		if (f !== 'lock.sh') assert.match(text, /rm -f "\$STATE\/active-run\.json"/, f);
+		assert.doesNotMatch(text, /\/agents\b/, f);
+	}
 });
 
 test('a lock left by a dead pass is recovered (the improve pass used to be blocked forever)', () => {

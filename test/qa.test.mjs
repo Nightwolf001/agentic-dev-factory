@@ -1723,3 +1723,71 @@ test('at build time a not-applicable record made at another commit is reported a
 	);
 	assert.ok(!problems.some((p) => /PR head/.test(p)), problems.join(' | '));
 });
+
+// Which tree a factory tool reads comes from --worktree, else the cwd's run, else the one worktree an agent is bound to. A command that
+// reads no tree (scrub, ticket) must not care: the scheduling session runs them with agents bound, and a failure of `scrub` means "raw
+// data slipped in", so a crash there would loop the pass.
+import { bindAgent } from '../scripts/run-context.mjs';
+
+function boundFixture(count) {
+	const cwdRepo = makeRepo();
+	fs.mkdirSync(path.join(cwdRepo, '.dev-factory/qa'), { recursive: true });
+	fs.writeFileSync(path.join(cwdRepo, '.dev-factory/qa/run-1.json'), '{"marker":"cwd"}');
+	const state = fs.mkdtempSync(path.join(os.tmpdir(), 'df-qa-state-'));
+	const env = { ...process.env, DF_STATE_DIR: state, DF_ACTIVE: '1' };
+	const trees = [];
+	for (let i = 1; i <= count; i++) {
+		const tree = makeRepo();
+		fs.mkdirSync(path.join(tree, '.dev-factory/qa'), { recursive: true });
+		fs.writeFileSync(path.join(tree, '.dev-factory/run.json'), JSON.stringify({ key: `APP-${i}`, role: 'builder' }));
+		fs.writeFileSync(path.join(tree, '.dev-factory/qa/run-1.json'), `{"marker":"tree${i}"}`);
+		const r = bindAgent({ agentId: `agent${i}`, agentType: 'dev-factory:factory-builder', worktree: tree, env });
+		assert.equal(r.ok, true, r.reason);
+		trees.push(tree);
+	}
+	const qa = (...args) => spawnSync(process.execPath, [QA, ...args], { cwd: cwdRepo, env, encoding: 'utf8' });
+	return { cwdRepo, trees, qa };
+}
+
+test('with agents bound to two worktrees, scrub and ticket commands still run without --worktree', () => {
+	const { qa } = boundFixture(2);
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'df-qa-two-'));
+	const f = path.join(dir, 'd.md');
+	fs.writeFileSync(
+		f,
+		'Summary\n\nBase branch: feature/X-1-base\n\nBlocked by: APP-2\n\nAcceptance criteria\n- a thing\n\nOut of scope\n- nothing\n',
+	);
+	const scrub = qa('scrub', '--file', f);
+	assert.equal(scrub.status, 0, scrub.stderr);
+	for (const sub of ['base', 'remote', 'blocked-by']) {
+		const r = qa('ticket', sub, '--file', f);
+		assert.equal(r.status, 0, `ticket ${sub}: ${r.stderr}`);
+	}
+	assert.equal(JSON.parse(qa('ticket', 'base', '--file', f).stdout).base, 'feature/X-1-base');
+	// lint's verdict is its own business here; what matters is that it ran and did not stop on the worktree
+	assert.doesNotMatch(qa('ticket', 'lint', '--file', f).stderr, /--worktree|bound to them/);
+});
+
+test('a command that reads a tree, run with two worktrees bound and no --worktree, stops with a message and no stack trace', () => {
+	const { qa } = boundFixture(2);
+	for (const args of [['show', '--run', '1'], ['build-ready'], ['review', 'status'], ['debug', 'status']]) {
+		const r = qa(...args);
+		assert.notEqual(r.status, 0, args.join(' '));
+		assert.match(r.stderr, /^qa: .*--worktree/m, `${args.join(' ')}: ${r.stderr}`);
+		assert.doesNotMatch(r.stderr, /\n\s+at /, `${args.join(' ')} printed a stack trace`);
+	}
+});
+
+test('a tree-reading command with one bound worktree uses it, with none uses the git root, and --worktree always wins', () => {
+	const one = boundFixture(1);
+	assert.equal(JSON.parse(one.qa('show', '--run', '1').stdout).marker, 'tree1');
+	const none = boundFixture(0);
+	assert.equal(JSON.parse(none.qa('show', '--run', '1').stdout).marker, 'cwd');
+	const two = boundFixture(2);
+	assert.equal(JSON.parse(two.qa('show', '--run', '1', '--worktree', two.trees[1]).stdout).marker, 'tree2');
+	// a --worktree that is not a directory is a message too, not a stack trace
+	const bad = two.qa('show', '--run', '1', '--worktree', path.join(two.cwdRepo, 'missing'));
+	assert.notEqual(bad.status, 0);
+	assert.match(bad.stderr, /^qa: /m);
+	assert.doesNotMatch(bad.stderr, /\n\s+at /);
+});
