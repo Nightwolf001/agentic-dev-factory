@@ -308,6 +308,8 @@ test("every factory agent's instructions start with the bind command", () => {
 			assert.match(near, /absolute path/, 'and that the path is absolute');
 			assert.match(near, /docs\/plans\/<KEY>\/research\.md/, 'inside its worktree');
 			assert.match(near, /refused/, 'and what happens otherwise');
+			assert.match(body, /first write is refused with a reason[^.]*stop at once and quote/, 'and what to do when the first write is refused');
+			assert.doesNotMatch(body, /shell starts/, 'and does not talk about a shell it has not got');
 			if (phases >= 0) assert.ok(first < phases, 'before anything else');
 			continue;
 		}
@@ -320,16 +322,47 @@ test("every factory agent's instructions start with the bind command", () => {
 		if (phases >= 0) assert.ok(bind < phases, `${f}: the bind command comes before the phases`);
 		const other = body.search(/\$\{CLAUDE_PLUGIN_ROOT\}\/(?!scripts\/run-context\.mjs)/);
 		if (other >= 0) assert.ok(bind < other, `${f}: the bind command comes before any other command`);
-		assert.match(body, /every other tool call is refused/, `${f} says what happens until it has run`);
+		assert.match(body, /every other tool call the hooks guard \([^)]*\) is refused/, `${f} says what happens until it has run`);
+		assert.match(body, /bind command itself is refused[^.]*stop at once and quote the refusal/, `${f} says what to do when the bind is refused`);
+		assert.match(body, /refusal after you have bound means your stage is over/, `${f} says what a later refusal means`);
 		assert.match(body, /<the absolute worktree path the prompt names>/, `${f} takes the path from the prompt`);
 	}
 });
 
+// A dispatch site is a sentence that tells the session to dispatch (or re-dispatch) a factory agent: "dispatch the `factory-x` agent ...",
+// "dispatch the builder ...", "dispatching `factory-reviewer` ...". The agent binds itself to the worktree its prompt names, so each such
+// sentence (from the verb to the next full stop or line end) must say the prompt gives the absolute worktree path. A noun ("one dispatch of
+// the researcher") is not a site.
+const DISPATCH_FILES = ['tick.md', 'build.md', 'quick.md', 'improve.md', 'validate.md'];
+const AGENT =
+	'(?:`factory-(?:builder|reviewer|debugger|researcher|improver|promoter)`|the (?:builder|debugger|reviewer|researcher|improver|promoter)\\b)';
+export function dispatchSites(text) {
+	const re = new RegExp(`\\b(?:re-)?dispatch(?:ing|es)?\\b(?! of)[^.\\n]{0,80}?${AGENT}`, 'gi');
+	return [...text.matchAll(re)].map((m) => text.slice(m.index).split(/\.\s|\n/)[0]);
+}
+
 test('every dispatch site names the worktree to the agent, and the tick says once how the binding works', () => {
-	for (const f of ['tick.md', 'build.md', 'quick.md', 'improve.md', 'validate.md']) assert.match(read(f), /absolute worktree path/, f);
+	let seen = 0;
+	for (const f of DISPATCH_FILES) {
+		const sites = dispatchSites(read(f));
+		assert.ok(sites.length > 0, `${f} has a dispatch site`);
+		for (const site of sites) {
+			seen++;
+			assert.match(site, /absolute worktree path/, `${f}: ${site.slice(0, 140)}`);
+		}
+		assert.match(read(f), /run-context\.mjs/, `${f} writes role with run-context.mjs before a dispatch`);
+	}
+	assert.ok(seen >= 20, `the rule found the dispatch sites (${seen})`);
 	const tick = read('tick.md');
 	assert.match(tick, /binds itself first/, 'tick.md section 4 says the agent binds itself first');
 	assert.match(tick, /clears the previous agent's binding/, 'tick.md says why every dispatch writes role, even unchanged');
+	assert.match(tick, /even when `role` is the same as the dispatch before/, 'and that it does so when the role is unchanged');
+});
+
+test('the dispatch-site rule catches a dispatch that leaves the path out', () => {
+	assert.equal(dispatchSites('Dispatch the `factory-builder` agent with the key and the branch. Next.').length, 1);
+	assert.doesNotMatch(dispatchSites('Dispatch the `factory-builder` agent with the key and the branch. Next.')[0], /absolute worktree path/);
+	assert.equal(dispatchSites('gets one dispatch of the `factory-researcher` agent first').length, 0);
 });
 
 // The hooks keep no pointer to the run any more, so a command that sets one has nothing to do and the prose around it would mislead.
@@ -339,39 +372,50 @@ test('no command sets the retired run pointer', () => {
 });
 
 // Two agents can be bound at once, so a tool an agent runs cannot fall back to "the only live binding": it names its worktree.
-// The rule, by how invocations are written in agents/*.md and skills/*/SKILL.md: an inline code span (or a line of a fenced block)
-// is an invocation when it starts with `node "${CLAUDE_PLUGIN_ROOT}/bin/qa.mjs"` or `node "${CLAUDE_PLUGIN_ROOT}/scripts/coverage.mjs"`,
-// or with the shorthand `qa.mjs <word>` / `coverage.mjs <word>` and then carries at least one `--flag`. An invocation must pass
-// `--worktree`. Not invocations: the bare tool name (`qa.mjs`, `bin/qa.mjs`) and a bare sub-command named in prose (`qa.mjs verify`,
-// `qa.mjs review status`), which name what the full command above or below does and carry no arguments; prose that only
-// mentions the tool (a description line, "records through qa.mjs") has no code span at all. Skipped: `skills/task-source` and
-// `skills/improve`, which the scheduling session itself follows (reading a ticket, posting an issue) with no worktree and no
-// binding, so there is no worktree to name.
-test('no qa.mjs or coverage.mjs invocation in an agent or a skill lacks --worktree', () => {
+// The rule, by how invocations are written in agents/*.md, skills/*/SKILL.md and commands/*.md. An invocation is the text from
+// `node "${CLAUDE_PLUGIN_ROOT}/bin/qa.mjs"` or `node "${CLAUDE_PLUGIN_ROOT}/scripts/coverage.mjs"` up to the end of that command (the end
+// of the code span or line, or the next `&&`, `||`, `;`, `|` or `>`), wherever it stands (inline code, a fenced block, a loop body); or a
+// whole inline code span that starts with the shorthand `qa.mjs <word>` / `coverage.mjs <word>` and carries a `--flag`. An invocation that
+// reads a tree must contain `--worktree `: every `coverage.mjs` command, and each `qa.mjs` sub-command in READS_TREE of bin/qa.mjs (the
+// one list the tool itself uses to decide whether to resolve a tree). `qa.mjs scrub` and `qa.mjs ticket ...` read a file they are given,
+// need no worktree and are exempt. Not invocations: the bare tool name (`qa.mjs`, `bin/qa.mjs`) and a bare sub-command named in prose
+// (`qa.mjs verify`, `qa.mjs review status`), which carry no arguments; prose that only mentions the tool has no code span at all.
+test('no qa.mjs or coverage.mjs invocation that reads a tree lacks --worktree', () => {
 	const root = new URL('../', import.meta.url);
-	const files = [
-		...fs
-			.readdirSync(new URL('agents/', root))
-			.filter((f) => f.endsWith('.md'))
-			.map((f) => `agents/${f}`),
-		...fs
-			.readdirSync(new URL('skills/', root), { recursive: true })
-			.filter((f) => f.endsWith('SKILL.md') && !/^(task-source|improve)[/\\]/.test(f))
-			.map((f) => `skills/${f}`),
-	];
-	const full = /^node "\$\{CLAUDE_PLUGIN_ROOT\}\/(bin\/qa|scripts\/coverage)\.mjs"/;
-	const short = /^(qa|coverage)\.mjs [a-z][\w-]*/;
+	const list = fs.readFileSync(new URL('bin/qa.mjs', root), 'utf8').match(/const READS_TREE = new Set\(\[([^\]]+)\]\)/)?.[1] ?? '';
+	const readsTree = new Set([...list.matchAll(/'([\w-]+)'/g)].map((m) => m[1]));
+	assert.ok(readsTree.has('verify') && readsTree.has('debug') && !readsTree.has('scrub') && !readsTree.has('ticket'), 'READS_TREE found');
+	const md = (dir, keep = () => true) =>
+		fs
+			.readdirSync(new URL(`${dir}/`, root), { recursive: true })
+			.filter((f) => f.endsWith('.md') && keep(f))
+			.map((f) => `${dir}/${f}`);
+	const files = [...md('agents'), ...md('skills', (f) => f.endsWith('SKILL.md')), ...md('commands')];
+	const full = /node "\$\{CLAUDE_PLUGIN_ROOT\}\/(bin\/qa|scripts\/coverage)\.mjs" ([a-z][\w-]*)([^\n]*)/g;
+	const short = /^(qa|coverage)\.mjs ([a-z][\w-]*)(.*)$/;
+	const check = (where, tool, sub, args) => {
+		const needs = tool === 'coverage' || readsTree.has(sub);
+		return needs ? (/--worktree /.test(args) ? 'ok' : `${where}: ${tool}.mjs ${sub}${args}`) : 'exempt';
+	};
 	let seen = 0;
 	for (const f of files) {
 		const text = fs.readFileSync(new URL(f, root), 'utf8');
 		const pieces = [];
-		for (const m of text.matchAll(/```[^\n]*\n([\s\S]*?)```|`([^`\n]+)`/g))
-			pieces.push(...(m[1] !== undefined ? m[1].split('\n').map((l) => l.trim()) : [m[2]]));
+		for (const m of text.matchAll(/```[^\n]*\n([\s\S]*?)```|`([^`\n]+)`/g)) pieces.push(...(m[1] !== undefined ? m[1].split('\n') : [m[2]]));
 		for (const p of pieces) {
-			if (!(full.test(p) || (short.test(p) && /--[a-z]/.test(p)))) continue;
-			seen++;
-			assert.match(p, /--worktree /, `${f}: ${p}`);
+			for (const m of p.matchAll(full)) {
+				const args = m[3].split(/&&|\|\||;|\||\s>|\d>/)[0];
+				const verdict = check(f, m[1].replace(/^.*\//, ''), m[2], args);
+				if (verdict !== 'exempt') seen++;
+				assert.ok(verdict === 'ok' || verdict === 'exempt', verdict);
+			}
+			const sh = short.exec(p.trim());
+			if (sh && /--[a-z]/.test(sh[3])) {
+				const verdict = check(f, sh[1], sh[2], sh[3]);
+				if (verdict !== 'exempt') seen++;
+				assert.ok(verdict === 'ok' || verdict === 'exempt', verdict);
+			}
 		}
 	}
-	assert.ok(seen > 25, `the rule found the invocations (${seen})`);
+	assert.ok(seen > 30, `the rule found the invocations (${seen})`);
 });

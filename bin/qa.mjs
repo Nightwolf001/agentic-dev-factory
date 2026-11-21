@@ -1125,12 +1125,30 @@ function debugCommand({ root, args, a }) {
 	}
 }
 
+// The sub-commands that read or write a tree (every one that uses `root` below); the others take a file and need no worktree.
+const READS_TREE = new Set([
+	'start',
+	'build-ready',
+	'record',
+	'probe',
+	'done',
+	'mark-na',
+	'verify',
+	'learnings',
+	'promote',
+	'review',
+	'debug',
+	'show',
+]);
+
 async function main() {
 	const [cmd, ...rest] = process.argv.slice(2);
 	const a = parseArgs(rest);
-	const root = a.worktree ? repoRoot(a.worktree) : workRoot({ cwd: process.cwd() });
 	const num = (v) => (v == null ? null : Number(v));
 	try {
+		// The tree is worked out only for a command that reads one: `scrub` and `ticket` read a file they are given, and the scheduling
+		// session runs them while agents are bound to several worktrees, where naming one tree is impossible and not needed.
+		const root = READS_TREE.has(cmd) ? (a.worktree ? repoRoot(a.worktree) : workRoot({ cwd: process.cwd() })) : null;
 		let result;
 		switch (cmd) {
 			case 'start':
