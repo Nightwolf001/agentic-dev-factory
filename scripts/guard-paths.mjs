@@ -314,7 +314,7 @@ export function protectedPaths(ctx = {}) {
 }
 
 // -> a short name for what an absolute path is, or null. The path may hold globs (`~/.dev-fac*`), and is compared in lower case.
-//   state    the machine state folder (secrets, locks, logs, the run pointer, the settings a pass runs with)
+//   state    the machine state folder (secrets, locks, logs, agent bindings (agents/), the settings a pass runs with)
 //   profile  a shell start-up file, which runs in every later shell
 //   plugin   the installed plugin or any plugin, under .claude/plugins
 //   claude   Claude Code's own settings

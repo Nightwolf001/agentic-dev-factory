@@ -30,20 +30,23 @@ export const ownsRun = (agentType, run) => {
 //   head             the worktree's HEAD sha (reviewers)
 //   debug            result of debug-lib status() for the worktree; recordedAll and openAll include validate rounds
 //   build            { problems } from qa.mjs buildReadyProblems, for a build phase whose build.done exists; left out, the file alone ends it
+//   root             the run's worktree: every qa.mjs command a nudge names carries --worktree with it, since several agents can be
+//                    bound at once and a command without it may not find this one's tree
 // Returns { finished, next, unmet }: next is the instruction for the agent, unmet the short statement of what is missing that a
 // person reads when the gate gives up.
-export function decide({ run, has, head = '', debug = { rounds: 0, open: [], hasRootCause: false }, build = null }) {
+export function decide({ run, has, head = '', debug = { rounds: 0, open: [], hasRootCause: false }, build = null, root = null }) {
+	const qa = (sub) => qaCommand(root ? `${sub} --worktree "${root}"` : sub);
 	if (run.role === 'reviewer') {
 		return {
 			finished: has(`review/${head}-${run.axis}.json`),
-			next: `Finish by recording the ${run.axis} review: ${qaCommand('review record')} --axis ${run.axis} --head ${head.slice(0, 12)} --summary "..." --findings '[...]'.`,
+			next: `Finish by recording the ${run.axis} review: ${qa('review record')} --axis ${run.axis} --head ${head.slice(0, 12)} --summary "..." --findings '[...]'.`,
 			unmet: `no ${run.axis} review recorded at ${head.slice(0, 9)}`,
 		};
 	}
 	if (run.role === 'promoter') {
 		return {
 			finished: has('blocked.json') || has('promote.done'),
-			next: `Finish: ${qaCommand('promote check')} must pass, then push, open the draft PR and write .dev-factory/promote.done containing the PR URL, or write .dev-factory/blocked.json {"reason","decision"}.`,
+			next: `Finish: ${qa('promote check')} must pass, then push, open the draft PR and write .dev-factory/promote.done containing the PR URL, or write .dev-factory/blocked.json {"reason","decision"}.`,
 			unmet: 'no promote.done',
 		};
 	}
@@ -67,7 +70,7 @@ export function decide({ run, has, head = '', debug = { rounds: 0, open: [], has
 		const done = recorded > (run.debugBefore ?? 0) && stillOpen.length === 0;
 		return {
 			finished: has('blocked.json') || done,
-			next: 'Finish the debug round: qa.mjs debug open, run a red-capable loop with qa.mjs debug run, then qa.mjs debug record (root cause, evidence, fix plan), or qa.mjs debug block --reason "...".',
+			next: `Finish the debug round: ${qa('debug open')}, run a red-capable loop with ${qa('debug run')}, then ${qa('debug record')} (root cause, evidence, fix plan), or ${qa('debug block')} --reason "...".`,
 			unmet: 'no debug round recorded',
 		};
 	}
@@ -76,20 +79,20 @@ export function decide({ run, has, head = '', debug = { rounds: 0, open: [], has
 		const problems = build?.problems ?? [];
 		const buildDone = has('build.done') && !bugNeedsCause && problems.length === 0;
 		const setAside = `It was set aside as .dev-factory/${REFUSED}`;
-		let next = `Finish the environment, implement and qa phases, commit, then write .dev-factory/build.done containing the QA head and check it with ${qaCommand('build-ready')}, or write .dev-factory/needs_debug.json (stuck, bug ticket) or .dev-factory/blocked.json {"reason","decision"}.`;
+		let next = `Finish the environment, implement and qa phases, commit, then write .dev-factory/build.done containing the QA head and check it with ${qa('build-ready')}, or write .dev-factory/needs_debug.json (stuck, bug ticket) or .dev-factory/blocked.json {"reason","decision"}.`;
 		let unmet = 'no build.done';
 		if (bugNeedsCause && has('build.done')) {
-			next = `This is a bug ticket: build.done is not accepted until a root cause is recorded (qa.mjs debug status). ${setAside}. Write .dev-factory/needs_debug.json {"test","attempts","lastError"} so the scheduler can run the debugger, or write blocked.json.`;
+			next = `This is a bug ticket: build.done is not accepted until a root cause is recorded (${qa('debug status')}). ${setAside}. Write .dev-factory/needs_debug.json {"test","attempts","lastError"} so the scheduler can run the debugger, or write blocked.json.`;
 			unmet = 'a bug ticket with no recorded root cause';
 		} else if (has('build.done') && problems.length) {
-			next = `build.done is not accepted yet: ${problems.join('; ')}. ${setAside}: fix that, write .dev-factory/build.done again with the QA head and check it with ${qaCommand('build-ready')}, or write .dev-factory/blocked.json {"reason","decision"} if it cannot be fixed.`;
+			next = `build.done is not accepted yet: ${problems.join('; ')}. ${setAside}: fix that, write .dev-factory/build.done again with the QA head and check it with ${qa('build-ready')}, or write .dev-factory/blocked.json {"reason","decision"} if it cannot be fixed.`;
 			unmet = problems.join('; ');
 		}
 		return { finished: has('blocked.json') || has('needs_debug.json') || buildDone, next, unmet };
 	}
 	return {
 		finished: has('blocked.json') || has('ship.done'),
-		next: 'Finish the ship phase: push, open the draft PR (or push to the existing one), attach the QA screenshots as evidence on the PR, run qa.mjs verify with --require-review true, then write .dev-factory/ship.done, or write .dev-factory/blocked.json {"reason","decision"}.',
+		next: `Finish the ship phase: push, open the draft PR (or push to the existing one), attach the QA screenshots as evidence on the PR, run ${qa('verify')} --require-review true, then write .dev-factory/ship.done, or write .dev-factory/blocked.json {"reason","decision"}.`,
 		unmet: 'no ship.done',
 	};
 }

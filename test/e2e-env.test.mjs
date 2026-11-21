@@ -105,6 +105,12 @@ test('the override labels every service with its owner and worktree', () => {
 	assert.match(override, /ports: !reset \[\]/);
 });
 
+// The script records the worktree as `cd "$path" && pwd` prints it: the path as given, with a symlinked
+// ancestor left in place. realpathSync would resolve it (macOS's temp folder /var is a link to
+// /private/var), so the expectation asks the same shell builtin. The path travels as an argument, never
+// inside the program text, so a quote, backslash or dollar sign in it stays inert.
+const loggedPath = (dir) => spawnSync('bash', ['-c', 'cd "$1" && pwd', '_', dir], { encoding: 'utf8' }).stdout.replace(/\n$/, '');
+
 test('a worktree path with a quote or a backslash stays valid YAML in the override labels', () => {
 	const f = fixture({ environment: { type: 'compose', composeFile: '.devcontainer/docker-compose.yml', service: 'app' } });
 	const odd = path.join(f.base, 'we"ird\\wt');
@@ -118,7 +124,7 @@ test('a worktree path with a quote or a backslash stays valid YAML in the overri
 	});
 	assert.notEqual(r.status, null);
 	const override = fs.readFileSync(path.join(odd, '.dev-factory/compose.override.yml'), 'utf8');
-	assert.ok(override.includes(String.raw`dev-factory.worktree: "${fs.realpathSync(odd).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`), override);
+	assert.ok(override.includes(String.raw`dev-factory.worktree: "${loggedPath(odd).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`), override);
 });
 
 test('a dollar sign in the worktree path is doubled in the override label, as compose interpolates every value', () => {
@@ -139,7 +145,7 @@ test('a dollar sign in the worktree path is doubled in the override label, as co
 			cwd: f.worktree,
 		});
 		const override = fs.readFileSync(path.join(odd, '.dev-factory/compose.override.yml'), 'utf8');
-		const want = fs.realpathSync(odd).replace(/\$/g, '$$$$').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+		const want = loggedPath(odd).replace(/\$/g, '$$$$').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 		assert.ok(override.includes(`dev-factory.worktree: "${want}"`), `${name}: ${override}`);
 		assert.equal((override.match(/\$/g) ?? []).length, (name.match(/\$/g) ?? []).length * 2, name);
 	}
