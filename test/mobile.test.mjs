@@ -100,7 +100,7 @@ test('--client-logs goes on the last command of a chain, behind -- for an npm sc
 
 // ---- the lane, with stubs for the tools ----
 
-function lane({ platform, mobile = {}, env = {} } = {}) {
+function lane({ platform, mobile = {}, env = {}, record = {} } = {}) {
 	const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'df-lane-')));
 	const bin = path.join(home, 'bin');
 	const wt = path.join(home, 'wt');
@@ -110,7 +110,7 @@ function lane({ platform, mobile = {}, env = {} } = {}) {
 	fs.mkdirSync(path.join(wt, '.dev-factory'));
 	fs.writeFileSync(path.join(wt, 'app/ios/Podfile.lock'), 'PODS\n');
 	fs.writeFileSync(path.join(wt, 'app/android/build.gradle'), 'android {}\n');
-	fs.writeFileSync(path.join(wt, '.dev-factory/env.json'), JSON.stringify({ project: 'df-app-1', mode: 'device' }));
+	fs.writeFileSync(path.join(wt, '.dev-factory/env.json'), JSON.stringify({ project: 'df-app-1', mode: 'device', ...record }));
 	fs.writeFileSync(path.join(wt, '.dev-factory/run.json'), JSON.stringify({ key: 'APP-1', ...(platform ? { platform } : {}) }));
 	const calls = path.join(home, 'calls.log');
 	fs.writeFileSync(
@@ -200,6 +200,74 @@ test('Android: boots the AVD headless, reverses the ports, builds with the seria
 	);
 	assert.ok(fs.existsSync(path.join(l.wt, '.dev-factory/emulator.pid')), 'the pid is kept so cleanup can stop it');
 	assert.equal(l.run('down').status, 0);
+});
+
+// ---- a direct stack: the app's API address differs by platform ----
+
+const DIRECT_RECORD = {
+	ports: 'direct',
+	webBaseUrl: 'http://app.df-app-1.orb.local:3000',
+	directIp: '192.168.97.2',
+	directIpUrl: 'http://192.168.97.2:3000',
+};
+const WITH_API = {
+	build: `echo "ios-build {udid} {port} {apiBaseUrl}" >> "$CALLS"`,
+	androidBuild: `echo "android-build {serial} {port} {apiBaseUrl}" >> "$CALLS"`,
+};
+// the stubs' log is known only once the lane exists, so the commands name it through $CALLS, which the lane exports
+const withCalls = (l) => ({ ...l.runEnv, CALLS: path.join(l.home, 'calls.log') });
+
+test('a direct stack: iOS gets the name and Android the container IP as {apiBaseUrl}, and the lane records which', () => {
+	for (const [platform, expected, build] of [
+		['ios', 'http://app.df-app-1.orb.local:3000', /ios-build UDID-1 8081 http:\/\/app\.df-app-1\.orb\.local:3000/],
+		['android', 'http://192.168.97.2:3000', /android-build emulator-5554 8081 http:\/\/192\.168\.97\.2:3000/],
+	]) {
+		const l = lane({ platform, mobile: WITH_API, record: DIRECT_RECORD });
+		const r = spawnSync('bash', [MOBILE, 'up', '--worktree', l.wt], { encoding: 'utf8', env: withCalls(l), cwd: l.wt, timeout: 60000 });
+		assert.equal(r.status, 0, `${platform}: ${r.stderr}`);
+		assert.match(l.log(), build, platform);
+		assert.equal(l.envJson().device.apiBaseUrl, expected, platform);
+		l.run('down');
+	}
+});
+
+test('{apiBaseUrl} is also filled into the dev server command, which is where an Expo app takes its API address from', () => {
+	const l = lane({ platform: 'android', mobile: { start: `bash -c 'echo "metro {apiBaseUrl}" >> "$CALLS"; sleep 60' x` }, record: DIRECT_RECORD });
+	const r = spawnSync('bash', [MOBILE, 'up', '--worktree', l.wt], { encoding: 'utf8', env: withCalls(l), cwd: l.wt, timeout: 60000 });
+	assert.equal(r.status, 0, r.stderr);
+	assert.match(l.log(), /metro http:\/\/192\.168\.97\.2:3000/);
+	l.run('down');
+});
+
+test('a canonical stack has no {apiBaseUrl}: the placeholder is empty and nothing is recorded', () => {
+	for (const record of [{ ports: 'canonical', webBaseUrl: 'http://localhost:3000' }, {}]) {
+		const l = lane({ platform: 'android', mobile: WITH_API, record });
+		const r = spawnSync('bash', [MOBILE, 'up', '--worktree', l.wt], { encoding: 'utf8', env: withCalls(l), cwd: l.wt, timeout: 60000 });
+		assert.equal(r.status, 0, r.stderr);
+		assert.match(l.log(), /android-build emulator-5554 8081 *\n/);
+		assert.equal(l.envJson().device.apiBaseUrl, null);
+		l.run('down');
+	}
+});
+
+test('an Android run on a direct stack with no container address stops before it touches the device', () => {
+	const { directIpUrl, directIp, ...noIp } = DIRECT_RECORD;
+	const l = lane({ platform: 'android', mobile: WITH_API, record: noIp });
+	const r = l.run('up');
+	assert.equal(r.status, 1);
+	assert.match(r.stderr, /no container address in env\.json.*--ports direct --device/);
+	assert.doesNotMatch(l.log(), /emulator -avd|android-build/);
+});
+
+test('an address that is not a plain http(s) address is refused, because it is put into a shell command', () => {
+	for (const bad of ['http://x:3000/;touch pwned', 'http://x:3000/$(id)', 'ftp://x:3000', 'http://x y:3000', 'http://x:3000/a?token=1']) {
+		const l = lane({ platform: 'ios', mobile: WITH_API, record: { ...DIRECT_RECORD, webBaseUrl: bad } });
+		const r = l.run('up');
+		assert.equal(r.status, 1, bad);
+		assert.match(r.stderr, /not a plain http\(s\) address/, bad);
+		assert.doesNotMatch(l.log(), /ios-build|xcrun simctl boot/, bad);
+		assert.equal(fs.existsSync(path.join(l.wt, 'pwned')), false);
+	}
 });
 
 test('Android: a running emulator of the AVD is reused, not booted, and cleanup would leave it alone', () => {

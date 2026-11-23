@@ -13,12 +13,16 @@
 # network, so any number of worktrees can coexist, but nothing on the host (a Playwright browser
 # included) can reach the stack. --ports canonical keeps the published ports so the host can
 # reach environment.webBaseUrl like a developer does; it takes a machine-wide lock, one such
-# environment per Mac. --device implies canonical because the mobile app has the ports baked in.
+# environment per Mac. --device alone implies canonical because the mobile app has the ports baked in.
 # --ports direct strips the published ports as none does, and records the stack's own address instead: environment.webBaseUrl
 # with its host replaced by environment.directHost ({service}.{project}.orb.local by default, the name an engine such as
 # OrbStack gives each container). up probes that address itself from this machine (pingUrl stays the check inside the
 # service) and counts any HTTP answer below 500 as reachable; no connection or a 5xx until the ready timeout fails, with no
-# fallback. No lock: any number of direct environments coexist (they still count against the cap). Not with --device yet.
+# fallback. No lock: any number of direct environments coexist (they still count against the cap).
+# --ports direct --device is the same stack for a simulator or an emulator: mode device, ports direct. An iOS simulator
+# and this Mac resolve the name; an Android emulator's DNS cannot, so up also reads the IP address of the service's container,
+# probes it the same way, and records it as directIp and directIpUrl (the base address with the IP as its host) beside webBaseUrl.
+# Both hosts are in env.json's hosts, and mobile-env.sh picks the address for its platform.
 #
 # Remote QA: `up --remote ENV [--account NAME] [--device]` starts nothing. It checks that the deployed address in
 # environments.ENV.remote.url answers, and records mode remote in env.json with the NAMES of the variables that hold the QA
@@ -61,15 +65,15 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --worktree) WORKTREE="$(cd "$2" && pwd)"; shift 2 ;;
     --key) KEY="$2"; shift 2 ;;
-    --device) DEVICE=1; PORTS=canonical; shift ;;
+    --device) DEVICE=1; shift ;;
     --remote) REMOTE="${2:-}"; shift 2 ;;
     --account) ACCOUNT="${2:-}"; shift 2 ;;
     --ports) case "${2:-}" in canonical|direct|none) PORTS="$2"; PORTS_FLAG="$2" ;; *) die "--ports must be canonical, direct or none" ;; esac; shift 2 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
-# --device sets canonical ports, so a --ports direct before it is remembered in PORTS_FLAG: refused in either order
-if [ "$DEVICE" = 1 ] && [ "$PORTS_FLAG" = direct ]; then die "--ports direct is not supported with --device yet: a device run keeps the canonical ports"; fi
+# --device keeps the canonical ports (the app has them baked in) unless --ports direct asks for the stack's own address, in either order
+if [ "$DEVICE" = 1 ] && [ "$PORTS_FLAG" != direct ]; then PORTS=canonical; fi
 
 # the remote environment and account name reach variable names and config paths: letters, digits, - and _ only
 if [ -n "$REMOTE" ] && ! printf '%s' "$REMOTE" | grep -Eq '^[A-Za-z0-9_-]+$'; then die "--remote must be an environment name (letters, digits, - and _)"; fi
@@ -183,6 +187,31 @@ direct_url() {
 # url_shown URL: origin and path only, for logs and messages (a query can carry a token)
 url_shown() { node -e 'try{const u=new URL(process.argv[1]);process.stdout.write(u.origin+(u.pathname==="/"?"":u.pathname))}catch(e){process.stdout.write("(not an address)")}' "$1"; }
 
+# container_ip PROJECT: the IP address of environment.service's container on the stack's network; exit 1 when it has none
+container_ip() {
+  local id; id="$(compose "$1" ps -q "$SERVICE" 2>/dev/null | head -1)"
+  [ -n "$id" ] || return 1
+  docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$id" 2>/dev/null | node -e '
+    const ip = require("fs").readFileSync(0, "utf8").split(/\s+/).find((x) => /^\d{1,3}(\.\d{1,3}){3}$/.test(x));
+    if (!ip) process.exit(1);
+    process.stdout.write(ip);'
+}
+# ip_url BASEURL IP: BASEURL with its host replaced by IP; scheme, port, path and query kept
+ip_url() {
+  node -e '
+    const [base, ip] = process.argv.slice(1);
+    const u = new URL(base);
+    process.stdout.write(u.protocol + "//" + ip + (u.port ? ":" + u.port : "") + (u.pathname === "/" ? "" : u.pathname) + u.search + u.hash);' "$1" "$2"
+}
+# record_ip IP IPURL DIRECTURL: the container address and both hosts a probe may reach, added to env.json
+record_ip() {
+  ENV_JSON="$ENV_JSON" node -e '
+    const f = process.env.ENV_JSON, [ip, ipUrl, direct] = process.argv.slice(1);
+    const j = JSON.parse(require("fs").readFileSync(f, "utf8"));
+    Object.assign(j, { directIp: ip, directIpUrl: ipUrl, hosts: [new URL(direct).hostname, ip] });
+    require("fs").writeFileSync(f, JSON.stringify(j, null, 2));' "$1" "$2" "$3"
+}
+
 # The probe from this machine checks reachability only, as remote_answers does: any HTTP answer below 500 means the engine routes
 # to the stack (a login redirect, a 401 and a 404 all count); 000 (no connection) and 5xx do not. pingUrl is not used here: it
 # stays the readiness check inside the service, and its query can carry a token.
@@ -250,8 +279,8 @@ do_verify() {
     compose "$project" "${EXEC_ARGS[@]}" curl -ksf -o /dev/null "$PING_URL" </dev/null || add "ping failed: $(url_shown "$PING_URL")"
   fi
   # the direct address is worked out again from the settings, never read back from env.json, which the run can write
-  if [ "$(env_get mode)" = direct ]; then
-    local addr code
+  if [ "$(env_get mode)" = direct ] || [ "$(env_get ports)" = direct ]; then
+    local addr code ip
     if ! valid_project "$project"; then
       add "the recorded project is not one this script makes (df-<key>): no direct address was probed"
     elif ! addr="$(direct_url "$WEB_BASE_URL" "$project")"; then
@@ -260,6 +289,15 @@ do_verify() {
       code="$(direct_status "$addr")"
       if [ "$code" = 000 ]; then add "direct address does not answer: $(url_shown "$addr")"
       elif ! direct_reachable "$code"; then add "direct address answered HTTP $code: $(url_shown "$addr")"; fi
+      # a device stack is also reached by its container's IP, which an Android emulator needs: read again, not trusted from env.json
+      if [ "$(env_get mode)" = device ]; then
+        if ! ip="$(container_ip "$project")"; then add "could not read the IP address of the service $SERVICE"
+        else
+          addr="$(ip_url "$WEB_BASE_URL" "$ip")"; code="$(direct_status "$addr")"
+          if [ "$code" = 000 ]; then add "container address does not answer: $(url_shown "$addr")"
+          elif ! direct_reachable "$code"; then add "container address answered HTTP $code: $(url_shown "$addr")"; fi
+        fi
+      fi
     fi
   fi
 
@@ -372,8 +410,12 @@ do_up() {
   local want have
   want="$(mode_rank "$(want_mode)")"
   have="$(mode_rank "$(env_get mode)")"
-  if [ "$recorded" = "$project" ] && [ "$have" -lt "$want" ]; then
-    log "recorded stack is $(env_get mode), this run needs more: replacing $project"
+  # a device stack also has to be the kind of ports the run asked for: a canonical one holds the lock a direct run must not take
+  local replace=0
+  if [ "$have" -lt "$want" ]; then replace=1
+  elif [ "$DEVICE" = 1 ] && [ "$(env_get mode)" = device ] && [ "$(env_get ports)" != "$PORTS" ]; then replace=1; fi
+  if [ "$recorded" = "$project" ] && [ "$replace" = 1 ]; then
+    log "recorded stack is $(env_get mode) with ports $(env_get ports), this run needs $(want_mode) with ports $PORTS: replacing $project"
     do_down_quiet "$project"
     rm -f "$ENV_JSON"
     recorded=""
@@ -381,7 +423,7 @@ do_up() {
   if [ "$recorded" = "$project" ] && ( do_verify ) >/dev/null 2>&1; then
     mark_live "$project"
     case "$(env_get mode)" in
-      device|canonical) mkdir -p "$STATE_DIR/ports.lock"; echo "${DF_OWNER_PID:-$PPID}" > "$STATE_DIR/ports.lock/owner" ;;
+      device|canonical) [ "$(env_get ports)" = direct ] || { mkdir -p "$STATE_DIR/ports.lock"; echo "${DF_OWNER_PID:-$PPID}" > "$STATE_DIR/ports.lock/owner"; } ;;
     esac
     [ "$(env_get mode)" = device ] && { ( cd "$WORKTREE" && bash "$SELF_DIR/mobile-env.sh" up --worktree "$WORKTREE" ) || die "mobile lane failed"; }
     log "ready (reused, $(env_get mode)): $project"
@@ -436,6 +478,17 @@ do_up() {
       [ "$DIRECT_CODE" = 000 ] && die "the engine did not make the stack reachable from this machine: $shown did not answer within ${READY_TIMEOUT}s (environment.directHost is $(cfg directHost); an engine that does not name containers that way needs another value)"
       die "the stack is reachable at its direct address but not serving: $shown still answered HTTP $DIRECT_CODE after ${READY_TIMEOUT}s"
     fi
+    if [ "$DEVICE" = 1 ]; then
+      local ip ipurl ipshown
+      ip="$(container_ip "$project")" || die "could not read the IP address of the service $SERVICE (docker inspect): an Android emulator reaches a direct stack only by that address"
+      ipurl="$(ip_url "$WEB_BASE_URL" "$ip")"; ipshown="$(url_shown "$ipurl")"
+      log "probing the container address from this machine: $ipshown"
+      if ! wait_direct "$ipurl"; then
+        [ "$DIRECT_CODE" = 000 ] && die "the stack answers by name but its container address $ipshown did not answer within ${READY_TIMEOUT}s: an Android emulator reaches a direct stack only by that address (its DNS cannot see the name)"
+        die "the container address $ipshown answered HTTP $DIRECT_CODE after ${READY_TIMEOUT}s: an Android emulator reaches a direct stack only by that address"
+      fi
+      record_ip "$ip" "$ipurl" "$direct"
+    fi
   fi
   if [ "$DEVICE" = 1 ]; then
     ( cd "$WORKTREE" && bash "$SELF_DIR/mobile-env.sh" up --worktree "$WORKTREE" ) || { rc=$?; [ "$rc" = 75 ] && refuse "Metro port busy"; die "mobile lane failed"; }
@@ -457,7 +510,7 @@ do_down_quiet() {
   forget_live "$project"
   case "$(env_get mode)" in
     canonical|device)
-      [ -d "$STATE_DIR/ports.lock" ] && [ "$(cat "$STATE_DIR/ports.lock/owner" 2>/dev/null)" = "${DF_OWNER_PID:-$PPID}" ] && rm -rf "$STATE_DIR/ports.lock" ;;
+      [ "$(env_get ports)" != direct ] && [ -d "$STATE_DIR/ports.lock" ] && [ "$(cat "$STATE_DIR/ports.lock/owner" 2>/dev/null)" = "${DF_OWNER_PID:-$PPID}" ] && rm -rf "$STATE_DIR/ports.lock" ;;
   esac
   return 0
 }
