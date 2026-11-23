@@ -7,6 +7,11 @@
 #   mobile-env.sh down [--worktree DIR]    stop this worktree's Metro (the device is left booted; cleanup.mjs shuts down what this run booted)
 #   mobile-env.sh pick                     print the udid (iOS) or serial (Android) that would be used (read-only)
 #
+# On a direct stack (e2e-env.sh up --ports direct --device) the stack has no host port, so the app reaches its API at the stack's own
+# address, and that differs by platform: the name for iOS (this Mac and the simulator resolve it), the container's IP for Android
+# (the emulator's DNS cannot see the name). {apiBaseUrl} in a mobile command is that address, and device.apiBaseUrl records it;
+# on a canonical stack it is empty, since the app has the ports baked in and Android reaches them through adb reverse.
+#
 # The platform is DF_MOBILE_PLATFORM, else mobile.platform, else `platform` in .dev-factory/run.json, else read from the ticket
 # (scripts/mobile-platform.mjs), else ios.
 #   iOS      the simulator named by DF_DEVICE_NAME or the profile, booted if it is not; pods; mobile.build
@@ -109,8 +114,23 @@ native_hash() {
   ( cd "$APP" && for g in $(node -e 'for (const p of JSON.parse(process.argv[1]||"[]")) console.log(p)' "$(cfg $key)"); do cat $g 2>/dev/null; done
     if [ "$PLATFORM" = ios ]; then xcodebuild -version 2>/dev/null; fi ) | shasum -a 256 | cut -c1-16
 }
-# a configured command with {port}, {udid} and {serial} filled in; empty when not configured
-mobile_cmd() { local c; c="$(cfg "$1")"; c="${c//\{port\}/$METRO_PORT}"; c="${c//\{udid\}/${udid:-}}"; echo "${c//\{serial\}/${serial:-}}"; }
+# a configured command with {port}, {udid}, {serial} and {apiBaseUrl} filled in; empty when not configured
+API_BASE=""
+mobile_cmd() { local c; c="$(cfg "$1")"; c="${c//\{port\}/$METRO_PORT}"; c="${c//\{udid\}/${udid:-}}"; c="${c//\{apiBaseUrl\}/$API_BASE}"; echo "${c//\{serial\}/${serial:-}}"; }
+
+# The address the app's API is reached at on a direct stack, read from env.json, which the run can write: it goes into shell commands,
+# so only a plain http(s) address (letters, digits, dots, hyphens, a port and a simple path) is accepted.
+resolve_api_base() {
+  local ports key=webBaseUrl; ports="$(node -p "String(require('$ENV_JSON').ports??'')")"
+  [ "$ports" = direct ] || return 0
+  [ "$PLATFORM" = android ] && key=directIpUrl
+  API_BASE="$(node -p "String(require('$ENV_JSON')['$key']??'')")"
+  if [ -z "$API_BASE" ]; then
+    [ "$PLATFORM" = android ] && die "no container address in env.json: an Android emulator cannot resolve the stack's name; start the stack with e2e-env.sh up --ports direct --device"
+    die "no web address in env.json: start the stack with e2e-env.sh up --ports direct --device"
+  fi
+  printf '%s' "$API_BASE" | grep -Eq '^https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?$' || die "the address env.json gives for the app ($(printf '%s' "$API_BASE" | tr -cd '[:print:]' | cut -c1-60)) is not a plain http(s) address"
+}
 
 json_merge() { node -e "const f='$ENV_JSON';const j=JSON.parse(require('fs').readFileSync(f,'utf8'));Object.assign(j,JSON.parse(process.argv[1]));require('fs').writeFileSync(f,JSON.stringify(j,null,2))" "$1"; }
 
@@ -121,6 +141,7 @@ do_up() {
   if [ "$mode" != device ] && { [ "$mode" != remote ] || [ "$dev" != true ]; }; then die "backend environment is not in device mode"; fi
   [ -n "$(cfg appDir)" ] || die "mobile.appDir is not configured, the device lane is disabled"
   [ -d "$APP" ] || die "missing $APP"
+  resolve_api_base
 
   local line udid="" serial="" state booted=false
   if [ "$PLATFORM" = android ]; then
@@ -179,11 +200,12 @@ do_up() {
 
   log "warming the JS bundle"
   curl -sf -m 900 -o /dev/null "http://localhost:$METRO_PORT/index.bundle?platform=$PLATFORM&dev=true&minify=false" || die "bundle did not build"
+  local api_json; api_json="$(API_BASE="$API_BASE" node -p 'JSON.stringify(process.env.API_BASE||null)')"
   if [ "$PLATFORM" = android ]; then
-    json_merge "{\"device\":{\"platform\":\"android\",\"serial\":\"$serial\",\"avd\":\"$(avd_name)\",\"bootedByFactory\":$booted,\"metroPort\":$METRO_PORT,\"readyAt\":\"$(date -u +%FT%TZ)\"}}"
+    json_merge "{\"device\":{\"platform\":\"android\",\"serial\":\"$serial\",\"avd\":\"$(avd_name)\",\"bootedByFactory\":$booted,\"metroPort\":$METRO_PORT,\"apiBaseUrl\":$api_json,\"readyAt\":\"$(date -u +%FT%TZ)\"}}"
     log "ready: Android $serial, Metro $METRO_PORT"
   else
-    json_merge "{\"device\":{\"platform\":\"ios\",\"udid\":\"$udid\",\"profile\":\"$(device_name)\",\"bootedByFactory\":$booted,\"metroPort\":$METRO_PORT,\"readyAt\":\"$(date -u +%FT%TZ)\"}}"
+    json_merge "{\"device\":{\"platform\":\"ios\",\"udid\":\"$udid\",\"profile\":\"$(device_name)\",\"bootedByFactory\":$booted,\"metroPort\":$METRO_PORT,\"apiBaseUrl\":$api_json,\"readyAt\":\"$(date -u +%FT%TZ)\"}}"
     log "ready: device $udid, Metro $METRO_PORT"
   fi
 }

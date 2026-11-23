@@ -484,7 +484,7 @@ const DIRECT_CFG = {
 // it logs its arguments to curl.log and prints the HTTP status held in the file curl-answer, as `-w '%{http_code}'` does; 000 is
 // no connection, which real curl also reports with a non-zero exit. `answers` is true (200), false (000) or a status.
 // `state` shares one state folder between fixtures; `env` adds variables to every run.
-function directFixture(config = DIRECT_CFG, { answers = true, state, env: more = {} } = {}) {
+function directFixture(config = DIRECT_CFG, { answers = true, ipAnswers, ip = '192.168.97.2', state, env: more = {} } = {}) {
 	const f = fixture(config);
 	fs.writeFileSync(
 		path.join(f.base, 'bin/docker'),
@@ -495,6 +495,8 @@ case "$*" in
   *"config --services"*) echo api ;;
   *"ps -a --format json"*) echo '{"Service":"api","State":"running"}' ;;
   *"ps -aq"*) echo c1 ;;
+  *"ps -q"*) echo c1 ;;
+  *"inspect"*) printf '%s' "${ip ? ip + ' ' : ''}" ;;
   *) exit 0 ;;
 esac
 `,
@@ -505,6 +507,7 @@ esac
 		`#!/bin/bash
 echo "$@" >> "${f.base}/curl.log"
 code="$(cat "${f.base}/curl-answer" 2>/dev/null)"
+case "$*" in *"${ip}"*) [ -f "${f.base}/curl-answer-ip" ] && code="$(cat "${f.base}/curl-answer-ip")" ;; esac
 printf '%s' "\${code:-000}"
 [ "\${code:-000}" = 000 ] && exit 7
 exit 0
@@ -513,6 +516,8 @@ exit 0
 	);
 	const answer = (a) => fs.writeFileSync(path.join(f.base, 'curl-answer'), a === true ? '200' : a === false ? '000' : String(a));
 	answer(answers);
+	if (ipAnswers !== undefined)
+		fs.writeFileSync(path.join(f.base, 'curl-answer-ip'), ipAnswers === true ? '200' : ipAnswers === false ? '000' : String(ipAnswers));
 	const stateDir = state ?? f.state;
 	const env = {
 		...process.env,
@@ -527,23 +532,145 @@ exit 0
 	const record = () => JSON.parse(fs.readFileSync(path.join(f.worktree, '.dev-factory/env.json'), 'utf8'));
 	const curlLog = () => (fs.existsSync(path.join(f.base, 'curl.log')) ? fs.readFileSync(path.join(f.base, 'curl.log'), 'utf8') : '');
 	const locked = () => fs.existsSync(path.join(stateDir, 'ports.lock'));
-	return { ...f, state: stateDir, run, record, curlLog, answer, locked };
+	return { ...f, state: stateDir, env, run, record, curlLog, answer, locked };
 }
 const withEnv = (more) => ({ environment: { ...DIRECT_CFG.environment, ...more } });
 
-test('--ports direct with --device is refused in either order, before anything is written', () => {
+// ---- --ports direct --device: the stack at its own address for a simulator and an emulator ----
+
+const ROOT = path.resolve(path.dirname(SCRIPT), '..');
+
+// directFixture() running a copy of the plugin whose mobile lane is a stub that logs its arguments to lane.log and exits with
+// `laneExit`: the real lane needs a simulator or an emulator, and mobile.test.mjs covers it.
+function deviceFixture(opts = {}) {
+	const f = directFixture(DIRECT_CFG, opts);
+	const plugin = path.join(f.base, 'plugin');
+	fs.cpSync(ROOT, plugin, { recursive: true, filter: (src) => !/\/(\.git|node_modules|test|docs)(\/|$)/.test(src) });
+	fs.writeFileSync(path.join(plugin, 'scripts/mobile-env.sh'), `#!/bin/bash\necho "$@" >> "${f.base}/lane.log"\nexit ${opts.laneExit ?? 0}\n`, {
+		mode: 0o755,
+	});
+	const run = (...args) => spawnSync('bash', [path.join(plugin, 'scripts/e2e-env.sh'), ...args], { env: f.env, encoding: 'utf8', cwd: f.worktree });
+	const lane = () => (fs.existsSync(path.join(f.base, 'lane.log')) ? fs.readFileSync(path.join(f.base, 'lane.log'), 'utf8') : '');
+	return { ...f, run, lane };
+}
+
+test('--ports direct with --device is accepted in either order and records the name and the container IP', () => {
 	for (const args of [
 		['--ports', 'direct', '--device'],
 		['--device', '--ports', 'direct'],
 	]) {
-		const f = directFixture();
+		const f = deviceFixture();
 		const r = f.run('up', '--key', 'APP-1', ...args);
-		assert.equal(r.status, 1, `${args.join(' ')}: ${r.stderr}`);
-		assert.match(r.stderr, /--ports direct is not supported with --device yet: a device run keeps the canonical ports/);
-		assert.equal(fs.existsSync(path.join(f.worktree, '.dev-factory/compose.override.yml')), false, args.join(' '));
-		assert.equal(fs.existsSync(path.join(f.worktree, '.dev-factory/env.json')), false, args.join(' '));
-		assert.equal(f.log(), '', 'docker was never called');
+		assert.equal(r.status, 0, `${args.join(' ')}: ${r.stderr}`);
+		const rec = f.record();
+		assert.equal(rec.mode, 'device', 'the stack serves a device');
+		assert.equal(rec.ports, 'direct', 'and publishes no host port');
+		assert.equal(rec.webBaseUrl, 'http://app.df-app-1.orb.local:3000', 'the name: what the Mac and an iOS simulator use');
+		assert.equal(rec.directIp, '192.168.97.2');
+		assert.equal(rec.directIpUrl, 'http://192.168.97.2:3000', 'the address an Android emulator uses: its DNS cannot see the name');
+		assert.deepEqual(rec.hosts, ['app.df-app-1.orb.local', '192.168.97.2'], 'a probe may reach both');
+		assert.match(fs.readFileSync(path.join(f.worktree, '.dev-factory/compose.override.yml'), 'utf8'), /ports: !reset \[\]/);
+		assert.equal(f.locked(), false, 'no ports.lock');
+		assert.doesNotMatch(f.log(), /config --format json/, 'no busy-ports check');
+		assert.match(f.curlLog(), /http:\/\/app\.df-app-1\.orb\.local:3000(\s|$)/, 'the name was probed');
+		assert.match(f.curlLog(), /http:\/\/192\.168\.97\.2:3000(\s|$)/, 'and the IP');
+		assert.match(f.lane(), /^up --worktree /m, 'the mobile lane ran');
 	}
+});
+
+test('--device without direct ports keeps the canonical ports, the lock and no IP', () => {
+	for (const args of [['--device'], ['--device', '--ports', 'none'], ['--ports', 'none', '--device']]) {
+		const f = deviceFixture();
+		const r = f.run('up', '--key', 'APP-1', ...args);
+		assert.equal(r.status, 0, `${args.join(' ')}: ${r.stderr}`);
+		const rec = f.record();
+		assert.equal(rec.mode, 'device');
+		assert.equal(rec.ports, 'canonical', args.join(' '));
+		assert.equal('directIp' in rec, false);
+		assert.equal(f.locked(), true);
+	}
+});
+
+test('a device stack whose container IP does not answer fails, tears itself down and never starts the lane', () => {
+	const f = deviceFixture({ ipAnswers: false });
+	const r = f.run('up', '--key', 'APP-1', '--ports', 'direct', '--device');
+	assert.equal(r.status, 1, r.stderr);
+	assert.match(r.stderr, /container address http:\/\/192\.168\.97\.2:3000 did not answer within 0s/);
+	assert.match(r.stderr, /Android emulator/);
+	assert.match(f.log(), /down -v/);
+	assert.equal(f.lane(), '');
+	assert.equal(f.locked(), false);
+});
+
+test('a device stack whose container has no IP fails and says so', () => {
+	const f = deviceFixture({ ip: '' });
+	const r = f.run('up', '--key', 'APP-1', '--ports', 'direct', '--device');
+	assert.equal(r.status, 1, r.stderr);
+	assert.match(r.stderr, /could not read the IP address of the service app/);
+	assert.match(f.log(), /down -v/);
+});
+
+test('a direct web start does not look up or record an IP', () => {
+	const f = deviceFixture();
+	assert.equal(f.run('up', '--key', 'APP-1', '--ports', 'direct').status, 0);
+	assert.equal('directIp' in f.record(), false);
+	assert.doesNotMatch(f.log(), /inspect/);
+	assert.equal(f.lane(), '');
+});
+
+test('a direct device stack is reused by a direct device run, replaced by a canonical one, and never takes the lock', () => {
+	const record = (f, ports) =>
+		fs.writeFileSync(
+			path.join(f.worktree, '.dev-factory/env.json'),
+			JSON.stringify({
+				project: 'df-app-1',
+				mode: 'device',
+				ports,
+				...(ports === 'direct' ? { webBaseUrl: 'http://app.df-app-1.orb.local:3000' } : {}),
+			}),
+		);
+	let f = deviceFixture();
+	record(f, 'direct');
+	let r = f.run('up', '--key', 'APP-1', '--ports', 'direct', '--device');
+	assert.match(r.stderr, /ready \(reused, device\): df-app-1/, r.stderr);
+	assert.doesNotMatch(f.log(), / up -d| build/);
+	assert.equal(f.locked(), false, 'a reused direct device stack takes no lock');
+	assert.match(f.lane(), /^up --worktree /m, 'the lane runs again on a reused stack');
+	// a canonical device stack is not what a direct device run asked for, and the other way round
+	for (const [have, args, want] of [
+		['canonical', ['--ports', 'direct', '--device'], 'direct'],
+		['direct', ['--device'], 'canonical'],
+	]) {
+		f = deviceFixture();
+		record(f, have);
+		r = f.run('up', '--key', 'APP-1', ...args);
+		assert.match(r.stderr, /replacing df-app-1/, `${have} -> ${want}: ${r.stderr}`);
+		assert.equal(f.record().ports, want);
+	}
+});
+
+test('taking a direct device stack down leaves a canonical ports lock the same owner holds, and stops the lane', () => {
+	const f = deviceFixture();
+	assert.equal(f.run('up', '--key', 'APP-1', '--ports', 'direct', '--device').status, 0);
+	fs.mkdirSync(path.join(f.state, 'ports.lock'), { recursive: true });
+	fs.writeFileSync(path.join(f.state, 'ports.lock/owner'), String(process.pid));
+	assert.equal(f.run('down').status, 0);
+	assert.equal(f.locked(), true, "the lock is another stack's");
+	assert.match(f.lane(), /^down --worktree /m);
+});
+
+test('verify of a direct device stack probes the name and the container address, and names the one that fails', () => {
+	let f = deviceFixture();
+	assert.equal(f.run('up', '--key', 'APP-1', '--ports', 'direct', '--device').status, 0);
+	fs.writeFileSync(path.join(f.base, 'curl.log'), '');
+	assert.equal(f.run('verify').status, 0);
+	assert.match(f.curlLog(), /app\.df-app-1\.orb\.local/);
+	assert.match(f.curlLog(), /192\.168\.97\.2/);
+	fs.writeFileSync(path.join(f.base, 'curl-answer-ip'), '000');
+	const r = f.run('verify');
+	assert.equal(r.status, 1);
+	assert.match(r.stderr, /container address does not answer: http:\/\/192\.168\.97\.2:3000/);
+	assert.doesNotMatch(r.stderr, /direct address does not answer/);
 });
 
 test('--ports direct needs environment.webBaseUrl', () => {

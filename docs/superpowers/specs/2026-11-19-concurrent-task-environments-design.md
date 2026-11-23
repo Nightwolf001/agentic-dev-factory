@@ -75,6 +75,8 @@ The ranking of reuse in `up` (`isolated < canonical < device`) gains `direct`, r
 
 ### 3. Mobile, decided by the spike
 
+The spike ran on 2026-11-20 on OrbStack: the Mac and the iOS simulator reach the name, the Android emulator reaches only the container IP. So the first case below holds with an address per platform, which 0.24.0 builds (`--ports direct --device`, `directIp`, `{apiBaseUrl}`); per-task Metro ports, per-task devices and the per-device lock are still to do.
+
 -   If the simulator and emulator both reach the direct address: a device run uses `--ports direct` too, the app is built with its API URL from `{apiBaseUrl}` (mobile track, M2), each concurrent task gets its own Metro port (`{port}` already exists) and its own device, and the device lock becomes a per-device lock. A device pool setting is then a separate small design.
 -   If only the simulator does: iOS tasks run concurrently and Android tasks stay on one at a time.
 -   If neither does: mobile stays on `canonical` and one at a time; web alone gets concurrency.
