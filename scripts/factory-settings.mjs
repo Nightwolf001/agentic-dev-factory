@@ -46,7 +46,7 @@ export function build({
 	const sandboxOn = get('sandbox.enabled', { config: cfg });
 	if (typeof sandboxOn === 'boolean') out.sandbox.enabled = sandboxOn;
 	out.sandbox.network.allowedDomains = [...domains];
-	// the pass keeps its locks, live-stack records and run pointer in the state folder, and e2e-env.sh (run outside the sandbox) writes there too
+	// the pass keeps its locks, live-stack records and agent bindings (`agents/`) in the state folder, and e2e-env.sh (run outside the sandbox) writes there too
 	out.sandbox.filesystem = { ...out.sandbox.filesystem, allowWrite: [...new Set([...(out.sandbox.filesystem?.allowWrite ?? []), state])] };
 	// takeover: stopping a process or a session outside the sandbox needs those commands to run outside it (the guard still refuses the protected targets)
 	if (takeoverOn({ env })) out.sandbox.excludedCommands = [...new Set([...(out.sandbox.excludedCommands ?? []), ...TAKEOVER_EXCLUDED])];

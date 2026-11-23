@@ -95,6 +95,32 @@ test('decide: blocked.json and needs_debug.json still let a builder stop whateve
 	assert.equal(decide({ run: build, has: has('needs_debug.json'), build: bad }).finished, true);
 });
 
+// Several agents can be bound at once, so a qa.mjs command without --worktree may not find the agent's tree: every command a nudge
+// names carries the run's root.
+test('every qa.mjs command a nudge names carries --worktree with the run root', () => {
+	const root = '/w/APP 1';
+	const runs = [
+		{ role: 'reviewer', axis: 'spec' },
+		{ role: 'promoter' },
+		{ role: 'debugger' },
+		build,
+		{ ...build, kind: 'bug' },
+		{ role: 'builder', until: 'ship', key: 'APP-1' },
+	];
+	for (const run of runs) {
+		const facts = [
+			{ has: has(), build: null },
+			{ has: has('build.done'), build: { problems: ['no QA run at abc'] } },
+		];
+		for (const { has: h, build: b } of facts) {
+			const { next } = decide({ run, has: h, head: 'abcdef0123456789', build: b, root });
+			const mentions = next.match(/qa\.mjs[^,;.]*/g) ?? [];
+			assert.ok(mentions.length > 0, `${JSON.stringify(run)}: ${next}`);
+			for (const m of mentions) assert.ok(m.includes(`--worktree "${root}"`), `${JSON.stringify(run)}: ${m}`);
+		}
+	}
+});
+
 test('only the roles whose stop condition accepts blocked.json may be given one by the gate', () => {
 	for (const run of [
 		build,

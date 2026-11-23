@@ -4,7 +4,7 @@
 # renders that repository's scheduler jobs; anywhere else it sets up the machine only (launcher, env file, plugins).
 # Prefer `dev-factory install`, which finds the plugin for you.
 #   install.sh [--apply] [--load] [--isolate]
-# --isolate gives this repository a state folder of its own (~/.dev-factory/<slug>) for its locks, run pointer, logs and ports lock, so a
+# --isolate gives this repository a state folder of its own (~/.dev-factory/<slug>) for its locks, agent bindings, logs and ports lock, so a
 # pass in another repository no longer holds this one back. The secrets, the launcher, the plugin path, your settings for all projects
 # (config.json) and the record of what the factory added to Claude (managed.json) stay the machine's. Once the folder exists, later
 # installs keep the repository isolated.
@@ -63,7 +63,7 @@ if [ ! -f "$ENVF" ]; then
   if [ $APPLY = 1 ]; then mkdir -p "$STATE"; cp "$DIR/.env.example" "$ENVF"; chmod 600 "$ENVF"; fi
 else say "$ENVF exists, left alone"; fi
 
-# 3b. a state folder of its own for this repository: its locks, run pointer, logs and ports lock stay apart from every other repository's.
+# 3b. a state folder of its own for this repository: its locks, agent bindings, logs and ports lock stay apart from every other repository's.
 # What is shared is linked, not copied, so one .env.local and one launcher serve them all. The settings for all projects and managed.json
 # are not linked: the scripts read them from the machine folder (machineDir in scripts/state-env.mjs), so there is only ever one of each.
 if [ $ISOLATE = 1 ]; then
