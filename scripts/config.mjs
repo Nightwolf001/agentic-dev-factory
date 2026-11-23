@@ -447,6 +447,21 @@ export function validate(config) {
 		if (!/^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$/.test(sample))
 			problems.push("environment.directHost must be a host name, with {service} and {project} where the stack's own names go");
 	}
+	const directEnv = dig(config, 'environment.directEnv');
+	if (directEnv !== undefined) {
+		const text = (v) => typeof v === 'string' && v.length <= 2000 && !/[\0-\x1f\x7f]/.test(v) && !/\{(?!host\}|origin\})[^}]*\}/.test(v);
+		if (
+			!(
+				directEnv &&
+				typeof directEnv === 'object' &&
+				!Array.isArray(directEnv) &&
+				Object.entries(directEnv).every(([k, v]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k) && text(v))
+			)
+		)
+			problems.push(
+				"environment.directEnv must map variable names (letters, digits and _) to text of at most 2000 characters, with {host} and {origin} where the stack's own address goes",
+			);
+	}
 	const buildFiles = dig(config, 'environment.buildFiles');
 	if (buildFiles !== undefined && !(Array.isArray(buildFiles) && buildFiles.every((g) => typeof g === 'string' && g)))
 		problems.push('environment.buildFiles must be a list of globs');

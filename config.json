@@ -160,6 +160,7 @@
 		"pingUrl": null,
 		"webBaseUrl": null,
 		"directHost": "{service}.{project}.orb.local",
+		"directEnv": {},
 		"submodules": [],
 		"buildFiles": [],
 		"preCommit": null

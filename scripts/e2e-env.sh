@@ -106,12 +106,33 @@ compose() { # compose <args...> using the recorded project
   docker compose "${files[@]}" -p "$project" "$@"
 }
 
+# direct_env_lines DIRECT_URL: the YAML lines (under the service's `environment:`) for environment.directEnv, with {host} (the direct
+# address's host name) and {origin} (its scheme, host and port) filled in. Values are written as text: compose interpolates $, so each
+# becomes $$, and \ and " are escaped for the YAML double-quoted string. Exit 1, saying why, when the setting is not a map of names to text.
+direct_env_lines() {
+  node -e '
+    const [raw, direct] = process.argv.slice(1);
+    let map;
+    try { map = JSON.parse(raw || "{}"); } catch (e) { map = null; }
+    const ok = map && typeof map === "object" && !Array.isArray(map) && Object.entries(map).every(([k, v]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k) && typeof v === "string" && !/[\0-\x1f\x7f]/.test(v));
+    if (!ok) { console.error("environment.directEnv must map variable names (letters, digits and _) to text"); process.exit(1); }
+    const u = new URL(direct);
+    for (const [k, v] of Object.entries(map)) {
+      const val = v.replaceAll("{host}", u.hostname).replaceAll("{origin}", u.origin).replace(/\$/g, "$$$$").replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
+      console.log("      " + k + ": \"" + val + "\"");
+    }' "$(cfg directEnv)" "$1"
+}
+
 # Writes the override: no host ports and labels on every service, so isolated environments never collide on host ports and
 # every object this script owns can be found by label. The owner (the pid mark_live records) and the worktree are labels too:
 # a sweep run from another state folder has no live/ file for the stack, but it can read who owns it from the stack itself.
-write_override() {
+# environment.directEnv goes to environment.service of a direct stack, whose address it names, and to no other service or mode.
+write_override() { # write_override [DIRECT_URL]
   mkdir -p "$RUN_DIR"
-  local services owner wt
+  local services owner wt env_lines=""
+  if [ "$PORTS" = direct ] && [ -n "${1:-}" ] && [ -n "$(cfg directEnv | tr -d '{} \n')" ]; then
+    env_lines="$(direct_env_lines "$1")" || die "environment.directEnv is not usable (see above)"
+  fi
   services="$(docker compose -f "$COMPOSE_FILE" config --services)" || die "compose file does not render"
   owner="${DF_OWNER_PID:-$PPID}"
   # compose interpolates every value of every -f file, so a literal $ is written $$; then, inside a YAML double-quoted string, \ and " are escaped
@@ -125,6 +146,7 @@ write_override() {
       echo "      dev-factory.owner: \"$owner\""
       echo "      dev-factory.worktree: \"$wt\""
       case "$PORTS" in none|direct) echo "    ports: !reset []" ;; esac
+      if [ -n "$env_lines" ] && [ "$s" = "$SERVICE" ]; then echo "    environment:"; printf '%s\n' "$env_lines"; fi
     done
   } > "$OVERRIDE"
 }
@@ -452,7 +474,7 @@ do_up() {
     echo "${DF_OWNER_PID:-$PPID}" > "$STATE_DIR/ports.lock/owner"
   fi
 
-  write_override
+  write_override "$direct"
   local web=""
   case "$PORTS" in canonical) web="$WEB_BASE_URL" ;; direct) web="$direct" ;; esac
   write_env project="$project" key="$KEY" worktree="$WORKTREE" composeFile="$COMPOSE_FILE" override="$OVERRIDE" \

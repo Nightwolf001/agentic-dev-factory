@@ -467,6 +467,12 @@
 			"type": "string",
 			"scopeHint": "project"
 		},
+		"environment.directEnv": {
+			"group": "Environment",
+			"title": "Variables for a direct stack",
+			"type": "map",
+			"scopeHint": "project"
+		},
 		"environment.submodules": {
 			"group": "Environment",
 			"title": "Submodules to populate",

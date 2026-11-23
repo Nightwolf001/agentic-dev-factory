@@ -543,7 +543,7 @@ const ROOT = path.resolve(path.dirname(SCRIPT), '..');
 // directFixture() running a copy of the plugin whose mobile lane is a stub that logs its arguments to lane.log and exits with
 // `laneExit`: the real lane needs a simulator or an emulator, and mobile.test.mjs covers it.
 function deviceFixture(opts = {}) {
-	const f = directFixture(DIRECT_CFG, opts);
+	const f = directFixture(opts.directCfg ?? DIRECT_CFG, opts);
 	const plugin = path.join(f.base, 'plugin');
 	fs.cpSync(ROOT, plugin, { recursive: true, filter: (src) => !/\/(\.git|node_modules|test|docs)(\/|$)/.test(src) });
 	fs.writeFileSync(path.join(plugin, 'scripts/mobile-env.sh'), `#!/bin/bash\necho "$@" >> "${f.base}/lane.log"\nexit ${opts.laneExit ?? 0}\n`, {
@@ -799,6 +799,56 @@ test('environment.directHost changes the address', () => {
 	assert.equal(r.status, 0, r.stderr);
 	assert.equal(f.record().webBaseUrl, 'http://df-app-1.stack.test:3000');
 	assert.match(f.curlLog(), /http:\/\/df-app-1\.stack\.test:3000/);
+});
+
+// ---- environment.directEnv: variables for the service of a direct stack, with the stack's own address in them ----
+
+// the override of a direct start whose service is `api`, the one the fake docker lists
+const overrideOf = (f) => fs.readFileSync(path.join(f.worktree, '.dev-factory/compose.override.yml'), 'utf8');
+const DIRECT_ENV = { REACT_APP_API_ENDPOINT: 'http://{host}:1337', CORS_ORIGIN: '{origin}' };
+
+test("a direct start puts environment.directEnv in the service's override, with {host} and {origin} filled in", () => {
+	const f = directFixture(withEnv({ service: 'api', directEnv: DIRECT_ENV }));
+	const r = f.run('up', '--key', 'APP-1', '--ports', 'direct');
+	assert.equal(r.status, 0, r.stderr);
+	const o = overrideOf(f);
+	assert.match(
+		o,
+		/ports: !reset \[\]\n {4}environment:\n {6}REACT_APP_API_ENDPOINT: "http:\/\/api\.df-app-1\.orb\.local:1337"\n {6}CORS_ORIGIN: "http:\/\/api\.df-app-1\.orb\.local:3000"\n/,
+		o,
+	);
+	assert.equal(f.record().webBaseUrl, 'http://api.df-app-1.orb.local:3000');
+});
+
+test('the same variables reach a direct device stack', () => {
+	const f = deviceFixture({ directCfg: withEnv({ service: 'api', directEnv: DIRECT_ENV }) });
+	assert.equal(f.run('up', '--key', 'APP-1', '--ports', 'direct', '--device').status, 0);
+	assert.match(overrideOf(f), /REACT_APP_API_ENDPOINT: "http:\/\/api\.df-app-1\.orb\.local:1337"/);
+});
+
+test('directEnv is for a direct stack only: canonical and isolated starts write no environment block', () => {
+	for (const ports of ['canonical', 'none']) {
+		const f = directFixture(withEnv({ service: 'api', directEnv: DIRECT_ENV }));
+		f.run('up', '--key', 'APP-1', '--ports', ports);
+		assert.doesNotMatch(overrideOf(f), /environment:|REACT_APP_API_ENDPOINT/, ports);
+	}
+	const none = directFixture();
+	none.run('up', '--key', 'APP-1', '--ports', 'direct');
+	assert.doesNotMatch(overrideOf(none), /environment:/, 'nothing configured, nothing written');
+});
+
+test('a directEnv value is written as text: $, \\ and " cannot reach compose or the YAML as syntax', () => {
+	const f = directFixture(withEnv({ service: 'api', directEnv: { A: 'a$b"c\\d${X}' } }));
+	assert.equal(f.run('up', '--key', 'APP-1', '--ports', 'direct').status, 0);
+	assert.ok(overrideOf(f).includes('      A: "a$$b\\"c\\\\d$${X}"\n'), overrideOf(f));
+});
+
+test('an invalid directEnv stops up before anything is written', () => {
+	const f = directFixture(withEnv({ service: 'api', directEnv: { 'bad name': 'x' } }));
+	const r = f.run('up', '--key', 'APP-1', '--ports', 'direct');
+	assert.notEqual(r.status, 0);
+	assert.match(r.stderr, /environment\.directEnv/);
+	assert.equal(fs.existsSync(path.join(f.worktree, '.dev-factory/compose.override.yml')), false);
 });
 
 test('a url with no port keeps none', () => {

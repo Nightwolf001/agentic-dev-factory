@@ -92,6 +92,7 @@ test('the maps are the objects whose keys a project names itself', () => {
 	assert.deepEqual(
 		[...maps].sort(),
 		[
+			'environment.directEnv',
 			'environments',
 			'git.branchTypes',
 			'models.efforts',
