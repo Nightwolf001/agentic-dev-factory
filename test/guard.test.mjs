@@ -74,6 +74,28 @@ test('direct tracker access and docker prune are denied', () => {
 	denied('docker volume prune -f');
 });
 
+// A reviewer's record quotes the code it read: `<` and `>` inside quotes are text, not redirects (two clean reviews were refused for
+// a summary that said 'API <version>' and findings that quoted `Promise<string>`). Outside quotes a redirect is still a write.
+test('a reviewer may record a review whose text has < or > inside quotes; a real redirect is still refused', () => {
+	const r = (c) => evaluate(c, { role: 'reviewer', branch: 'task/APP-12-fix-thing' });
+	for (const ok of [
+		`node dev-factory/bin/qa.mjs review record --axis spec --head abc --summary "shows 'API <version>' on success" --findings '[]'`,
+		`node dev-factory/bin/qa.mjs review record --axis standards --head abc --summary "x" --findings '[{"note":"type Props = { get: () => Promise<string> }"}]'`,
+		`node dev-factory/bin/qa.mjs review record --axis spec --head abc --summary "a \\"quoted\\" > word" --findings '[]'`,
+		`grep -n "a > b" app.js`,
+	])
+		assert.equal(r(ok).deny, false, ok);
+	for (const bad of [
+		`node dev-factory/bin/qa.mjs review record --axis spec --head abc --summary "x" --findings '[]' > out.txt`,
+		`echo "x" > file.txt`,
+		`echo 'x' >> file.txt`,
+		`cat "a" "b">c`,
+	]) {
+		const d = r(bad);
+		assert.equal(d.deny, true, bad);
+	}
+});
+
 test('a reviewer may read and record but not write, install or push', () => {
 	const r = (c) => evaluate(c, { role: 'reviewer', branch: 'task/APP-12-fix-thing' });
 	for (const ok of [

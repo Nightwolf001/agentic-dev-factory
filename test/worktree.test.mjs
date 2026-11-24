@@ -5,7 +5,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { BaseError, addWorktree, attachWorktree, parseBase, resolveBase } from '../scripts/worktree.mjs';
+import {
+	BaseError,
+	addWorktree,
+	attachWorktree,
+	parseBase,
+	resolveBase,
+	worktreePath,
+	worktreeRoot,
+	writableWorktreeFolders,
+} from '../scripts/worktree.mjs';
 
 const SCRIPT = new URL('../scripts/worktree.mjs', import.meta.url).pathname;
 const g = (cwd, ...args) => execFileSync('git', ['-C', cwd, '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { encoding: 'utf8' }).trim();
@@ -349,4 +358,35 @@ test('attach on a fix pass reuses the ticket’s existing worktree and clears th
 	fs.rmSync(t.dest, { recursive: true, force: true });
 	const again = attachWorktree({ repo: t.clone, branch: t.branch, dest: t.dest });
 	assert.ok(!again.existing && fs.existsSync(path.join(t.dest, 'work.txt')));
+});
+
+// Two repositories in one parent folder used to make their worktrees in the same ../.worktrees, so their tasks could meet at one
+// path. Each now has ../.worktrees/<its folder name>; a task's worktree that an older version left in the shared folder is still
+// found while git lists it as this repository's own, and another repository's worktree there is never this one's.
+test('each repository has a worktree folder of its own, and a worktree left in the shared folder is still found', () => {
+	const { dir, clone } = repos();
+	const DEFAULT = '../.worktrees/{repo}';
+	assert.equal(worktreeRoot(clone, DEFAULT), path.join(dir, '.worktrees', 'clone'));
+	assert.equal(worktreeRoot(clone, '/elsewhere/wt'), '/elsewhere/wt', 'a configured folder is used as given');
+	assert.equal(worktreePath(clone, 'X-9', DEFAULT), path.join(dir, '.worktrees', 'clone', 'X-9'));
+	// a task an older version built in the shared folder
+	const legacy = path.join(dir, '.worktrees', 'X-1');
+	g(clone, 'worktree', 'add', '-q', legacy, 'feature/X-1-base');
+	assert.equal(fs.realpathSync(worktreePath(clone, 'X-1', DEFAULT)), fs.realpathSync(legacy), 'work in flight is resumed where it is');
+	// another repository's worktree in the shared folder under the same key is not ours
+	const other = path.join(dir, 'other');
+	execFileSync('git', ['init', '-q', '-b', 'main', other]);
+	g(other, 'commit', '-q', '--allow-empty', '-m', 'x');
+	g(other, 'worktree', 'add', '-q', '-b', 'x2', path.join(dir, '.worktrees', 'X-2'));
+	assert.equal(worktreePath(clone, 'X-2', DEFAULT), path.join(dir, '.worktrees', 'clone', 'X-2'));
+	// from inside a worktree the folder is still the main checkout's
+	assert.equal(worktreeRoot(legacy, DEFAULT), path.join(dir, '.worktrees', 'clone'));
+	// the pass may write in its folder and its own old worktrees, never the whole shared folder
+	const writable = writableWorktreeFolders(clone, DEFAULT).map((p) => (fs.existsSync(p) ? fs.realpathSync(p) : p));
+	assert.ok(writable.includes(path.join(dir, '.worktrees', 'clone')));
+	assert.ok(writable.includes(fs.realpathSync(legacy)));
+	assert.equal(writable.includes(fs.realpathSync(path.join(dir, '.worktrees', 'X-2'))), false, "another repository's worktree");
+	assert.equal(writable.includes(path.join(dir, '.worktrees')), false);
+	const cli = spawnSync('node', [SCRIPT, 'path', '--key', 'x;rm', '--repo', clone], { encoding: 'utf8' });
+	assert.equal(cli.status, 3);
 });

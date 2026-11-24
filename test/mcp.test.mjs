@@ -249,13 +249,24 @@ test('takeover lets the sandbox run the commands that stop host processes, and o
 test('the scheduled pass may write the state folder and runs e2e-env.sh outside the sandbox', async () => {
 	const { load } = await import('../scripts/config.mjs');
 	const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'df-state-')), '.mcp.json');
-	const out = build({ cfg: load(), mcpFile: file, want: [], env: {}, state: '/Users/dev/.dev-factory' });
-	assert.deepEqual(out.sandbox.filesystem.allowWrite, ['/Users/dev/.dev-factory']);
+	const out = build({
+		cfg: load(),
+		mcpFile: file,
+		want: [],
+		env: {},
+		state: '/Users/dev/.dev-factory',
+		worktreeFolders: ['/Users/dev/.worktrees/app'],
+	});
+	assert.deepEqual(
+		out.sandbox.filesystem.allowWrite,
+		['/Users/dev/.dev-factory', '/Users/dev/.worktrees/app'],
+		'the state folder and the worktrees',
+	);
 	assert.ok(out.sandbox.filesystem.denyRead.includes('~/.ssh'), 'the base denials stay');
 	for (const c of ['bash *e2e-env.sh*', 'dev-factory env*', 'node *open-prs.mjs*']) assert.ok(out.sandbox.excludedCommands.includes(c), c);
 	// open-prs.mjs runs gh and reads the task source: inside the sandbox gh cannot read its token and the count would always be unknown
 	assert.match(fs.readFileSync(new URL('../commands/tick.md', import.meta.url), 'utf8'), /scripts\/open-prs\.mjs/);
-	const env = build({ cfg: load(), mcpFile: file, want: [], env: { DF_STATE_DIR: '/custom/state' } });
+	const env = build({ cfg: load(), mcpFile: file, want: [], env: { DF_STATE_DIR: '/custom/state' }, worktreeFolders: [] });
 	assert.deepEqual(env.sandbox.filesystem.allowWrite, ['/custom/state'], 'DF_STATE_DIR is where it is');
 });
 

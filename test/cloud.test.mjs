@@ -165,7 +165,7 @@ test('without --routine no .mcp.json is written, and the Actions guidance names 
 test('runtime settings validate: mode, scheduler, sandbox switch and worktree folder', () => {
 	const c = load();
 	assert.deepEqual(validate(c), []);
-	assert.deepEqual([c.runtime.mode, c.runtime.scheduler, c.sandbox.enabled, c.git.worktreeRoot], ['auto', 'auto', null, '../.worktrees']);
+	assert.deepEqual([c.runtime.mode, c.runtime.scheduler, c.sandbox.enabled, c.git.worktreeRoot], ['auto', 'auto', null, '../.worktrees/{repo}']);
 	for (const [patch, expect] of [
 		[(x) => (x.runtime.mode = 'moon'), /runtime\.mode must be auto, local or cloud/],
 		[(x) => (x.runtime.scheduler = 'cron'), /runtime\.scheduler must be one of/],
@@ -236,9 +236,9 @@ test('the sandbox can be switched off for a cloud environment that supplies its 
 	assert.equal(build({ cfg: merge(load(), { sandbox: { enabled: false } }), mcpFile: file, want: [] }).sandbox.enabled, false);
 });
 
-test('the worktree folder is configurable and resolves beside the repository by default', () => {
+test('the worktree folder is configurable and resolves beside the repository, in a folder of its own, by default', () => {
 	const r = spawnSync('node', [path.join(ROOT, 'scripts/worktree.mjs'), 'root', '--repo', ROOT], { encoding: 'utf8', cwd: ROOT });
-	assert.equal(r.stdout.trim(), path.resolve(ROOT, '../.worktrees'));
+	assert.equal(r.stdout.trim(), path.resolve(ROOT, '../.worktrees', path.basename(ROOT)));
 });
 
 test('cloud init refuses a settings file it cannot read instead of overwriting it', () => {

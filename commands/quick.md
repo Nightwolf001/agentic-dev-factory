@@ -7,7 +7,7 @@ Run one small change through the factory in this session, visibly, without a tas
 
 Every agent you dispatch with the Agent tool runs with the model and effort the settings name for its role: run `node "${CLAUDE_PLUGIN_ROOT}/scripts/config.mjs" agent <role>` (role: `builder`, `reviewer`, `debugger`, `researcher`, `improver` or `promoter`), which prints `{"model","effort"}`, and pass both as the tool's `model` and `effort`. The agent's own frontmatter is only the fallback.
 
-`<worktrees>` below is the folder worktrees live in: the output of `node "${CLAUDE_PLUGIN_ROOT}/scripts/worktree.mjs" root` (`git.worktreeRoot`, by default a `.worktrees` folder beside the repository; point it at a writable folder in a cloud environment).
+`<worktrees>` below is the folder worktrees live in: the output of `node "${CLAUDE_PLUGIN_ROOT}/scripts/worktree.mjs" root` (`git.worktreeRoot`, by default `../.worktrees/{repo}`, a folder of this repository's own beside it, so repositories in the same parent folder never share worktrees; point it at a writable folder in a cloud environment). `<worktrees>/<KEY>`, a task's worktree, is always the output of `node "${CLAUDE_PLUGIN_ROOT}/scripts/worktree.mjs" path --key <KEY>`: it finds a worktree an older version made in the shared `../.worktrees/<KEY>`, so work in flight is resumed where it is.
 
 Arguments: $ARGUMENTS. Two forms:
 

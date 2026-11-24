@@ -11,6 +11,7 @@ import { get, layers, load } from './config.mjs';
 import { isMain } from './is-main.mjs';
 import { takeoverOn } from './takeover.mjs';
 import { allowRules, catalog, claudeListing, desired, externalServers, mainCheckout, readProject } from './mcp.mjs';
+import { writableWorktreeFolders } from './worktree.mjs';
 
 const BASE = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'settings.factory.json');
 
@@ -30,6 +31,7 @@ export function build({
 	want = desired(layers({ from: root, env }), cat),
 	external = [],
 	state = env.DF_STATE_DIR || path.join(os.homedir(), '.dev-factory'),
+	worktreeFolders = null,
 } = {}) {
 	const out = JSON.parse(JSON.stringify(base));
 	const domains = new Set(out.sandbox?.network?.allowedDomains ?? []);
@@ -47,7 +49,13 @@ export function build({
 	if (typeof sandboxOn === 'boolean') out.sandbox.enabled = sandboxOn;
 	out.sandbox.network.allowedDomains = [...domains];
 	// the pass keeps its locks, live-stack records and agent bindings (`agents/`) in the state folder, and e2e-env.sh (run outside the sandbox) writes there too
-	out.sandbox.filesystem = { ...out.sandbox.filesystem, allowWrite: [...new Set([...(out.sandbox.filesystem?.allowWrite ?? []), state])] };
+	// and every agent writes in its task's worktree, which lives outside the repository (git.worktreeRoot): without it a builder's
+	// test file or a hand-off written from the shell failed, and the agent's retry with the sandbox off was refused
+	const worktrees = worktreeFolders ?? writableWorktreeFolders(root, get('git.worktreeRoot', { config: cfg }));
+	out.sandbox.filesystem = {
+		...out.sandbox.filesystem,
+		allowWrite: [...new Set([...(out.sandbox.filesystem?.allowWrite ?? []), state, ...worktrees])],
+	};
 	// takeover: stopping a process or a session outside the sandbox needs those commands to run outside it (the guard still refuses the protected targets)
 	if (takeoverOn({ env })) out.sandbox.excludedCommands = [...new Set([...(out.sandbox.excludedCommands ?? []), ...TAKEOVER_EXCLUDED])];
 	out.sandbox.excludedCommands = withQuotedForms(out.sandbox.excludedCommands ?? []);

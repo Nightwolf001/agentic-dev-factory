@@ -776,9 +776,15 @@ const CURL_WRITE = /\s(-X|--request|-d|--data\S*|-F|--form|-T|--upload-file|-o|-
 // Substitution, process substitution and variables run or read things the allowlist never saw; single quotes are literal.
 const EXPANSION = /\$\(|\$\{|\$[A-Za-z_]|`|<\(|>\(/;
 
+// The segment with the text of every quoted string removed (single quotes are literal; a double-quoted string ends at a quote
+// that is not escaped), so the checks that follow see only what the shell itself reads as syntax.
+export const unquoted = (seg) => String(seg).replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, "''");
+
 function denyForReadOnly(seg, extra = []) {
 	if (EXPANSION.test(seg.replace(/'[^']*'/g, "''"))) return 'shell expansion is not allowed for this role';
-	if (/(^|[^2&])>{1,2}\s*[^&\s]/.test(seg.replace(/\d?>\s*\/dev\/null/g, ''))) return 'this role does not write files';
+	// a redirect is only one the shell sees: a `<` or `>` inside quotes is text (a review summary quoting `'API <version>'` or
+	// `Promise<string>`), and refusing it made a reviewer's record of a clean review fail
+	if (/(^|[^2&])>{1,2}\s*[^&\s]/.test(unquoted(seg).replace(/\d?>\s*\/dev\/null/g, ''))) return 'this role does not write files';
 	if (/\bsed\b.*\s-i/.test(seg)) return 'this role does not edit files';
 	if (/^curl\b/.test(seg) && CURL_WRITE.test(seg)) return 'curl is read-only here: no method override, body or output file';
 	if (/^git\b/.test(seg) && /(^|\s)(--output\b|-O\S*|--open-files-in-pager\b|--ext-diff\b|--textconv\b)/.test(seg))

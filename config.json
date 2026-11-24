@@ -89,7 +89,7 @@
 			"chore": "task",
 			"improvement": "improvement"
 		},
-		"worktreeRoot": "../.worktrees",
+		"worktreeRoot": "../.worktrees/{repo}",
 		"skipCommitHooks": false
 	},
 	"pr": {
