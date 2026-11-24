@@ -390,3 +390,21 @@ test('each repository has a worktree folder of its own, and a worktree left in t
 	const cli = spawnSync('node', [SCRIPT, 'path', '--key', 'x;rm', '--repo', clone], { encoding: 'utf8' });
 	assert.equal(cli.status, 3);
 });
+
+test('add and attach pick the worktree from the key, and a new worktree is never made in the shared folder', () => {
+	const { dir, clone } = repos();
+	const run = (...a) => spawnSync('node', [SCRIPT, ...a, '--repo', clone], { encoding: 'utf8', cwd: clone });
+	const made = run('add', '--branch', 'feature/X-5-thing', '--key', 'X-5', '--base', 'develop');
+	assert.equal(made.status, 0, made.stderr);
+	assert.equal(fs.realpathSync(JSON.parse(made.stdout).worktree), fs.realpathSync(path.join(dir, '.worktrees', 'clone', 'X-5')));
+	const shared = run('add', '--branch', 'feature/X-6-thing', '--path', path.join(dir, '.worktrees', 'X-6'), '--base', 'develop');
+	assert.equal(shared.status, 3);
+	assert.match(shared.stderr, /shares; use .*\.worktrees\/clone\/X-6 \(worktree\.mjs path --key X-6\)/);
+	assert.equal(fs.existsSync(path.join(dir, '.worktrees', 'X-6')), false, 'nothing was made');
+	// a worktree an older version left there is still this repository's to reuse
+	g(clone, 'worktree', 'add', '-q', path.join(dir, '.worktrees', 'X-1'), 'feature/X-1-base');
+	const again = run('add', '--branch', 'feature/X-1-base', '--key', 'X-1', '--base', 'develop');
+	assert.equal(again.status, 0, again.stderr);
+	assert.equal(fs.realpathSync(JSON.parse(again.stdout).worktree), fs.realpathSync(path.join(dir, '.worktrees', 'X-1')));
+	assert.equal(run('add', '--branch', 'feature/X-7-thing', '--key', 'x;y').status, 3);
+});
