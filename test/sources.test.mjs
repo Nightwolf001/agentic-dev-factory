@@ -284,7 +284,7 @@ test('notion: list filters on the tag and status, derives keys from the unique I
 		tasks.map((t) => t.key),
 		['TASK-1', 'TASK-2'],
 	);
-	assert.deepEqual(tasks[1].blockedBy, [{ key: 'p9', done: true }]);
+	assert.deepEqual(tasks[1].blockedBy, [{ key: 'TASK-9', done: true }], 'a blocker is named by its task key, not its page id');
 	const query = calls.find((c) => c.url.endsWith('/query')).body.filter;
 	assert.deepEqual(query.and[0], { property: 'Tags', multi_select: { contains: 'dev-factory' } });
 	assert.deepEqual(query.and[1], { or: [{ property: 'Status', status: { equals: 'Ready' } }] });
