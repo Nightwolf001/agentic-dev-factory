@@ -159,3 +159,30 @@ test("a pass running in one repository does not hold back a pass in another: eac
 	assert.equal(fs.existsSync(path.join(b, 'tick.lock')), false, "B's own lock was released when its pass ended");
 	assert.ok(fs.existsSync(path.join(a, 'tick.lock', 'pid')), "A's lock is untouched");
 });
+
+// A job rendered by an install before 0.26.0 names the machine folder in DF_STATE_DIR. Honoured, that pin would put every such
+// repository's lock in one shared folder again, so a pass started that way takes its repository's own lock.
+test("a job that pins DF_STATE_DIR to the machine folder still takes its repository's own lock", () => {
+	const TICK = new URL('../scripts/tick.sh', import.meta.url).pathname;
+	const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'df-old-job-')));
+	const repo = path.join(home, 'app');
+	fs.mkdirSync(repo);
+	spawnSync('git', ['init', '-q'], { cwd: repo });
+	const machine = path.join(home, '.dev-factory');
+	fs.mkdirSync(machine, { recursive: true });
+	// another repository's pass holds the machine folder's lock, as a pass of an old install would
+	fs.mkdirSync(path.join(machine, 'tick.lock'));
+	fs.writeFileSync(path.join(machine, 'tick.lock', 'started'), 'x');
+	fs.writeFileSync(path.join(machine, 'tick.lock', 'pid'), String(process.pid));
+	const env = { PATH: process.env.PATH, HOME: home, DF_LOG: path.join(home, 'tick.log'), DF_PREFLIGHT: 'off', DF_STATE_DIR: machine };
+	spawnSync('bash', [TICK], { encoding: 'utf8', cwd: repo, env, timeout: 60000 });
+	const log = fs.readFileSync(env.DF_LOG, 'utf8');
+	assert.doesNotMatch(log, /skip: pass/, 'not held back by the machine folder lock');
+	assert.match(log, /pass start/);
+	const own = fs.readdirSync(machine).filter((f) => f.startsWith('app-'));
+	assert.equal(own.length, 1, 'the repository got its own folder');
+	// an explicit folder that is not the machine folder is still used as given
+	const custom = path.join(home, 'custom-state');
+	spawnSync('bash', [TICK], { encoding: 'utf8', cwd: repo, env: { ...env, DF_STATE_DIR: custom }, timeout: 60000 });
+	assert.ok(fs.existsSync(custom), 'DF_STATE_DIR elsewhere is kept');
+});
