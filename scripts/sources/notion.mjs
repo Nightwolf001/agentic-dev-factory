@@ -42,9 +42,14 @@ export function notionSource(cfg, { env = process.env, fetchImpl = fetch } = {})
 	};
 	const tags = (page) => (page.properties?.[P.labels]?.multi_select ?? []).map((t) => t.name);
 
+	// A blocker is named by its task key (TASK-12), like every other task, so a caller can match it against a task
+	// list; the page id is only the fallback for a page without a unique ID.
 	const pageState = new Map();
-	const doneOf = async (pageId) => {
-		if (!pageState.has(pageId)) pageState.set(pageId, stateOf(statusName(await call('GET', `/pages/${pageId}`)), states) === 'done');
+	const blockerOf = async (pageId) => {
+		if (!pageState.has(pageId)) {
+			const page = await call('GET', `/pages/${pageId}`);
+			pageState.set(pageId, { key: keyOf(page) ?? pageId, done: stateOf(statusName(page), states) === 'done' });
+		}
 		return pageState.get(pageId);
 	};
 
@@ -56,7 +61,7 @@ export function notionSource(cfg, { env = process.env, fetchImpl = fetch } = {})
 		labels: tags(page),
 		type: page.properties?.[P.type]?.select?.name ?? 'task',
 		pageId: page.id,
-		blockedBy: await Promise.all((page.properties?.['Blocked by']?.relation ?? []).map(async (r) => ({ key: r.id, done: await doneOf(r.id) }))),
+		blockedBy: await Promise.all((page.properties?.['Blocked by']?.relation ?? []).map((r) => blockerOf(r.id))),
 	});
 
 	return {
