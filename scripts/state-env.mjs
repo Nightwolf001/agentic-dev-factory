@@ -111,3 +111,11 @@ export function setEnvValue(name, value, { env = process.env, dir = machineDir(e
 	fs.renameSync(tmp, file);
 	return file;
 }
+
+// A scheduler script that needs the network and the tracker's token is let out of the pass's sandbox only when it is run alone, as
+// the commands write it. Run inside the sandbox (a `; echo $?`, a pipe or a `cd` in front), its requests fail or go unauthenticated;
+// this note says so, so the pass runs it again the right way instead of reading the failure as an outage.
+export function sandboxNote(script, env = process.env) {
+	if (!env.SANDBOX_RUNTIME) return null;
+	return `${script} ran inside the sandbox, where it cannot reach the tracker: run it again alone, exactly as written (no cd in front, nothing after it, no pipe), so the sandbox lets it out`;
+}

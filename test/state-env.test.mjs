@@ -287,3 +287,15 @@ test('a plain DF_STATE_DIR, with no repository folder, is the machine folder as 
 	assert.equal(machineDir({ HOME: home, DF_STATE_DIR: path.join(home, '.dev-factory') }), path.join(home, '.dev-factory'));
 	assert.equal(machineDir({ HOME: home }), path.join(os.homedir(), '.dev-factory'), 'unset: the default folder, as stateDir');
 });
+
+test('a scheduler script run inside the sandbox says so, and how to run it so that the sandbox lets it out', async () => {
+	const { sandboxNote } = await import('../scripts/state-env.mjs');
+	assert.equal(sandboxNote('open-prs.mjs', {}), null, 'outside the sandbox there is nothing to say');
+	assert.match(
+		sandboxNote('open-prs.mjs', { SANDBOX_RUNTIME: '1' }),
+		/open-prs\.mjs ran inside the sandbox.*run it again alone, exactly as written/,
+	);
+	const tick = fs.readFileSync(new URL('../commands/tick.md', import.meta.url), 'utf8');
+	assert.match(tick, /run each alone, exactly as this file writes it, with no `cd` in front, nothing after it/);
+	assert.match(tick, /first, if its JSON has a `note`, run it again alone/);
+});
