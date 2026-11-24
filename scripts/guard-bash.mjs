@@ -62,6 +62,14 @@ function judge(evt, factory) {
 		/* no readable config: fall back to the strictest reading below */
 	}
 	const containerOnly = environment.type === 'compose';
+	// the mobile app has no container: the device lane installs its dependencies on this machine (mobile.install), so its tests run here
+	let hostDirs = [];
+	try {
+		const appDir = get('mobile.appDir');
+		if (typeof appDir === 'string' && appDir && resolved.root) hostDirs = [path.resolve(resolved.root, appDir)];
+	} catch {
+		/* no readable config: no folder is exempt */
+	}
 	let noAttribution = true;
 	try {
 		noAttribution = get('git.agentAttribution') !== true;
@@ -82,6 +90,7 @@ function judge(evt, factory) {
 		key: run?.key,
 		role: factory && run ? judgedRole(run) : run?.role,
 		containerOnly,
+		hostDirs,
 		service: environment.service,
 		noAttribution,
 		takeover: takeoverOn(),

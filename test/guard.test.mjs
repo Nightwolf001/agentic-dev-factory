@@ -1681,3 +1681,19 @@ test("a reviewer may run the repository's tests and type check, never with snaps
 	for (const bad of ['npx jest -u', 'npx jest --updateSnapshot', 'npm install', 'npx prettier --write .', 'npm run build', 'npx tsc'])
 		assert.equal(r(bad), true, bad);
 });
+
+// With environment.type compose the tests run in the ticket's container: the command that runs them there is `docker compose ... exec
+// ... sh -c "npm test"`, whose inner `npm test` runs in the container, not on this machine. The mobile app has no container (the
+// device lane installs it here), so its folder is exempt.
+test('tests in the container and in the mobile app folder are allowed; host tests of a containerised service are not', () => {
+	const ctx = { role: 'builder', branch: 'feature/APP-1-x', containerOnly: true, service: 'api', hostDirs: ['/w/APP-1/app'] };
+	const b = (c) => evaluate(c, ctx).deny;
+	assert.equal(b('docker compose -f /w/APP-1/compose.yml -p df-app-1 exec -T api sh -c "cd /workspace/api && npm test" 2>&1 | tail -30'), false);
+	assert.equal(b("cd /w/APP-1 && docker compose -f compose.yml -p df-app-1 exec -T api sh -c 'npm test'"), false);
+	assert.equal(b('cd /w/APP-1/app && npx jest 2>&1 | tail -20'), false, 'the mobile app runs its tests here');
+	assert.equal(b('cd /w/APP-1/app/src && npm test'), false);
+	assert.equal(b('cd /w/APP-1/api && npm test'), true, 'the service has a container');
+	assert.equal(b('cd /w/APP-1/application && npm test'), true, 'a folder that only starts with the name is not it');
+	assert.equal(b('sh -c "npm test"'), true, 'a sh -c on this machine is not the container');
+	assert.equal(evaluate('cd /w/APP-1/app && npx jest', { ...ctx, hostDirs: [] }).deny, true, 'with no mobile app nothing is exempt');
+});

@@ -1265,7 +1265,10 @@ const TAKEOVER_REFUSAL =
 	'dev-factory guard: takeover is switched on by the machine owner (DF_TAKEOVER in the environment the scheduler starts with), not by an agent';
 const UNJUDGEABLE = (why) => ({ deny: true, reason: `dev-factory guard: this command cannot be judged (${why}); split it into smaller commands` });
 
-// ctx: branch, key (the ticket, which names the one folder of scratch QA cases in .devfactory/ the run may write), role, containerOnly, service, noAttribution, takeover, plus for the path rules cwd (the directory the command
+// Whether `cwd` is inside one of the folders whose dependencies and tests are this machine's (the mobile app: there is no container)
+const inHostDir = (cwd, dirs = []) => dirs.some((d) => cwd === d || String(cwd).startsWith(d.replace(/\/$/, '') + '/'));
+
+// ctx: branch, key (the ticket, which names the one folder of scratch QA cases in .devfactory/ the run may write), role, containerOnly, hostDirs (absolute folders exempt from containerOnly), service, noAttribution, takeover, plus for the path rules cwd (the directory the command
 // starts in), home, stateDir and env (default: the process's), and trackerHosts (hosts beyond the built-in ones).
 export function evaluate(command, ctx = {}) {
 	try {
@@ -1300,6 +1303,9 @@ function judge(command, ctx) {
 	if (segs.length > LIMITS.segments) throw new Unjudgeable(`more than ${LIMITS.segments} commands`);
 	const { home, stateDir } = envOf(ctx);
 	const st = { cwd: ctx.cwd || process.cwd(), vars: { HOME: home, DF_STATE_DIR: stateDir, PWD: ctx.cwd || process.cwd() } };
+	// a segment nested in `docker compose ... exec ... sh -c '...'` runs inside the container, which is where the tests belong
+	const execsIn = segs.slice(0, found.own).some((s) => /^docker\s+(compose\s+(\S+\s+)*?)?exec\b/.test(s));
+	const runsInContainer = (index) => execsIn && index >= found.own;
 	for (const [index, seg] of segs.entries()) {
 		check();
 		const inv = invocation(seg);
@@ -1377,6 +1383,8 @@ function judge(command, ctx) {
 		if (
 			!reason &&
 			ctx.containerOnly &&
+			!runsInContainer(index) &&
+			!inHostDir(st.cwd, ctx.hostDirs) &&
 			/^(npm\s+(--prefix\s+\S+\s+)?(install|i|ci|test|run\s+test)\b|npx\s+(vitest|jest|playwright\s+test)\b|yarn\s+(--cwd\s+\S+\s+)?(test|jest|vitest)\b|pnpm\s+(install|i|test|run\s+test|jest|vitest)\b)/.test(
 				body,
 			)
