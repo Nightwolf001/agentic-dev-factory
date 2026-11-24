@@ -7,6 +7,9 @@ DIR="$(cd "$(dirname "$0")/.." && pwd)"
 . "$DIR/scripts/pass-args.sh"; df_pass_args tick.sh "" -- "$@"
 . "$DIR/scripts/runtime.sh"
 REPO="$(df_repo)"; [ -n "$REPO" ] || { echo "dev-factory: run this from inside a git repository (or set DF_REPO)" >&2; exit 1; }
+# A job rendered before every repository had its own folder names the machine folder in DF_STATE_DIR: that pin would put this
+# repository's pass lock back in the one folder all repositories share, so it is dropped and the repository's own folder used.
+if [ "${DF_STATE_DIR:-}" = "$HOME/.dev-factory" ] && [ -n "$(df_main_repo)" ]; then unset DF_STATE_DIR; fi
 STATE="$(df_state_dir)"; LOG="$(df_log_file tick)"
 mkdir -p "$STATE" "$(dirname "$LOG")"
 # every repository has a state folder of its own, so a pass here never waits on a pass in another repository; the session and every
