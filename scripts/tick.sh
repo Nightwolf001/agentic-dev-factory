@@ -9,6 +9,9 @@ DIR="$(cd "$(dirname "$0")/.." && pwd)"
 REPO="$(df_repo)"; [ -n "$REPO" ] || { echo "dev-factory: run this from inside a git repository (or set DF_REPO)" >&2; exit 1; }
 STATE="$(df_state_dir)"; LOG="$(df_log_file tick)"
 mkdir -p "$STATE" "$(dirname "$LOG")"
+# every repository has a state folder of its own, so a pass here never waits on a pass in another repository; the session and every
+# script it starts read the same folder
+df_ensure_state_dir "$STATE"; export DF_STATE_DIR="$STATE"
 df_load_env
 # the pause switch (dev-factory scheduler off): scheduled passes stop here, manual runs go on
 if [ "${DF_SCHEDULED:-}" = 1 ] && df_job_paused "$REPO" tick; then
@@ -55,6 +58,8 @@ fi
 alert clear >> "$LOG" 2>&1 || true
 
 # the settings this pass runs with: the base file plus the domains and MCP servers this repository enabled
+# the worktree folder must exist before the settings name it, or the sandbox has no folder to allow writes in
+mkdir -p "$(node "$DIR/scripts/worktree.mjs" root 2>/dev/null || echo "$REPO/../.worktrees")" 2>/dev/null || true
 node "$DIR/scripts/factory-settings.mjs" "$STATE/settings.json" || { echo "$(date -u +%FT%TZ) could not build settings" >> "$LOG"; exit 1; }
 # the MCP servers this pass starts from: the generated .devfactory/mcp.json, with the flags write-config chose
 df_mcp_args "$REPO" "$LOG"

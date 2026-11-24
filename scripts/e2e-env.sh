@@ -36,6 +36,9 @@ set -uo pipefail
 
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 STATE_DIR="${DF_STATE_DIR:-$HOME/.dev-factory}"
+# Host ports belong to the machine, not to one repository: a repository's own state folder (~/.dev-factory/<slug>) keeps the ports
+# lock in the machine folder above it, so two repositories never publish the same canonical ports at once.
+PORTS_DIR="$STATE_DIR"; [ "$(dirname "$STATE_DIR")" = "$HOME/.dev-factory" ] && PORTS_DIR="$HOME/.dev-factory"
 MAX_STACKS="${DF_MAX_STACKS:-2}"
 
 # one value of the environment block; empty when unset
@@ -106,12 +109,33 @@ compose() { # compose <args...> using the recorded project
   docker compose "${files[@]}" -p "$project" "$@"
 }
 
+# direct_env_lines DIRECT_URL: the YAML lines (under the service's `environment:`) for environment.directEnv, with {host} (the direct
+# address's host name) and {origin} (its scheme, host and port) filled in. Values are written as text: compose interpolates $, so each
+# becomes $$, and \ and " are escaped for the YAML double-quoted string. Exit 1, saying why, when the setting is not a map of names to text.
+direct_env_lines() {
+  node -e '
+    const [raw, direct] = process.argv.slice(1);
+    let map;
+    try { map = JSON.parse(raw || "{}"); } catch (e) { map = null; }
+    const ok = map && typeof map === "object" && !Array.isArray(map) && Object.entries(map).every(([k, v]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k) && typeof v === "string" && !/[\0-\x1f\x7f]/.test(v));
+    if (!ok) { console.error("environment.directEnv must map variable names (letters, digits and _) to text"); process.exit(1); }
+    const u = new URL(direct);
+    for (const [k, v] of Object.entries(map)) {
+      const val = v.replaceAll("{host}", u.hostname).replaceAll("{origin}", u.origin).replace(/\$/g, "$$$$").replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
+      console.log("      " + k + ": \"" + val + "\"");
+    }' "$(cfg directEnv)" "$1"
+}
+
 # Writes the override: no host ports and labels on every service, so isolated environments never collide on host ports and
 # every object this script owns can be found by label. The owner (the pid mark_live records) and the worktree are labels too:
 # a sweep run from another state folder has no live/ file for the stack, but it can read who owns it from the stack itself.
-write_override() {
+# environment.directEnv goes to environment.service of a direct stack, whose address it names, and to no other service or mode.
+write_override() { # write_override [DIRECT_URL]
   mkdir -p "$RUN_DIR"
-  local services owner wt
+  local services owner wt env_lines=""
+  if [ "$PORTS" = direct ] && [ -n "${1:-}" ] && [ -n "$(cfg directEnv | tr -d '{} \n')" ]; then
+    env_lines="$(direct_env_lines "$1")" || die "environment.directEnv is not usable (see above)"
+  fi
   services="$(docker compose -f "$COMPOSE_FILE" config --services)" || die "compose file does not render"
   owner="${DF_OWNER_PID:-$PPID}"
   # compose interpolates every value of every -f file, so a literal $ is written $$; then, inside a YAML double-quoted string, \ and " are escaped
@@ -125,6 +149,7 @@ write_override() {
       echo "      dev-factory.owner: \"$owner\""
       echo "      dev-factory.worktree: \"$wt\""
       case "$PORTS" in none|direct) echo "    ports: !reset []" ;; esac
+      if [ -n "$env_lines" ] && [ "$s" = "$SERVICE" ]; then echo "    environment:"; printf '%s\n' "$env_lines"; fi
     done
   } > "$OVERRIDE"
 }
@@ -159,10 +184,14 @@ init_submodules() {
   done
 }
 
+# The ping inside the service, with whichever client the image has: curl, else wget (Alpine and BusyBox images), else node's fetch.
+PING_SH='u="$1"; if command -v curl >/dev/null 2>&1; then exec curl -ksf -o /dev/null "$u"; elif command -v wget >/dev/null 2>&1; then exec wget -q -O /dev/null "$u"; else exec node -e "fetch(process.argv[1]).then((r)=>process.exit(r.ok?0:1),()=>process.exit(1))" "$u"; fi'
+ping_in_service() { compose "$1" "${EXEC_ARGS[@]}" sh -c "$PING_SH" ping "$PING_URL" </dev/null; }
+
 wait_ping() { # inside the service, as the stack's own hostnames resolve there
   local project="$1" end=$((SECONDS + READY_TIMEOUT))
   [ -n "$PING_URL" ] || return 0
-  until compose "$project" "${EXEC_ARGS[@]}" curl -ksf -o /dev/null "$PING_URL" </dev/null; do
+  until ping_in_service "$project"; do
     [ "$SECONDS" -ge "$end" ] && return 1
     sleep 5
   done
@@ -276,7 +305,7 @@ do_verify() {
     compose "$project" "${EXEC_ARGS[@]}" bash -c "$PROCESS_CHECK" </dev/null >/dev/null 2>&1 || add "process check failed: $PROCESS_CHECK"
   fi
   if [ -n "$PING_URL" ]; then
-    compose "$project" "${EXEC_ARGS[@]}" curl -ksf -o /dev/null "$PING_URL" </dev/null || add "ping failed: $(url_shown "$PING_URL")"
+    ping_in_service "$project" || add "ping failed: $(url_shown "$PING_URL")"
   fi
   # the direct address is worked out again from the settings, never read back from env.json, which the run can write
   if [ "$(env_get mode)" = direct ] || [ "$(env_get ports)" = direct ]; then
@@ -423,7 +452,7 @@ do_up() {
   if [ "$recorded" = "$project" ] && ( do_verify ) >/dev/null 2>&1; then
     mark_live "$project"
     case "$(env_get mode)" in
-      device|canonical) [ "$(env_get ports)" = direct ] || { mkdir -p "$STATE_DIR/ports.lock"; echo "${DF_OWNER_PID:-$PPID}" > "$STATE_DIR/ports.lock/owner"; } ;;
+      device|canonical) [ "$(env_get ports)" = direct ] || { mkdir -p "$PORTS_DIR/ports.lock"; echo "${DF_OWNER_PID:-$PPID}" > "$PORTS_DIR/ports.lock/owner"; } ;;
     esac
     [ "$(env_get mode)" = device ] && { ( cd "$WORKTREE" && bash "$SELF_DIR/mobile-env.sh" up --worktree "$WORKTREE" ) || die "mobile lane failed"; }
     log "ready (reused, $(env_get mode)): $project"
@@ -444,15 +473,15 @@ do_up() {
       refuse "host port(s) already in use:$who. Something else is running this stack's ports (your own docker compose or dev servers): stop it, or have the owner set DF_TAKEOVER=1 so the run may stop it, then retry"
     fi
     mkdir -p "$STATE_DIR"
-    mkdir "$STATE_DIR/ports.lock" 2>/dev/null || {
-      local holder; holder="$(cat "$STATE_DIR/ports.lock/owner" 2>/dev/null || true)"
-      if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then rm -rf "$STATE_DIR/ports.lock"; mkdir "$STATE_DIR/ports.lock"
+    mkdir "$PORTS_DIR/ports.lock" 2>/dev/null || {
+      local holder; holder="$(cat "$PORTS_DIR/ports.lock/owner" 2>/dev/null || true)"
+      if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then rm -rf "$PORTS_DIR/ports.lock"; mkdir "$PORTS_DIR/ports.lock"
       else refuse "canonical-ports environment lock held by pid ${holder:-unknown}"; fi
     }
-    echo "${DF_OWNER_PID:-$PPID}" > "$STATE_DIR/ports.lock/owner"
+    echo "${DF_OWNER_PID:-$PPID}" > "$PORTS_DIR/ports.lock/owner"
   fi
 
-  write_override
+  write_override "$direct"
   local web=""
   case "$PORTS" in canonical) web="$WEB_BASE_URL" ;; direct) web="$direct" ;; esac
   write_env project="$project" key="$KEY" worktree="$WORKTREE" composeFile="$COMPOSE_FILE" override="$OVERRIDE" \
@@ -510,7 +539,7 @@ do_down_quiet() {
   forget_live "$project"
   case "$(env_get mode)" in
     canonical|device)
-      [ "$(env_get ports)" != direct ] && [ -d "$STATE_DIR/ports.lock" ] && [ "$(cat "$STATE_DIR/ports.lock/owner" 2>/dev/null)" = "${DF_OWNER_PID:-$PPID}" ] && rm -rf "$STATE_DIR/ports.lock" ;;
+      [ "$(env_get ports)" != direct ] && [ -d "$PORTS_DIR/ports.lock" ] && [ "$(cat "$PORTS_DIR/ports.lock/owner" 2>/dev/null)" = "${DF_OWNER_PID:-$PPID}" ] && rm -rf "$PORTS_DIR/ports.lock" ;;
   esac
   return 0
 }
@@ -570,9 +599,9 @@ do_sweep() {
       forget_live "$p"; swept=$((swept + 1))
     fi
   done
-  if [ -d "$STATE_DIR/ports.lock" ]; then
-    local holder; holder="$(cat "$STATE_DIR/ports.lock/owner" 2>/dev/null || true)"
-    if [ -z "$holder" ] || ! kill -0 "$holder" 2>/dev/null; then rm -rf "$STATE_DIR/ports.lock"; log "released stale ports lock"; fi
+  if [ -d "$PORTS_DIR/ports.lock" ]; then
+    local holder; holder="$(cat "$PORTS_DIR/ports.lock/owner" 2>/dev/null || true)"
+    if [ -z "$holder" ] || ! kill -0 "$holder" 2>/dev/null; then rm -rf "$PORTS_DIR/ports.lock"; log "released stale ports lock"; fi
   fi
   log "sweep done ($swept removed)"
 }

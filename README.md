@@ -1,6 +1,6 @@
 # dev-factory
 
-A Claude Code plugin that takes a task, builds it test-first in an isolated git worktree, records QA evidence, has it reviewed by fresh-context agents, and opens a **draft pull request**. Then it takes the next one. A person reviews and merges every PR unless you switch on auto-merge, which lets the scheduler merge the small or labelled ones (`scripts/automerge.mjs`, off by default); a builder never merges.
+A Claude Code plugin that takes a task, builds it test-first in an isolated git worktree, records QA evidence, has it reviewed by fresh-context agents, and opens a **draft pull request**. With `caps.maxConcurrent` above 1 it builds several tasks at the same time, like several developers, each in its own worktree, stack and device, and every repository on the machine has a pass of its own, so projects never wait on each other. A person reviews and merges every PR unless you switch on auto-merge, which lets the scheduler merge the small or labelled ones (`scripts/automerge.mjs`, off by default); a builder never merges.
 
 **plan → build → QA → review → draft PR → repeat**
 

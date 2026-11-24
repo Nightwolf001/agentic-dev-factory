@@ -10,7 +10,19 @@ import { ENV_OVERRIDES, sourceFrom } from '../scripts/config.mjs';
 import { catalog, desired, secretsReport } from '../scripts/mcp-scope.mjs';
 import { desiredPlugins, pluginCatalog } from '../scripts/plugins.mjs';
 import { runPage, writeChanges } from '../scripts/settings.mjs';
-import { buildRows, changes, initialState, optionCatalog, publicRow, reduce, render, resetRow, setRow, stops } from '../scripts/settings-lib.mjs';
+import {
+	buildRows,
+	changes,
+	initialState,
+	optionCatalog,
+	parseInput,
+	publicRow,
+	reduce,
+	render,
+	resetRow,
+	setRow,
+	stops,
+} from '../scripts/settings-lib.mjs';
 import { envValueProblem, parseEnvText, setEnvValue } from '../scripts/state-env.mjs';
 
 // every temporary folder a test makes is removed when the file is done
@@ -893,4 +905,11 @@ test('CLI: a sync that fails says how to run it again, and the settings stay sav
 	assert.match(r.stderr, /FAILED add sentry/);
 	assert.match(r.stderr, /settings: the mcp sync did not finish; run dev-factory mcp sync to retry/);
 	assert.deepEqual(read(project).mcp.servers, { sentry: true });
+});
+
+test('a text setting typed as null is switched off (an app with no CocoaPods has no pods step); empty is still refused', () => {
+	const row = { id: 'mobile.pods', type: 'string' };
+	assert.deepEqual(parseInput(row, 'null'), { value: null });
+	assert.deepEqual(parseInput(row, 'yarn pods'), { value: 'yarn pods' });
+	assert.match(parseInput(row, '').problem, /null switches it off/);
 });

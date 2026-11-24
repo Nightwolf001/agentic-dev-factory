@@ -123,3 +123,39 @@ test('eight passes racing to reclaim the same dead lock: exactly one wins, every
 		assert.equal(codes.filter((c) => c === 0).length, 1);
 	}
 });
+
+// Two repositories on one machine build at the same time: each pass takes the lock in its repository's own state folder, so a pass
+// running in one never makes another repository's pass skip.
+test("a pass running in one repository does not hold back a pass in another: each takes its own repository's lock", () => {
+	const TICK = new URL('../scripts/tick.sh', import.meta.url).pathname;
+	const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'df-two-repos-')));
+	const repos = ['app-a', 'app-b'].map((n) => path.join(home, n));
+	for (const r of repos) {
+		fs.mkdirSync(r);
+		spawnSync('git', ['init', '-q'], { cwd: r });
+	}
+	const env = { PATH: process.env.PATH, HOME: home, DF_LOG: path.join(home, 'tick.log'), DF_PREFLIGHT: 'off' };
+	const stateOf = (r) =>
+		spawnSync('bash', ['-c', `DIR="${path.dirname(path.dirname(TICK))}"; . "$DIR/scripts/runtime.sh"; df_state_dir`], {
+			encoding: 'utf8',
+			cwd: r,
+			env,
+		}).stdout;
+	const [a, b] = repos.map(stateOf);
+	assert.notEqual(a, b);
+	// repository A's pass is running: its lock is held by a live process
+	fs.mkdirSync(path.join(a, 'tick.lock'), { recursive: true });
+	fs.writeFileSync(
+		path.join(a, 'tick.lock', 'started'),
+		String(spawnSync('ps', ['-o', 'lstart=', '-p', String(process.pid)], { encoding: 'utf8' }).stdout ?? '').trim(),
+	);
+	fs.writeFileSync(path.join(a, 'tick.lock', 'pid'), String(process.pid));
+	const r = spawnSync('bash', [TICK], { encoding: 'utf8', cwd: repos[1], env, timeout: 60000 });
+	const log = fs.readFileSync(env.DF_LOG, 'utf8');
+	assert.notEqual(r.status, 75, log);
+	assert.doesNotMatch(log, /skip: pass/);
+	assert.match(log, /pass start/, "B's pass got past the lock");
+	assert.equal(fs.existsSync(path.join(home, '.dev-factory', 'tick.lock')), false, 'no lock in the machine folder');
+	assert.equal(fs.existsSync(path.join(b, 'tick.lock')), false, "B's own lock was released when its pass ended");
+	assert.ok(fs.existsSync(path.join(a, 'tick.lock', 'pid')), "A's lock is untouched");
+});

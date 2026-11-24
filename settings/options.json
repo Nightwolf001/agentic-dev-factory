@@ -461,10 +461,22 @@
 			"type": "string",
 			"scopeHint": "project"
 		},
+		"environment.ports": {
+			"group": "Environment",
+			"title": "Stack ports: auto, canonical, direct or none",
+			"type": "string",
+			"scopeHint": "project"
+		},
 		"environment.directHost": {
 			"group": "Environment",
 			"title": "Direct host (OrbStack)",
 			"type": "string",
+			"scopeHint": "project"
+		},
+		"environment.directEnv": {
+			"group": "Environment",
+			"title": "Variables for a direct stack",
+			"type": "map",
 			"scopeHint": "project"
 		},
 		"environment.submodules": {
@@ -561,6 +573,36 @@
 		"mobile.iosAutofillOff": {
 			"group": "Mobile lane",
 			"title": "Turn off iOS password AutoFill",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"mobile.androidAppId": {
+			"group": "Mobile lane",
+			"title": "Android app id (when it differs from iOS)",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"mobile.deviceSetup": {
+			"group": "Mobile lane",
+			"title": "iOS device setup (installs a client such as Expo Go)",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"mobile.androidDeviceSetup": {
+			"group": "Mobile lane",
+			"title": "Android device setup (installs Expo Go and the like)",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"mobile.open": {
+			"group": "Mobile lane",
+			"title": "Open the app on iOS (every start)",
+			"type": "string",
+			"scopeHint": "project"
+		},
+		"mobile.androidOpen": {
+			"group": "Mobile lane",
+			"title": "Open the app on Android (every start)",
 			"type": "string",
 			"scopeHint": "project"
 		},

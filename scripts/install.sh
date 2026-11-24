@@ -4,14 +4,14 @@
 # renders that repository's scheduler jobs; anywhere else it sets up the machine only (launcher, env file, plugins).
 # Prefer `dev-factory install`, which finds the plugin for you.
 #   install.sh [--apply] [--load] [--isolate]
-# --isolate gives this repository a state folder of its own (~/.dev-factory/<slug>) for its locks, agent bindings, logs and ports lock, so a
-# pass in another repository no longer holds this one back. The secrets, the launcher, the plugin path, your settings for all projects
-# (config.json) and the record of what the factory added to Claude (managed.json) stay the machine's. Once the folder exists, later
-# installs keep the repository isolated.
+# Every repository has a state folder of its own (~/.dev-factory/<slug>) for its pass lock, agent bindings, logs and run records, so a
+# pass in another repository never holds this one back. --isolate is still accepted and changes nothing. The secrets, the launcher, the
+# plugin path, the pause switches, the locks on host ports and devices, your settings for all projects (config.json) and the record of
+# what the factory added to Claude (managed.json) stay the machine's.
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 . "$DIR/scripts/runtime.sh"
-REPO="$(df_repo)"
+REPO="$(df_main_repo)"
 # the machine folder: not the repository's own folder, which df_state_dir would pick once it exists
 STATE="${DF_STATE_DIR:-$(df_machine_dir)}"; RUNTIME="$(df_runtime)"
 APPLY=0; LOAD=0; ISOLATE=0
@@ -19,7 +19,7 @@ for a in "$@"; do case "$a" in --apply) APPLY=1 ;; --load) APPLY=1; LOAD=1 ;; --
 SLUG=""; OWN=""
 if [ -n "$REPO" ]; then
   SLUG="$(df_slug "$REPO")"; OWN="$STATE/$SLUG"
-  [ -d "$OWN" ] && ISOLATE=1
+  ISOLATE=1
 elif [ $ISOLATE = 1 ]; then
   echo "install --isolate gives one repository a state folder of its own: run it from inside that repository (or set DF_REPO)" >&2; exit 3
 fi
@@ -63,7 +63,7 @@ if [ ! -f "$ENVF" ]; then
   if [ $APPLY = 1 ]; then mkdir -p "$STATE"; cp "$DIR/.env.example" "$ENVF"; chmod 600 "$ENVF"; fi
 else say "$ENVF exists, left alone"; fi
 
-# 3b. a state folder of its own for this repository: its locks, agent bindings, logs and ports lock stay apart from every other repository's.
+# 3b. a state folder of its own for this repository: its pass lock, agent bindings, logs and run records stay apart from every other repository's.
 # What is shared is linked, not copied, so one .env.local and one launcher serve them all. The settings for all projects and managed.json
 # are not linked: the scripts read them from the machine folder (machineDir in scripts/state-env.mjs), so there is only ever one of each.
 if [ $ISOLATE = 1 ]; then

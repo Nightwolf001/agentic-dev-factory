@@ -7,6 +7,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { load, validate } from '../scripts/config.mjs';
 import { decide, prNeedsAction, prStateFor } from '../scripts/frontier.mjs';
+import { notionSource } from '../scripts/sources/notion.mjs';
 import { parseStackNote, pathsIn, planStack, stackAction, stackNote, stackSettings, syncBranch } from '../scripts/stack-lib.mjs';
 
 const pr = (n, head, over = {}) => ({ number: n, state: 'OPEN', headRefName: head, baseRefName: 'develop', onOrigin: true, chain: [head], ...over });
@@ -207,6 +208,50 @@ test('frontier: a task blocked by an in-review task with an open PR is claimable
 	);
 	assert.equal((await decide({ cfg: on(), deps, state: null })).run, true);
 	assert.equal((await decide({ cfg: load(), deps, state: null })).run, false, 'off by default');
+});
+
+test("frontier: with the Notion source, a task blocked by an in-review task is found by the blocker's task key", async () => {
+	// The relation holds page ids; the preflight matches blockers against the in-review list by task key.
+	const page = (id, n, status, extra = {}) => ({
+		id,
+		last_edited_time: '2026-10-15T10:00:00Z',
+		properties: {
+			Name: { title: [{ plain_text: `Task ${n}` }] },
+			Status: { status: { name: status } },
+			Tags: { multi_select: [{ name: 'dev-factory' }] },
+			ID: { unique_id: { prefix: 'TASK', number: n } },
+			...extra,
+		},
+	});
+	const fetchImpl = async (url, init) => {
+		const respond = (j) => ({ ok: true, json: async () => j });
+		if (url.endsWith('/databases/db1')) return respond({ properties: { Status: { type: 'status' } } });
+		if (url.endsWith('/databases/db1/query')) {
+			const asked = init.body;
+			if (asked.includes('In review')) return respond({ results: [page('p5', 5, 'In review')] });
+			if (asked.includes('Ready')) return respond({ results: [page('p6', 6, 'Ready', { 'Blocked by': { relation: [{ id: 'p5' }] } })] });
+			return respond({ results: [] });
+		}
+		if (url.endsWith('/pages/p5')) return respond(page('p5', 5, 'In review'));
+		throw new Error(url);
+	};
+	const cfg = on();
+	cfg.tasks = { ...cfg.tasks, source: 'notion' };
+	cfg.sources = { ...cfg.sources, notion: { ...cfg.sources?.notion, databaseId: 'db1' } };
+	const src = notionSource(cfg, { env: { NOTION_TOKEN: 'secret' }, fetchImpl });
+	const open = {
+		state: 'OPEN',
+		number: 1,
+		headRefName: 'task/five',
+		baseRefName: 'develop',
+		onOrigin: true,
+		chain: ['task/five'],
+		reviews: [],
+		comments: [],
+	};
+	const deps = { list: (q) => src.list(q), prState: async (key) => (key === 'TASK-5' ? open : null) };
+	const out = await decide({ cfg, deps, state: null });
+	assert.equal(out.run, true, 'the blocked task is stackable, so the pass starts');
 });
 
 test('frontier: blockers in progress or ready keep it out; siblings wait', async () => {

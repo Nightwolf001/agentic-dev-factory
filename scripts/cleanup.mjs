@@ -102,11 +102,12 @@ export const isLocalHost = (host) => /^(localhost|127(\.\d+){3}|0\.0\.0\.0|\[?::
 // `recordedPorts` is the mode its stack was started in (`ports` in env.json). A stack started with none or direct publishes no
 // host port and takes no ports lock, so the compose file's ports and the web address's port are not its to free: whatever holds
 // them is another ticket's canonical stack or the developer's own copy of the app. The explicit ports, cleanup.ports and Metro
-// (a device run's own dev server) stay. With no record, or any other mode, nothing changes.
-export function portsFor({ cfg, worktree, extra = [], run = defaultRun, recordedPorts }) {
+// (a device run's own dev server) stay. With no record, or any other mode, nothing changes. Metro is the port the run recorded
+// (`device.metroPort`: each run of several at once has its own), else mobile.metroPort.
+export function portsFor({ cfg, worktree, extra = [], run = defaultRun, recordedPorts, recordedMetro }) {
 	const ports = new Set(extra.map(Number));
 	for (const p of get('cleanup.ports', { config: cfg }) ?? []) ports.add(Number(p));
-	const metro = get('mobile.metroPort', { config: cfg });
+	const metro = Number(recordedMetro) > 0 ? Number(recordedMetro) : get('mobile.metroPort', { config: cfg });
 	if (get('mobile.appDir', { config: cfg }) && metro) ports.add(Number(metro));
 	const publishesNothing = recordedPorts === 'none' || recordedPorts === 'direct';
 	if (publishesNothing) return [...ports].filter((n) => Number.isInteger(n) && n > 0 && n < 65536);
@@ -287,7 +288,7 @@ export async function cleanup({
 	);
 
 	// ---- whatever stands in the way ----
-	const ports = portsFor({ cfg, worktree, extra: extraPorts, run, recordedPorts: recorded.ports });
+	const ports = portsFor({ cfg, worktree, extra: extraPorts, run, recordedPorts: recorded.ports, recordedMetro: recorded.device?.metroPort });
 	const procs = processes(run);
 	const keep = lineage(procs);
 	for (const port of ports) {
@@ -352,7 +353,9 @@ export async function cleanup({
 	}
 
 	// ---- locks ----
-	const lock = path.join(state, 'ports.lock');
+	// host ports belong to the machine: a repository's own state folder keeps the ports lock in the machine folder above it (e2e-env.sh)
+	const machine = path.join(env.HOME || os.homedir(), '.dev-factory');
+	const lock = path.join(path.dirname(path.resolve(state)) === path.resolve(machine) ? machine : state, 'ports.lock');
 	if (fs.existsSync(lock)) {
 		// a lock with no readable owner was abandoned part-way: nobody is holding it
 		let owner = 0;

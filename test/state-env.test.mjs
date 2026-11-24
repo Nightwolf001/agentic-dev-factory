@@ -222,7 +222,7 @@ test('import-env skips the lines of a multi-line value, and a name written twice
 	assert.equal(fs.existsSync(pwned), false);
 });
 
-test('the command line runs a repository with a state folder of its own on that folder', async () => {
+test('the command line runs every repository on a state folder of its own', async () => {
 	const ROOT = new URL('../', import.meta.url).pathname.replace(/\/$/, '');
 	const { stateDirFor } = await import('../scripts/cli.mjs');
 	const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'df-cli-')));
@@ -230,8 +230,7 @@ test('the command line runs a repository with a state folder of its own on that 
 	fs.mkdirSync(repo);
 	const slug = spawnSync('bash', ['-c', `DIR="${ROOT}"; . "${ROOT}/scripts/runtime.sh"; df_slug "${repo}"`], { encoding: 'utf8' }).stdout.trim();
 	const env = { PATH: process.env.PATH, HOME: home, DF_REPO: repo };
-	assert.equal(stateDirFor(env), null, 'nothing to change while the repository has no folder of its own');
-	fs.mkdirSync(path.join(home, '.dev-factory', slug), { recursive: true });
+	// every repository has a folder of its own, whether or not it exists yet: the pass creates it
 	assert.equal(stateDirFor(env), path.join(home, '.dev-factory', slug));
 	assert.equal(stateDirFor({ ...env, DF_STATE_DIR: '/s' }), null, 'an explicit folder is left alone');
 });
@@ -287,4 +286,16 @@ test('a plain DF_STATE_DIR, with no repository folder, is the machine folder as 
 	const home = tmp();
 	assert.equal(machineDir({ HOME: home, DF_STATE_DIR: path.join(home, '.dev-factory') }), path.join(home, '.dev-factory'));
 	assert.equal(machineDir({ HOME: home }), path.join(os.homedir(), '.dev-factory'), 'unset: the default folder, as stateDir');
+});
+
+test('a scheduler script run inside the sandbox says so, and how to run it so that the sandbox lets it out', async () => {
+	const { sandboxNote } = await import('../scripts/state-env.mjs');
+	assert.equal(sandboxNote('open-prs.mjs', {}), null, 'outside the sandbox there is nothing to say');
+	assert.match(
+		sandboxNote('open-prs.mjs', { SANDBOX_RUNTIME: '1' }),
+		/open-prs\.mjs ran inside the sandbox.*run it again alone, exactly as written/,
+	);
+	const tick = fs.readFileSync(new URL('../commands/tick.md', import.meta.url), 'utf8');
+	assert.match(tick, /run each alone, exactly as this file writes it, with no `cd` in front, nothing after it/);
+	assert.match(tick, /first, if its JSON has a `note`, run it again alone/);
 });

@@ -11,7 +11,14 @@
 //                                                                            settings (.devfactory/config.json and qa.yaml, or the old
 //                                                                            dev-factory.config.json and dev-factory.qa.yaml) are copied in, kept out of git.
 //   worktree.mjs attach --branch EXISTING --path DIR [--repo DIR]            worktree on an existing remote branch (fix passes)
-//   worktree.mjs root [--repo DIR]                                           print the folder worktrees are created in (git.worktreeRoot)
+//   add and attach take --key KEY in place of --path: the worktree is then `path --key KEY`, printed as `worktree`. A new worktree
+//   is never made in the shared ../.worktrees (exit 3, naming the right path).
+//   worktree.mjs root [--repo DIR]                                           print the folder worktrees are created in (git.worktreeRoot,
+//                                                                            relative to the main checkout; {repo} is its folder name, so
+//                                                                            repositories that share a parent folder never share worktrees)
+//   worktree.mjs path --key KEY [--repo DIR]                                 print the worktree of a task: <root>/<KEY>, or the one an older
+//                                                                            version made in the shared ../.worktrees/<KEY> while it is still
+//                                                                            this repository's worktree
 //   worktree.mjs default-branch [--repo DIR]                                 print the branch a run builds on when no base is named
 //   worktree.mjs parse --file F                                              print the "Base branch:" name from a ticket, or nothing
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -254,6 +261,7 @@ function settle({ repo, branch, dest, baseRef }) {
 
 export function addWorktree({ repo, branch, name, defaultBase, dest, fetch = true }) {
 	if (!validName(branch)) throw new BaseError(`'${branch}' is not a usable branch name`, 2);
+	refuseSharedFolder(repo, dest);
 	const r = resolveBase({ repo, name, defaultBase, fetch });
 	const s = settle({ repo, branch, dest, baseRef: r.ref });
 	if (s.existing) {
@@ -288,6 +296,7 @@ export function addWorktree({ repo, branch, name, defaultBase, dest, fetch = tru
 }
 
 export function attachWorktree({ repo, branch, dest }) {
+	refuseSharedFolder(repo, dest);
 	if (!validName(branch)) throw new BaseError(`'${branch}' is not a usable branch name`, 2);
 	git(repo, 'worktree', 'prune');
 	const abs = path.resolve(dest);
@@ -316,6 +325,77 @@ function args(argv) {
 	return out;
 }
 
+export const DEFAULT_WORKTREE_ROOT = '../.worktrees/{repo}';
+const LEGACY_WORKTREE_ROOT = '../.worktrees';
+
+// the main checkout, also when DIR is one of its worktrees: worktrees of a worktree would otherwise nest under the wrong folder
+export function mainCheckout(repo) {
+	try {
+		const common = git(repo, 'rev-parse', '--path-format=absolute', '--git-common-dir');
+		if (path.basename(common) === '.git') return path.dirname(common);
+	} catch {
+		/* not a repository: the folder itself */
+	}
+	return path.resolve(repo);
+}
+
+export function worktreeRoot(repo, configured = get('git.worktreeRoot')) {
+	const main = mainCheckout(repo);
+	return path.resolve(main, String(configured || DEFAULT_WORKTREE_ROOT).replaceAll('{repo}', path.basename(main)));
+}
+
+// the worktrees git has registered for this repository
+const allWorktrees = (repo) => {
+	try {
+		return git(repo, 'worktree', 'list', '--porcelain')
+			.split('\n')
+			.filter((l) => l.startsWith('worktree '))
+			.map((l) => path.resolve(l.slice('worktree '.length)));
+	} catch {
+		return [];
+	}
+};
+
+// A task's worktree. Before {repo} was in the default, every repository in one parent folder made its worktrees in the same
+// ../.worktrees: a worktree still there that git lists as this repository's own is the task's, so work in flight is resumed
+// where it is; anything else is <root>/<KEY>.
+export function worktreePath(repo, key, configured = get('git.worktreeRoot')) {
+	const fresh = path.join(worktreeRoot(repo, configured), key);
+	if (configured && configured !== DEFAULT_WORKTREE_ROOT) return fresh;
+	const legacy = path.join(path.resolve(mainCheckout(repo), LEGACY_WORKTREE_ROOT), key);
+	const mine = allWorktrees(repo).map(realOrSelf);
+	const want = (p) => mine.includes(realOrSelf(p));
+	if (!want(fresh) && want(legacy) && fs.existsSync(legacy)) return legacy;
+	return fresh;
+}
+
+// A new worktree goes in this repository's own folder: one made in the shared ../.worktrees could meet another repository's task of
+// the same key. A worktree already there that git lists as this repository's own is still used where it is.
+function refuseSharedFolder(repo, dest, configured = get('git.worktreeRoot')) {
+	if (configured && configured !== DEFAULT_WORKTREE_ROOT) return;
+	const abs = path.resolve(dest);
+	const legacy = path.resolve(mainCheckout(repo), LEGACY_WORKTREE_ROOT);
+	if (path.dirname(abs) !== legacy || abs === worktreeRoot(repo, configured)) return;
+	const mine = allWorktrees(repo).map(realOrSelf);
+	if (mine.includes(realOrSelf(abs))) return;
+	const right = path.join(worktreeRoot(repo, configured), path.basename(abs));
+	throw new BaseError(
+		`${abs} is in the folder every repository beside this one shares; use ${right} (worktree.mjs path --key ${path.basename(abs)}), nothing was changed`,
+		3,
+	);
+}
+
+// The folders a pass of this repository writes worktrees in: its root, and each of its own worktrees still in the shared folder an
+// older version used (never that whole folder, which holds other repositories' worktrees too).
+export function writableWorktreeFolders(repo, configured = get('git.worktreeRoot')) {
+	const root = worktreeRoot(repo, configured);
+	const legacy = path.resolve(mainCheckout(repo), LEGACY_WORKTREE_ROOT);
+	const out = [root];
+	if (!configured || configured === DEFAULT_WORKTREE_ROOT)
+		for (const w of allWorktrees(repo)) if (path.dirname(w) === legacy && w !== root) out.push(w);
+	return out;
+}
+
 if (isMain(import.meta.url)) {
 	const a = args(process.argv.slice(2));
 	const repo = a.repo || process.cwd();
@@ -323,15 +403,24 @@ if (isMain(import.meta.url)) {
 	try {
 		const cmd = a._[0];
 		if (cmd === 'default-branch') console.log(defaultBase);
-		else if (cmd === 'root') console.log(path.resolve(repo, get('git.worktreeRoot') || '../.worktrees'));
-		else if (cmd === 'resolve') console.log(JSON.stringify(resolveBase({ repo, name: a.base, defaultBase })));
-		else if (cmd === 'add' && a.branch && a.path)
-			console.log(JSON.stringify(addWorktree({ repo, branch: a.branch, name: a.base, defaultBase, dest: a.path })));
-		else if (cmd === 'attach' && a.branch && a.path) console.log(JSON.stringify(attachWorktree({ repo, branch: a.branch, dest: a.path })));
-		else if (cmd === 'parse' && a.file) {
+		else if (cmd === 'root') console.log(worktreeRoot(repo));
+		else if (cmd === 'path' && a.key) {
+			if (!/^[A-Za-z][A-Za-z0-9_]*-\d+$/.test(a.key)) throw new BaseError(`not a task key: ${a.key}`, 3);
+			console.log(worktreePath(repo, a.key));
+		} else if (cmd === 'resolve') console.log(JSON.stringify(resolveBase({ repo, name: a.base, defaultBase })));
+		else if ((cmd === 'add' || cmd === 'attach') && a.branch && (a.path || a.key)) {
+			if (a.key && !/^[A-Za-z][A-Za-z0-9_]*-\d+$/.test(a.key)) throw new BaseError(`not a task key: ${a.key}`, 3);
+			// --key: the script picks the worktree (worktree.mjs path), so no caller builds the path by hand
+			const dest = a.path || worktreePath(repo, a.key);
+			const out =
+				cmd === 'add'
+					? addWorktree({ repo, branch: a.branch, name: a.base, defaultBase, dest })
+					: attachWorktree({ repo, branch: a.branch, dest });
+			console.log(JSON.stringify(out));
+		} else if (cmd === 'parse' && a.file) {
 			const name = parseBase(fs.readFileSync(a.file, 'utf8'));
 			if (name) console.log(name);
-		} else throw new BaseError('usage: worktree.mjs resolve|add|attach|parse (see the header of this file)', 3);
+		} else throw new BaseError('usage: worktree.mjs resolve|add|attach|root|path|parse (see the header of this file)', 3);
 	} catch (e) {
 		console.error(`worktree: ${e.message}`);
 		process.exit(e instanceof BaseError ? e.code : 1);

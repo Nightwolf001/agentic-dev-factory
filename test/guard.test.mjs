@@ -74,6 +74,28 @@ test('direct tracker access and docker prune are denied', () => {
 	denied('docker volume prune -f');
 });
 
+// A reviewer's record quotes the code it read: `<` and `>` inside quotes are text, not redirects (two clean reviews were refused for
+// a summary that said 'API <version>' and findings that quoted `Promise<string>`). Outside quotes a redirect is still a write.
+test('a reviewer may record a review whose text has < or > inside quotes; a real redirect is still refused', () => {
+	const r = (c) => evaluate(c, { role: 'reviewer', branch: 'task/APP-12-fix-thing' });
+	for (const ok of [
+		`node dev-factory/bin/qa.mjs review record --axis spec --head abc --summary "shows 'API <version>' on success" --findings '[]'`,
+		`node dev-factory/bin/qa.mjs review record --axis standards --head abc --summary "x" --findings '[{"note":"type Props = { get: () => Promise<string> }"}]'`,
+		`node dev-factory/bin/qa.mjs review record --axis spec --head abc --summary "a \\"quoted\\" > word" --findings '[]'`,
+		`grep -n "a > b" app.js`,
+	])
+		assert.equal(r(ok).deny, false, ok);
+	for (const bad of [
+		`node dev-factory/bin/qa.mjs review record --axis spec --head abc --summary "x" --findings '[]' > out.txt`,
+		`echo "x" > file.txt`,
+		`echo 'x' >> file.txt`,
+		`cat "a" "b">c`,
+	]) {
+		const d = r(bad);
+		assert.equal(d.deny, true, bad);
+	}
+});
+
 test('a reviewer may read and record but not write, install or push', () => {
 	const r = (c) => evaluate(c, { role: 'reviewer', branch: 'task/APP-12-fix-thing' });
 	for (const ok of [
@@ -1604,4 +1626,74 @@ test('a factory agent runs run-context.mjs in no form at all; the scheduler runs
 	// its test file is not the file (the read-only roles run no tests under their own rules)
 	for (const role of ['builder', 'improver'])
 		assert.equal(evaluate('node --test test/run-context.test.mjs', { role, branch: 'task/APP-1-x', key: 'APP-1' }).deny, false, role);
+});
+
+// ---- quoted text is text: the false refusals of a pass that built two tasks at once ----
+
+test('a review record whose findings are JSON with braces, brackets, globs and backticks in quotes is judged as one record', () => {
+	const findings = JSON.stringify([
+		{ severity: 'Low', file: 'app/a.ts', line: 9, note: 'type Props = { get?: () => Promise<string> }; run `npx expo lint`' },
+		{
+			severity: 'Low',
+			file: 'app/b.ts',
+			line: 1,
+			note: 'the third test [empty] repeats the second, so it could be dropped' + ' and merged'.repeat(30),
+		},
+	]);
+	const cmd = `cd /w/TASK-1 && node dev-factory/bin/qa.mjs review record --worktree /w/TASK-1 --axis standards --head abc --summary "API <version> {a,b} *.ts" --findings '${findings}'`;
+	for (const role of ['reviewer', 'builder']) assert.equal(evaluate(cmd, { role, branch: 'task/APP-12-fix-thing' }).deny, false, role);
+});
+
+test('substitutions and env files are still found where the shell would see them', () => {
+	const r = (c, role = 'reviewer') => evaluate(c, { role, branch: 'task/APP-12-fix-thing' });
+	// in single quotes a backtick is text; in double quotes it runs
+	assert.equal(r(`grep -n 'run \`rm -rf x\`' notes.md`).deny, false);
+	assert.equal(r(`grep -n "run \`rm -rf x\`" notes.md`).deny, true);
+	assert.equal(r(`echo "$(cat .env)"`, 'builder').deny, true);
+	// a glob in quotes names no file, a quoted .env still names one
+	assert.equal(
+		evaluate(`sed -i '' "1s/.*/import { a, b } from '..\\/api';/" src/a.test.ts`, { role: 'builder', branch: 'task/APP-12-fix-thing' }).deny,
+		false,
+	);
+	assert.equal(r(`cat ".env"`, 'builder').deny, true);
+	assert.equal(r(`cat .env*`, 'builder').deny, true);
+	assert.equal(r(`cat '.env.loca?'`, 'builder').deny, true);
+});
+
+test('a push of the ticket branch with its output redirected is the ticket branch, not a push of "2>&1"', () => {
+	const b = (c) => evaluate(c, { role: 'builder', branch: 'feature/APP-1-x' }).deny;
+	assert.equal(b('git -C /w/APP-1 push --no-verify -u origin feature/APP-1-x 2>&1 | tail -5'), false);
+	assert.equal(b('git push -u origin feature/APP-1-x >/dev/null 2>&1'), false);
+	assert.equal(b('git push -u origin main 2>&1'), true, 'another branch is still refused');
+	assert.equal(b('git push -u origin feature/APP-1-x:main 2>&1'), true);
+});
+
+test("a reviewer may run the repository's tests and type check, never with snapshot updates, and nothing else new", () => {
+	const r = (c) => evaluate(c, { role: 'reviewer', branch: 'task/APP-12-fix-thing' }).deny;
+	for (const ok of [
+		'cd /w/APP-12/app && npx jest --ci 2>&1 | tail -30',
+		'cd /w/APP-12/api && npm test',
+		'cd /w/APP-12/app && npx tsc --noEmit',
+		'node --test test/a.test.js',
+		'docker compose -f /w/APP-12/compose.yml -p df-app-12 exec -T api npm test',
+	])
+		assert.equal(r(ok), false, ok);
+	for (const bad of ['npx jest -u', 'npx jest --updateSnapshot', 'npm install', 'npx prettier --write .', 'npm run build', 'npx tsc'])
+		assert.equal(r(bad), true, bad);
+});
+
+// With environment.type compose the tests run in the ticket's container: the command that runs them there is `docker compose ... exec
+// ... sh -c "npm test"`, whose inner `npm test` runs in the container, not on this machine. The mobile app has no container (the
+// device lane installs it here), so its folder is exempt.
+test('tests in the container and in the mobile app folder are allowed; host tests of a containerised service are not', () => {
+	const ctx = { role: 'builder', branch: 'feature/APP-1-x', containerOnly: true, service: 'api', hostDirs: ['/w/APP-1/app'] };
+	const b = (c) => evaluate(c, ctx).deny;
+	assert.equal(b('docker compose -f /w/APP-1/compose.yml -p df-app-1 exec -T api sh -c "cd /workspace/api && npm test" 2>&1 | tail -30'), false);
+	assert.equal(b("cd /w/APP-1 && docker compose -f compose.yml -p df-app-1 exec -T api sh -c 'npm test'"), false);
+	assert.equal(b('cd /w/APP-1/app && npx jest 2>&1 | tail -20'), false, 'the mobile app runs its tests here');
+	assert.equal(b('cd /w/APP-1/app/src && npm test'), false);
+	assert.equal(b('cd /w/APP-1/api && npm test'), true, 'the service has a container');
+	assert.equal(b('cd /w/APP-1/application && npm test'), true, 'a folder that only starts with the name is not it');
+	assert.equal(b('sh -c "npm test"'), true, 'a sh -c on this machine is not the container');
+	assert.equal(evaluate('cd /w/APP-1/app && npx jest', { ...ctx, hostDirs: [] }).deny, true, 'with no mobile app nothing is exempt');
 });

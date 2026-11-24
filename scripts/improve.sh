@@ -8,6 +8,9 @@ DIR="$(cd "$(dirname "$0")/.." && pwd)"
 REPO="$(df_repo)"; [ -n "$REPO" ] || { echo "dev-factory: run this from inside a git repository (or set DF_REPO)" >&2; exit 1; }
 STATE="$(df_state_dir)"; LOG="$(df_log_file improve)"
 mkdir -p "$STATE" "$(dirname "$LOG")"
+# every repository has a state folder of its own, so a pass here never waits on a pass in another repository; the session and every
+# script it starts read the same folder
+df_ensure_state_dir "$STATE"; export DF_STATE_DIR="$STATE"
 df_load_env
 # the pause switch (dev-factory scheduler off): scheduled passes stop here, manual runs go on; a dry run is a person's request, so it ignores the switch
 if [ "$DF_DRY_RUN" = 0 ] && [ "${DF_SCHEDULED:-}" = 1 ] && df_job_paused "$REPO" improve; then
@@ -37,6 +40,8 @@ bash "$DIR/scripts/doctor.sh" --ci >> "$LOG" 2>&1 || {
 # a dry run changes nothing, so it does not fetch
 [ "$DF_DRY_RUN" = 1 ] || git fetch origin "$(node "$DIR/scripts/worktree.mjs" default-branch)" --quiet >> "$LOG" 2>&1 || true
 
+# the worktree folder must exist before the settings name it, or the sandbox has no folder to allow writes in
+mkdir -p "$(node "$DIR/scripts/worktree.mjs" root 2>/dev/null || echo "$REPO/../.worktrees")" 2>/dev/null || true
 node "$DIR/scripts/factory-settings.mjs" "$STATE/settings.json" || {
   echo "$(date -u +%FT%TZ) could not build settings" >> "$LOG"
   [ "$DF_DRY_RUN" = 1 ] && echo "improve: dry run stopped: could not build the settings (log: $LOG)" >&2

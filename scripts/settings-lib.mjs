@@ -344,7 +344,11 @@ export function parseInput(row, text) {
 	}
 	if (row.type === 'number')
 		return t.trim() !== '' && Number.isFinite(Number(t)) ? { value: Number(t) } : { problem: `${row.id} must be a number` };
-	if (row.type === 'string') return t === '' ? { problem: `${row.id} is empty: d goes back to the default` } : { value: t };
+	// `null` switches a command off (no pods step for an app without CocoaPods), which an empty value cannot say: empty means the default
+	if (row.type === 'string')
+		return t === ''
+			? { problem: `${row.id} is empty: d goes back to the default, null switches it off` }
+			: { value: t.trim() === 'null' ? null : t };
 	if (row.type === 'list' && !t.trim().startsWith('[')) {
 		const items = t
 			.split(',')

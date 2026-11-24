@@ -447,6 +447,21 @@ export function validate(config) {
 		if (!/^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$/.test(sample))
 			problems.push("environment.directHost must be a host name, with {service} and {project} where the stack's own names go");
 	}
+	const directEnv = dig(config, 'environment.directEnv');
+	if (directEnv !== undefined) {
+		const text = (v) => typeof v === 'string' && v.length <= 2000 && !/[\0-\x1f\x7f]/.test(v) && !/\{(?!host\}|origin\})[^}]*\}/.test(v);
+		if (
+			!(
+				directEnv &&
+				typeof directEnv === 'object' &&
+				!Array.isArray(directEnv) &&
+				Object.entries(directEnv).every(([k, v]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k) && text(v))
+			)
+		)
+			problems.push(
+				"environment.directEnv must map variable names (letters, digits and _) to text of at most 2000 characters, with {host} and {origin} where the stack's own address goes",
+			);
+	}
 	const buildFiles = dig(config, 'environment.buildFiles');
 	if (buildFiles !== undefined && !(Array.isArray(buildFiles) && buildFiles.every((g) => typeof g === 'string' && g)))
 		problems.push('environment.buildFiles must be a list of globs');
@@ -506,10 +521,23 @@ export function validate(config) {
 	const ignoreAuthors = dig(config, 'tasks.ignoreCommentAuthors');
 	if (ignoreAuthors !== undefined && !(Array.isArray(ignoreAuthors) && ignoreAuthors.every((a) => typeof a === 'string' && a.trim())))
 		problems.push('tasks.ignoreCommentAuthors must be a list of comment author ids or names');
+	const portsSetting = dig(config, 'environment.ports');
+	if (portsSetting !== undefined && !['auto', 'canonical', 'direct', 'none'].includes(portsSetting))
+		problems.push('environment.ports must be auto, canonical, direct or none');
 	const platform = dig(config, 'mobile.platform');
 	if (platform !== undefined && !['ios', 'android'].includes(platform))
 		problems.push('mobile.platform must be ios or android (leave it unset to infer it from the ticket)');
-	for (const k of ['mobile.androidAvd', 'mobile.iosAutofillOff', 'mobile.androidBuild', 'mobile.appId']) {
+	for (const k of [
+		'mobile.androidAvd',
+		'mobile.iosAutofillOff',
+		'mobile.androidBuild',
+		'mobile.appId',
+		'mobile.androidAppId',
+		'mobile.deviceSetup',
+		'mobile.androidDeviceSetup',
+		'mobile.open',
+		'mobile.androidOpen',
+	]) {
 		const v = dig(config, k);
 		if (v != null && (typeof v !== 'string' || !v)) problems.push(`${k} must be a non-empty string or null`);
 	}

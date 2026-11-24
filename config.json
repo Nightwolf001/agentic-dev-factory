@@ -89,7 +89,7 @@
 			"chore": "task",
 			"improvement": "improvement"
 		},
-		"worktreeRoot": "../.worktrees",
+		"worktreeRoot": "../.worktrees/{repo}",
 		"skipCommitHooks": false
 	},
 	"pr": {
@@ -159,7 +159,9 @@
 		"readyTimeout": 900,
 		"pingUrl": null,
 		"webBaseUrl": null,
+		"ports": "auto",
 		"directHost": "{service}.{project}.orb.local",
+		"directEnv": {},
 		"submodules": [],
 		"buildFiles": [],
 		"preCommit": null
@@ -196,6 +198,11 @@
 		"build": "yarn ios --udid {udid} --port {port}",
 		"nativeInputs": ["ios/Podfile.lock", "ios/*.xcodeproj/project.pbxproj"],
 		"appId": null,
+		"androidAppId": null,
+		"deviceSetup": null,
+		"androidDeviceSetup": null,
+		"open": null,
+		"androidOpen": null,
 		"clientLogs": true,
 		"iosAutofillOff": null,
 		"androidAvd": null,

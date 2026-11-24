@@ -95,8 +95,31 @@ function splitTop(command) {
 
 // Command substitutions (balanced, so $(a $(b)) yields the outer text and the recursion in segments() reaches the inner)
 // and `sh -c` payloads run as commands of their own, so each is judged on its own.
-function nested(command) {
+// The command with the text inside single quotes blanked out (same length): `$(...)` and backticks are literal there, so a review
+// finding that quotes `npx expo lint` is not a command. Inside double quotes they still run, so those are kept.
+export function maskSingleQuoted(command) {
+	let out = '';
+	let dq = false;
+	for (let i = 0; i < command.length; i++) {
+		const c = command[i];
+		if (c === '\\' && i + 1 < command.length) {
+			out += c + command[++i];
+		} else if (c === '"') {
+			dq = !dq;
+			out += c;
+		} else if (c === "'" && !dq) {
+			const end = command.indexOf("'", i + 1);
+			if (end < 0) return out + command.slice(i);
+			out += "'" + ' '.repeat(end - i - 1) + "'";
+			i = end;
+		} else out += c;
+	}
+	return out;
+}
+
+function nested(raw) {
 	const out = [];
+	const command = maskSingleQuoted(raw);
 	for (let i = 0; i < command.length - 1; i++) {
 		if (command[i + 1] !== '(' || !'$<>'.includes(command[i])) continue;
 		let depth = 1;
@@ -106,7 +129,7 @@ function nested(command) {
 		i = j - 1;
 	}
 	for (const m of command.matchAll(/`([^`]*)`/g)) out.push(m[1]);
-	for (const m of command.matchAll(/\b(?:ba|z|da|k)?sh\s+(?:-\w+\s+)*-\w*c\s+(?:'([^']*)'|"([^"]*)")/g)) out.push(m[1] ?? m[2]);
+	for (const m of raw.matchAll(/\b(?:ba|z|da|k)?sh\s+(?:-\w+\s+)*-\w*c\s+(?:'([^']*)'|"([^"]*)")/g)) out.push(m[1] ?? m[2]);
 	return out;
 }
 
@@ -230,7 +253,8 @@ const runsRunContext = (cmd, args) => {
 
 // -> { cmd, args, tokens }: the command a segment really runs, past wrappers, with its basename.
 function invocation(seg) {
-	const tokens = tokenize(seg).map(shellUnquote);
+	const raw = tokenize(seg);
+	const tokens = raw.map(shellUnquote);
 	let t = tokens;
 	for (;;) {
 		while (t.length && /^\w+=/.test(t[0])) t = t.slice(1);
@@ -240,7 +264,8 @@ function invocation(seg) {
 		while (t.length && (t[0].startsWith('-') || /^\w+=/.test(t[0]))) t = WRAPPERS[head].includes(t[0]) ? t.slice(2) : t.slice(1);
 		if (head === 'timeout' && /^\d/.test(t[0] ?? '')) t = t.slice(1);
 	}
-	return { cmd: base(t[0] ?? ''), args: t.slice(1), tokens, head: t[0] ?? '' };
+	// raw: the same words as written, quotes kept, for the path checks (a glob or a brace list in quotes is text)
+	return { cmd: base(t[0] ?? ''), args: t.slice(1), tokens, raw, head: t[0] ?? '' };
 }
 
 const GIT_VALUE_OPTS = new Set([
@@ -313,7 +338,8 @@ function denyGit(args, ctx, seg) {
 		if (remote !== undefined && !/^[A-Za-z0-9_-]+$/.test(remote))
 			return `git push goes to a configured remote by name, not to ${remote.slice(0, 40)}`;
 		if (!ctx.branch) return 'a push needs a known ticket branch; the scheduler does not push';
-		const refspecs = rest.filter((a) => !a.startsWith('-')).slice(1);
+		// a redirection (2>&1, >log, 2>/dev/null) is the shell's, not a refspec git is given
+		const refspecs = rest.filter((a) => !a.startsWith('-') && !/^\d*(>>?|<)(&\d+|&-)?/.test(a)).slice(1);
 		for (const r of refspecs) {
 			if (r.startsWith(':')) return 'deleting a remote ref is not allowed';
 			const target = r.includes(':') ? r.split(':')[1] : r;
@@ -716,7 +742,9 @@ function listsByEnv(tokens) {
 
 function denyCommon(seg, tokens, cmd, vars, ctxRole) {
 	// by name as written, and by name as the shell would build it: quotes, case, globs such as .env.loca? and brace lists
-	if (ENV_FILE.test(seg) || tokens.some((t) => namesEnvFile(t, vars))) return 'env files hold credentials and are not readable from the shell';
+	// the words as written, quotes kept: a glob in quotes is text (sed's "1s/.*/x/" names no file), while ".env" in quotes still does
+	if (ENV_FILE.test(seg) || tokenize(seg).some((t) => namesEnvFile(t, vars)))
+		return 'env files hold credentials and are not readable from the shell';
 	if (cmd === 'eval') return 'eval is not allowed';
 	// the QA account of a remote environment is in the pass's environment so that qa-login.sh and the cases can use it; a run does not print it
 	if (FACTORY_ROLES.has(ctxRole)) {
@@ -761,6 +789,13 @@ const REVIEWER_ALLOWED = [
 	/^find\b(?!.*\s-(delete|exec|execdir|ok|okdir|fprint\w*|fls)\b)/,
 ];
 
+// A reviewer also runs the repository's tests, so a review rests on a run and not only on the builder's word.
+const REVIEWER_EXTRA = [
+	// the repository's own test runners and type check, on this machine or in the ticket's devcontainer. Jest never writes snapshots here (--ci is added by the agent file; -u is refused).
+	/^(?!.*\s(-u|--updateSnapshot|--update)(\s|=|$))(npx\s+(jest|vitest(\s+run)?|tsc\s+--noEmit)|npm\s+(test|run\s+test\S*)|node\s+--test|yarn\s+(test|jest|vitest))(\s|$)/,
+	/^docker\s+compose\s+(-f\s+\S+\s+)*(-p\s+\S+\s+)?exec\s+-T\s+(-u\s+\S+\s+)?(-w\s+\S+\s+)?[A-Za-z][\w.-]*\s+(npx\s+(vitest|jest|tsc\s+--noEmit)|npm\s+(test|run\s+test\S*)|node\s+--test|yarn\s+(test|vitest|jest))\b(?!.*\s(-u|--updateSnapshot|--update)(\s|=|$))/,
+];
+
 // A debugger also reads the ticket's own stack (compose ps and logs, pm2 logs and process list, curl against
 // localhost and *.local / *.test hosts) and records through qa.mjs debug and scrub. It still never edits, installs or pushes.
 const DEBUGGER_EXTRA = [
@@ -776,9 +811,15 @@ const CURL_WRITE = /\s(-X|--request|-d|--data\S*|-F|--form|-T|--upload-file|-o|-
 // Substitution, process substitution and variables run or read things the allowlist never saw; single quotes are literal.
 const EXPANSION = /\$\(|\$\{|\$[A-Za-z_]|`|<\(|>\(/;
 
+// The segment with the text of every quoted string removed (single quotes are literal; a double-quoted string ends at a quote
+// that is not escaped), so the checks that follow see only what the shell itself reads as syntax.
+export const unquoted = (seg) => String(seg).replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, "''");
+
 function denyForReadOnly(seg, extra = []) {
 	if (EXPANSION.test(seg.replace(/'[^']*'/g, "''"))) return 'shell expansion is not allowed for this role';
-	if (/(^|[^2&])>{1,2}\s*[^&\s]/.test(seg.replace(/\d?>\s*\/dev\/null/g, ''))) return 'this role does not write files';
+	// a redirect is only one the shell sees: a `<` or `>` inside quotes is text (a review summary quoting `'API <version>'` or
+	// `Promise<string>`), and refusing it made a reviewer's record of a clean review fail
+	if (/(^|[^2&])>{1,2}\s*[^&\s]/.test(unquoted(seg).replace(/\d?>\s*\/dev\/null/g, ''))) return 'this role does not write files';
 	if (/\bsed\b.*\s-i/.test(seg)) return 'this role does not edit files';
 	if (/^curl\b/.test(seg) && CURL_WRITE.test(seg)) return 'curl is read-only here: no method override, body or output file';
 	if (/^git\b/.test(seg) && /(^|\s)(--output\b|-O\S*|--open-files-in-pager\b|--ext-diff\b|--textconv\b)/.test(seg))
@@ -944,6 +985,7 @@ const MACHINE_WHY = {
 // -> a reason, or null. `st` carries the directory the command is in and the variables paths are built from.
 function denyMachinePaths(seg, inv, ctx, st) {
 	const { cmd, args, tokens, head } = inv;
+	const raw = inv.raw && inv.raw.length === tokens.length ? inv.raw : tokens;
 	const hits = [];
 	let runState = false;
 	let runStateDir = false;
@@ -952,7 +994,7 @@ function denyMachinePaths(seg, inv, ctx, st) {
 	let underProjectDir = cmd === 'ln' && hasProjectDir(st.cwd);
 	const writer = FILE_WRITERS.has(cmd);
 	// the message of a commit or of PR text is prose, not a path
-	const words = writesText(cmd, args) ? stripMessages(cmd, tokens) : tokens;
+	const words = writesText(cmd, args) ? stripMessages(cmd, tokens, raw) : raw;
 	let prev = '';
 	for (const tok of words) {
 		// a bare word is a file name for a command that changes the files it is given, and after a redirection
@@ -974,7 +1016,8 @@ function denyMachinePaths(seg, inv, ctx, st) {
 			}
 			// the scheduler's own passes keep their state; only a factory agent is kept out of it
 			if (place === 'state' && !FACTORY_ROLES.has(ctx.role)) continue;
-			if (place) hits.push({ tok, place });
+			// recorded as the shell passes it on, so it compares with the command's own (unquoted) script and launcher words
+			if (place) hits.push({ tok: shellUnquote(tok), place });
 			else if (ancestorOfProtected(abs, ctx)) ancestor = true;
 		}
 	}
@@ -1022,8 +1065,8 @@ function denyMachinePaths(seg, inv, ctx, st) {
 // only print or search text are not reaching anything, and the quoted message of a commit or of PR/issue text may mention a
 // tracker's address; a `$(...)` inside it is judged on its own as a command.
 const TRACKER_HOSTS = ['atlassian.net', 'api.notion.com', 'notion.so'];
-const TEXT_OPTION = /^(--message|--body|--title|--subject|--notes|--description)$/;
-const TEXT_ATTACHED = /^(--(message|body|title|subject|notes|description)=|-[mbt].)/;
+const TEXT_OPTION = /^(--message|--body|--title|--subject|--notes|--description|--summary|--findings)$/;
+const TEXT_ATTACHED = /^(--(message|body|title|subject|notes|description|summary|findings)=|-[mbt].)/;
 const hostRegex = (h) => new RegExp(`(^|[^a-z0-9-])${h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![a-z0-9-]|\\.[a-z0-9])`, 'i');
 
 function writesText(cmd, args) {
@@ -1035,16 +1078,22 @@ function writesText(cmd, args) {
 			['create', 'edit', 'comment', 'review', 'close', 'reopen', 'merge', 'ready'].includes(p[1])
 		);
 	}
+	// a review record's summary and findings are prose that quotes the code (`Promise<string>`, `[{...}]`), not paths
+	if (cmd === 'node') {
+		const at = args.findIndex((a) => /(^|\/)qa\.mjs$/.test(a));
+		return at >= 0 && args[at + 1] === 'review' && args[at + 2] === 'record';
+	}
 	return false;
 }
 
-// the tokens of a commit or PR/issue text command without the values of its message options
-function stripMessages(cmd, tokens) {
+// the tokens of a commit or PR/issue text command without the values of its message options; `out` is the list the kept words
+// are taken from (the raw words, quotes kept), judged by `tokens`
+function stripMessages(cmd, tokens, out = tokens) {
 	const short = cmd === 'git' ? /^-[A-Za-z]*m$/ : /^-[bt]$/;
 	const words = [];
 	for (let i = 0; i < tokens.length; i++) {
 		if (TEXT_OPTION.test(tokens[i]) || short.test(tokens[i])) i++;
-		else if (!TEXT_ATTACHED.test(tokens[i])) words.push(tokens[i]);
+		else if (!TEXT_ATTACHED.test(tokens[i])) words.push(out[i]);
 	}
 	return words;
 }
@@ -1216,7 +1265,10 @@ const TAKEOVER_REFUSAL =
 	'dev-factory guard: takeover is switched on by the machine owner (DF_TAKEOVER in the environment the scheduler starts with), not by an agent';
 const UNJUDGEABLE = (why) => ({ deny: true, reason: `dev-factory guard: this command cannot be judged (${why}); split it into smaller commands` });
 
-// ctx: branch, key (the ticket, which names the one folder of scratch QA cases in .devfactory/ the run may write), role, containerOnly, service, noAttribution, takeover, plus for the path rules cwd (the directory the command
+// Whether `cwd` is inside one of the folders whose dependencies and tests are this machine's (the mobile app: there is no container)
+const inHostDir = (cwd, dirs = []) => dirs.some((d) => cwd === d || String(cwd).startsWith(d.replace(/\/$/, '') + '/'));
+
+// ctx: branch, key (the ticket, which names the one folder of scratch QA cases in .devfactory/ the run may write), role, containerOnly, hostDirs (absolute folders exempt from containerOnly), service, noAttribution, takeover, plus for the path rules cwd (the directory the command
 // starts in), home, stateDir and env (default: the process's), and trackerHosts (hosts beyond the built-in ones).
 export function evaluate(command, ctx = {}) {
 	try {
@@ -1251,6 +1303,9 @@ function judge(command, ctx) {
 	if (segs.length > LIMITS.segments) throw new Unjudgeable(`more than ${LIMITS.segments} commands`);
 	const { home, stateDir } = envOf(ctx);
 	const st = { cwd: ctx.cwd || process.cwd(), vars: { HOME: home, DF_STATE_DIR: stateDir, PWD: ctx.cwd || process.cwd() } };
+	// a segment nested in `docker compose ... exec ... sh -c '...'` runs inside the container, which is where the tests belong
+	const execsIn = segs.slice(0, found.own).some((s) => /^docker\s+(compose\s+(\S+\s+)*?)?exec\b/.test(s));
+	const runsInContainer = (index) => execsIn && index >= found.own;
 	for (const [index, seg] of segs.entries()) {
 		check();
 		const inv = invocation(seg);
@@ -1288,7 +1343,7 @@ function judge(command, ctx) {
 			}
 		}
 		if (readOnly) {
-			const why = denyForReadOnly(seg, ctx.role === 'debugger' ? DEBUGGER_EXTRA : []);
+			const why = denyForReadOnly(seg, ctx.role === 'debugger' ? DEBUGGER_EXTRA : REVIEWER_EXTRA);
 			if (why) return deny(why);
 			continue;
 		}
@@ -1328,6 +1383,8 @@ function judge(command, ctx) {
 		if (
 			!reason &&
 			ctx.containerOnly &&
+			!runsInContainer(index) &&
+			!inHostDir(st.cwd, ctx.hostDirs) &&
 			/^(npm\s+(--prefix\s+\S+\s+)?(install|i|ci|test|run\s+test)\b|npx\s+(vitest|jest|playwright\s+test)\b|yarn\s+(--cwd\s+\S+\s+)?(test|jest|vitest)\b|pnpm\s+(install|i|test|run\s+test|jest|vitest)\b)/.test(
 				body,
 			)

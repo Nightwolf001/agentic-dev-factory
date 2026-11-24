@@ -338,6 +338,31 @@ test('environment.directHost defaults to the engine naming and is a host name wi
 		);
 });
 
+test('environment.directEnv defaults to nothing and is a map of variable names to text with {host} and {origin}', () => {
+	assert.deepEqual(load().environment.directEnv, {});
+	assert.deepEqual(validate(load()), []);
+	for (const good of [{}, { A_B1: 'http://{host}:1337' }, { CORS_ORIGIN: '{origin},http://{host}:3000' }, { _X: 'plain', Y: '' }])
+		assert.deepEqual(withSetting('environment.directEnv', good), [], JSON.stringify(good));
+	for (const bad of [
+		[],
+		'x',
+		5,
+		{ 'bad-name': 'x' },
+		{ '1A': 'x' },
+		{ 'A B': 'x' },
+		{ A: 5 },
+		{ A: null },
+		{ A: 'line\nbreak' },
+		{ A: 'nul\0' },
+		{ A: 'http://{unknown}' },
+		{ A: 'x'.repeat(2001) },
+	])
+		assert.ok(
+			withSetting('environment.directEnv', bad).some((p) => p.includes('environment.directEnv')),
+			JSON.stringify(bad),
+		);
+});
+
 test('tasks.questionLabel is a label name that differs from the blocked label', () => {
 	assert.deepEqual(withSetting('tasks.questionLabel', 'needs-answer'), []);
 	for (const bad of ['has space', 'semi;colon', '', 7])

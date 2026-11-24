@@ -38,7 +38,7 @@ status() {
   echo "repository: $REPO"; echo "scheduler:  $SCHED ($RUNTIME)"
   local any=0 j
   for j in tick improve; do
-    if [ -f "$(pause_of $j)" ] || [ -f "$LEGACY_PAUSE" ]; then echo "pause switch $j: ON (its scheduled passes do nothing)"; any=1; fi
+    if df_job_paused "$REPO" $j; then echo "pause switch $j: ON (its scheduled passes do nothing)"; any=1; fi
   done
   [ $any = 1 ] || echo "pause switch: off"
   echo "tick interval: every $(df_interval_minutes) minutes (scheduler.intervalMinutes)"
@@ -69,7 +69,7 @@ refuse_improve_actions() {
 
 turn_off() {
   refuse_improve_actions stop
-  mkdir -p "$STATE"; for j in $jobs; do : > "$(pause_of $j)"; done
+  mkdir -p "$(df_machine_dir)"; for j in $jobs; do : > "$(pause_of $j)"; done
   case "$SCHED" in
     launchd) for j in $jobs; do if loaded $j; then launchctl bootout "gui/$UID_/$(label $j)" 2>/dev/null && echo "stopped $j"; else echo "$j was not running"; fi; done ;;
     github-actions) gh workflow disable "$WORKFLOW" && echo "disabled workflow $WORKFLOW" ;;
@@ -82,7 +82,11 @@ turn_off() {
 turn_on() {
   refuse_improve_actions start
   # the older switch paused both jobs: turning one on must leave the other paused, so it becomes a switch per job
-  if [ -f "$LEGACY_PAUSE" ]; then rm -f "$LEGACY_PAUSE"; for j in tick improve; do : > "$(pause_of $j)"; done; fi
+  # (an older install kept an isolated repository's switches in its own folder: they move to the machine folder the same way)
+  OWN_PAUSE="$(df_own_paused_file "$REPO")"
+  for j in tick improve; do [ -f "$OWN_PAUSE.$j" ] && : > "$(pause_of $j)"; done
+  if [ -f "$LEGACY_PAUSE" ] || [ -f "$OWN_PAUSE" ]; then rm -f "$LEGACY_PAUSE" "$OWN_PAUSE"; for j in tick improve; do : > "$(pause_of $j)"; done; fi
+  rm -f "$OWN_PAUSE.tick" "$OWN_PAUSE.improve"
   for j in $jobs; do rm -f "$(pause_of $j)"; done
   case "$SCHED" in
     launchd)

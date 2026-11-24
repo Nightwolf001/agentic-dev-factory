@@ -11,6 +11,7 @@ import { get, layers, load } from './config.mjs';
 import { isMain } from './is-main.mjs';
 import { takeoverOn } from './takeover.mjs';
 import { allowRules, catalog, claudeListing, desired, externalServers, mainCheckout, readProject } from './mcp.mjs';
+import { writableWorktreeFolders } from './worktree.mjs';
 
 const BASE = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'settings.factory.json');
 
@@ -30,6 +31,7 @@ export function build({
 	want = desired(layers({ from: root, env }), cat),
 	external = [],
 	state = env.DF_STATE_DIR || path.join(os.homedir(), '.dev-factory'),
+	worktreeFolders = null,
 } = {}) {
 	const out = JSON.parse(JSON.stringify(base));
 	const domains = new Set(out.sandbox?.network?.allowedDomains ?? []);
@@ -42,16 +44,48 @@ export function build({
 		if (site) domains.add(site);
 	}
 	for (const d of get('sandbox.extraDomains', { config: cfg }) ?? []) domains.add(d);
+	// a direct stack is reached at its own address ({service}.{project}.orb.local by default): QA probes and tests call it from the sandbox
+	const directHost = String(get('environment.directHost', { config: cfg }) ?? '');
+	const suffix = /\.([a-z0-9-]+(\.[a-z0-9-]+)*)$/i.exec(directHost.replace(/\{[^}]*\}/g, 'x'))?.[1];
+	if (get('environment.type', { config: cfg }) === 'compose' && suffix && suffix.includes('.'))
+		domains.add(`*.${suffix.split('.').slice(-2).join('.')}`);
 	// null leaves the base file's choice; a cloud environment that supplies its own sandbox can switch ours off
 	const sandboxOn = get('sandbox.enabled', { config: cfg });
 	if (typeof sandboxOn === 'boolean') out.sandbox.enabled = sandboxOn;
 	out.sandbox.network.allowedDomains = [...domains];
+	// the repository's tests start servers on this machine's loopback (node --test, jest with supertest): a reviewer runs them here
+	out.sandbox.network.allowLocalBinding = true;
 	// the pass keeps its locks, live-stack records and agent bindings (`agents/`) in the state folder, and e2e-env.sh (run outside the sandbox) writes there too
-	out.sandbox.filesystem = { ...out.sandbox.filesystem, allowWrite: [...new Set([...(out.sandbox.filesystem?.allowWrite ?? []), state])] };
+	// and every agent writes in its task's worktree, which lives outside the repository (git.worktreeRoot): without it a builder's
+	// test file or a hand-off written from the shell failed, and the agent's retry with the sandbox off was refused
+	const worktrees = worktreeFolders ?? writableWorktreeFolders(root, get('git.worktreeRoot', { config: cfg }));
+	out.sandbox.filesystem = {
+		...out.sandbox.filesystem,
+		allowWrite: [...new Set([...(out.sandbox.filesystem?.allowWrite ?? []), state, ...worktrees])],
+	};
+	// and the session treats them as its own working directories, so a command that writes there is not a prompt (a pass has no one
+	// to answer one: it would be refused)
+	out.permissions = {
+		...out.permissions,
+		additionalDirectories: [...new Set([...(out.permissions?.additionalDirectories ?? []), ...worktrees])],
+	};
 	// takeover: stopping a process or a session outside the sandbox needs those commands to run outside it (the guard still refuses the protected targets)
 	if (takeoverOn({ env })) out.sandbox.excludedCommands = [...new Set([...(out.sandbox.excludedCommands ?? []), ...TAKEOVER_EXCLUDED])];
+	out.sandbox.excludedCommands = withQuotedForms(out.sandbox.excludedCommands ?? []);
 	out.permissions.allow = [...new Set([...out.permissions.allow, ...allowRules(mcpFile, [...wanted, ...external])])];
 	return out;
+}
+
+// The commands name a script by its quoted path (`node "${CLAUDE_PLUGIN_ROOT}/scripts/open-prs.mjs"`), and the sandbox's pattern
+// `node *open-prs.mjs*` does not match a quoted word, so the script ran inside the sandbox, where its own network calls fail ("fetch
+// failed": the open-PR count was unknown and the pass claimed nothing). Each `<program> *<script>*` pattern also gets its quoted forms.
+export function withQuotedForms(patterns) {
+	const out = [...patterns];
+	for (const p of patterns) {
+		const m = /^(\S+) \*([^*\s"]+)\*$/.exec(p);
+		if (m) out.push(`${m[1]} "*${m[2]}"`, `${m[1]} "*${m[2]}" *`);
+	}
+	return [...new Set(out)];
 }
 
 if (isMain(import.meta.url)) {

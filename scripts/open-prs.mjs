@@ -11,7 +11,7 @@ import { execFileSync } from 'node:child_process';
 import { get, load } from './config.mjs';
 import { isMain } from './is-main.mjs';
 import { makeSource } from './sources/index.mjs';
-import { loadTrackerEnv } from './state-env.mjs';
+import { loadTrackerEnv, sandboxNote } from './state-env.mjs';
 
 export const AT_CAP = 20;
 export const UNKNOWN = 21;
@@ -48,7 +48,8 @@ if (isMain(import.meta.url)) {
 		console.log(JSON.stringify({ ...r, max }));
 		process.exit(r.open >= max ? AT_CAP : 0);
 	} catch (e) {
-		console.log(JSON.stringify({ open: 'unknown', error: String(e.message).split('\n')[0] }));
+		const note = sandboxNote('open-prs.mjs');
+		console.log(JSON.stringify({ open: 'unknown', error: String(e.message).split('\n')[0], ...(note ? { note } : {}) }));
 		process.exit(UNKNOWN);
 	}
 }

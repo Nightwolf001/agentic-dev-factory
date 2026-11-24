@@ -151,18 +151,25 @@ exit 0`,
 		'emulator',
 		`case "$1" in
   -list-avds) echo Pixel_API_34; echo Other_AVD ;;
-  -avd) echo "emulator $*" >> "${calls}"; echo "emulator-5554 device" >> "${devices}"; echo "$2" > "${home}/avd-emulator-5554" ;;
+  -avd) echo "emulator $*" >> "${calls}"; n=$(grep -c . "${devices}" 2>/dev/null); s="emulator-$((5554 + 2 * \${n:-0}))"; echo "$s device" >> "${devices}"; echo "$2" > "${home}/avd-$s" ;;
 esac
 exit 0`,
 	);
 	stub('curl', 'case "$*" in *"/status"*) echo packager-status:running ;; *) : ;; esac; echo "curl $*" >> "' + calls + '"; exit 0');
 	stub('lsof', 'exit 0');
+	// the proxy to a container port: the sandbox the tests run in has no network, so a stub that answers with a host port
+	stub(
+		'proxy',
+		`echo "proxy $*" >> "${calls}"; while [ $# -gt 0 ]; do [ "$1" = --port-file ] && f="$2"; shift; done; n=$(ls "${home}"/proxy-port-* 2>/dev/null | wc -l | tr -d ' '); touch "${home}/proxy-port-$n"; echo $((41001 + n)) > "$f"; exec sleep 60`,
+	);
 	stub('xcodebuild', `echo "Xcode \${DF_TEST_XCODE:-15.4}"`);
 	stub(
 		'xcrun',
 		`echo "xcrun $*" >> "${calls}"
 case "$1 $2" in
-  "simctl list") echo '{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-17-5":[{"name":"iPhone 16","udid":"UDID-1","state":"Booted"}]}}' ;;
+  "simctl list") echo '{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-17-5":[{"name":"iPhone 16","udid":"UDID-1","state":"Booted","deviceTypeIdentifier":"com.apple.CoreSimulator.SimDeviceType.iPhone-16"}'"$(cat "${home}/created" 2>/dev/null)"']}}' ;;
+  "simctl create") n=$(( $(grep -c udid "${home}/created" 2>/dev/null || echo 0) + 2 )); printf ',{"name":"%s","udid":"UDID-%s","state":"Shutdown","deviceTypeIdentifier":"%s"}' "$3" "$n" "$4" >> "${home}/created"; echo "UDID-$n" ;;
+  "simctl get_app_container") [ -f "${home}/installed-$3" ]; exit $? ;;
 esac
 exit 0`,
 	);
@@ -173,12 +180,25 @@ exit 0`,
 		DF_STATE_DIR: path.join(home, 'state'),
 		DF_MOBILE_PLATFORM: '',
 		ANDROID_SDK_ROOT: path.join(home, 'sdk'),
+		DF_PORT_PROXY: path.join(bin, 'proxy'),
 		...env,
 	};
 	const run = (...a) => spawnSync('bash', [MOBILE, ...a, '--worktree', wt], { encoding: 'utf8', env: runEnv, cwd: wt, timeout: 60000 });
+	// a second worktree of the same repository on the same machine: another task built at the same time
+	const another = (name) => {
+		const w = path.join(home, name);
+		fs.cpSync(wt, w, { recursive: true });
+		for (const f of ['metro.pid', 'emulator.pid']) fs.rmSync(path.join(w, '.dev-factory', f), { force: true });
+		fs.writeFileSync(path.join(w, '.dev-factory/env.json'), JSON.stringify({ project: `df-${name}`, mode: 'device', ...record }));
+		return {
+			wt: w,
+			run: (...a) => spawnSync('bash', [MOBILE, ...a, '--worktree', w], { encoding: 'utf8', env: runEnv, cwd: w, timeout: 60000 }),
+			envJson: () => JSON.parse(fs.readFileSync(path.join(w, '.dev-factory/env.json'), 'utf8')),
+		};
+	};
 	const log = () => (fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8') : '');
 	const envJson = () => JSON.parse(fs.readFileSync(path.join(wt, '.dev-factory/env.json'), 'utf8'));
-	return { home, wt, run, log, envJson, devices, runEnv, state: path.join(home, 'state') };
+	return { home, wt, run, log, envJson, devices, runEnv, another, state: path.join(home, 'state') };
 }
 
 test('Android: boots the AVD headless, reverses the ports, builds with the serial, records the device and no pods run', () => {
@@ -458,4 +478,124 @@ test('--record writes run.json whole: no temporary file is left and the content 
 		platform: 'android',
 	});
 	assert.deepEqual(fs.readdirSync(path.join(dir, '.dev-factory')), ['run.json']);
+});
+
+// ---- several tasks at once: a Metro port, a device and backend ports of each run's own ----
+
+test('iOS: a second task at the same time gets the next Metro port and a simulator of its own, made once and kept', () => {
+	const l = lane({ platform: 'ios' });
+	const b = l.another('wt-b');
+	assert.equal(l.run('up').status, 0);
+	const second = b.run('up');
+	assert.equal(second.status, 0, second.stderr);
+	assert.equal(l.envJson().device.metroPort, 8081);
+	assert.equal(b.envJson().device.metroPort, 8082, 'counting up from mobile.metroPort');
+	assert.equal(l.envJson().device.udid, 'UDID-1');
+	assert.match(
+		l.log(),
+		/xcrun simctl create iPhone 16 df2 com\.apple\.CoreSimulator\.SimDeviceType\.iPhone-16 com\.apple\.CoreSimulator\.SimRuntime\.iOS-17-5/,
+	);
+	assert.equal(b.envJson().device.udid, 'UDID-2');
+	assert.match(l.log(), /ios-build UDID-2 8082/, 'its build and Metro use its own port and device');
+	assert.equal(b.envJson().device.name, 'iPhone 16 df2', 'the evidence names the device actually used');
+	// the first task ends: its port and device are free again, and the copy is reused rather than made again
+	assert.equal(l.run('down').status, 0);
+	assert.equal(b.run('down').status, 0);
+	const c = l.another('wt-c');
+	assert.equal(c.run('up').status, 0);
+	assert.equal(c.envJson().device.metroPort, 8081);
+	assert.equal(c.envJson().device.udid, 'UDID-1');
+	assert.equal((l.log().match(/simctl create/g) ?? []).length, 1);
+	c.run('down');
+});
+
+test('Android: a second task boots a read-only instance of the AVD and is reversed to its own Metro port', () => {
+	const l = lane({ platform: 'android' });
+	const b = l.another('wt-b');
+	assert.equal(l.run('up').status, 0);
+	const second = b.run('up');
+	assert.equal(second.status, 0, second.stderr);
+	assert.equal(l.envJson().device.serial, 'emulator-5554');
+	assert.equal(b.envJson().device.serial, 'emulator-5556');
+	assert.match(l.log(), /emulator -avd Pixel_API_34 .*-read-only/, 'the emulator allows one writable instance per AVD');
+	assert.match(l.log(), /adb -s emulator-5556 reverse tcp:8082 tcp:8082/);
+	assert.match(l.log(), /adb -s emulator-5556 reverse tcp:8081 tcp:8082/, 'a dev build that looks for Metro on 8081 reaches its own');
+	assert.doesNotMatch(l.log(), /adb -s emulator-5554 reverse tcp:\d+ tcp:8082/, 'the first emulator is never pointed at the second task');
+	l.run('down');
+	b.run('down');
+});
+
+test('a claim whose worktree no longer runs Metro is left over and is taken; a live one is not', () => {
+	const l = lane({ platform: 'ios' });
+	const b = l.another('wt-b');
+	assert.equal(l.run('up').status, 0);
+	// the first task died without a teardown, long ago: its Metro is gone and the grace period is over
+	process.kill(Number(fs.readFileSync(path.join(l.wt, '.dev-factory/metro.pid'), 'utf8')));
+	const second = b.run('up');
+	assert.equal(second.status, 0, second.stderr);
+	assert.equal(b.envJson().device.metroPort, 8082, 'within the grace period the claim stands');
+	b.run('down');
+	const old = spawnSync('bash', [MOBILE, 'up', '--worktree', b.wt], {
+		encoding: 'utf8',
+		env: { ...l.runEnv, DF_CLAIM_GRACE_SECONDS: '0' },
+		cwd: b.wt,
+		timeout: 60000,
+	});
+	assert.equal(old.status, 0, old.stderr);
+	assert.equal(b.envJson().device.metroPort, 8081, 'after it, a claim with no running Metro is taken');
+	assert.equal(b.envJson().device.udid, 'UDID-1');
+	b.run('down');
+});
+
+test('DF_METRO_PORT pins the port: no counting up, and a port held by something else is still refused with 75', () => {
+	const l = lane({ platform: 'ios', env: { DF_METRO_PORT: '9090' } });
+	assert.equal(l.run('up').status, 0);
+	assert.equal(l.envJson().device.metroPort, 9090);
+	l.run('down');
+});
+
+test('Android on a direct stack: each backend port the app calls on localhost goes to a proxy of its own task', () => {
+	const l = lane({ platform: 'android', record: DIRECT_RECORD });
+	const b = l.another('wt-b');
+	assert.equal(l.run('up').status, 0);
+	const second = b.run('up');
+	assert.equal(second.status, 0, second.stderr);
+	assert.match(l.log(), /proxy --to 192\.168\.97\.2:3000 --port-file/);
+	assert.deepEqual(l.envJson().device.reversePorts, { 3000: 41001 });
+	assert.deepEqual(b.envJson().device.reversePorts, { 3000: 41002 });
+	assert.match(l.log(), /adb -s emulator-5554 reverse tcp:3000 tcp:41001/);
+	assert.match(l.log(), /adb -s emulator-5556 reverse tcp:3000 tcp:41002/);
+	assert.equal(l.run('down').status, 0);
+	assert.equal(fs.existsSync(path.join(l.wt, '.dev-factory/proxy-3000.pid')), false, 'down stops the proxy');
+	b.run('down');
+});
+
+test('a canonical stack reverses the backend ports to the same port, with no proxy', () => {
+	const l = lane({ platform: 'android' });
+	assert.equal(l.run('up').status, 0);
+	assert.match(l.log(), /adb -s emulator-5554 reverse tcp:3000 tcp:3000/);
+	assert.doesNotMatch(l.log(), /proxy --to/);
+	assert.deepEqual(l.envJson().device.reversePorts, { 3000: 3000 });
+	l.run('down');
+});
+
+test('Expo Go: the device setup runs while the app is missing, and the app is opened on its Metro on every start', () => {
+	const l = lane({
+		platform: 'ios',
+		mobile: {
+			appId: 'host.exp.Exponent',
+			build: null,
+			deviceSetup: `echo "setup {udid}" >> "$CALLS"; touch "$HOME/installed-{udid}"`,
+			open: `echo "open {udid} exp://127.0.0.1:{port}" >> "$CALLS"`,
+		},
+	});
+	const run = () => spawnSync('bash', [MOBILE, 'up', '--worktree', l.wt], { encoding: 'utf8', env: withCalls(l), cwd: l.wt, timeout: 60000 });
+	const first = run();
+	assert.equal(first.status, 0, first.stderr);
+	l.run('down');
+	assert.equal(run().status, 0);
+	l.run('down');
+	assert.equal((l.log().match(/^setup UDID-1/gm) ?? []).length, 1, 'once the app is on the device the setup does not run again');
+	assert.equal((l.log().match(/^open UDID-1 exp:\/\/127\.0\.0\.1:8081/gm) ?? []).length, 2, 'opened on every start');
+	assert.doesNotMatch(l.log(), /ios-build/);
 });
