@@ -429,3 +429,7 @@ test('no qa.mjs or coverage.mjs invocation that reads a tree lacks --worktree', 
 	}
 	assert.ok(seen > 30, `the rule found the invocations (${seen})`);
 });
+
+test('a pass that could not count the open PRs claims nothing and ends as aborted, so the queue is read again next pass', () => {
+	assert.match(read('tick.md'), /21 \(could not count, which also means do not claim; .*`tick: aborted could not count the open PRs`/);
+});
