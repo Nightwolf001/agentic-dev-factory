@@ -29,6 +29,16 @@ On `factory-rnd` (a small React Native test project: an Expo app and a tiny Node
 5. **The tick asks for direct ports on device tasks** when `caps.maxConcurrent` is above 1. Today a device task still takes canonical ports and the machine-wide lock.
 6. **A first real run.** 0.24.0 and 0.25.0 mobile paths have run only against stubs. Whatever a real run on factory-rnd finds goes on this list.
 
+## Status (0.26.0)
+
+-   Gap 1: the pass fills every slot with any startable task and waits for all of them with `scripts/handoff.mjs wait`; every repository has a state folder and pass lock of its own by default, so projects never wait on each other's passes. The ports lock for canonical host ports stays the machine's.
+-   Gap 2: on a direct stack each `mobile.androidReversePorts` port gets a host proxy of its own task (`scripts/port-proxy.mjs`); iOS keeps the stack's name as `{apiBaseUrl}`.
+-   Gap 3: each emulator is reversed to its own run's Metro port and proxies.
+-   Gap 4: Metro ports count up from `mobile.metroPort`, devices are claimed per run (new simulator copies, read-only emulator instances), claims live in the machine folder.
+-   Gap 5: `scripts/ports-mode.mjs` picks direct for web and device tasks wherever the engine names containers.
+-   Gap 6, from the first real runs: `mobile.open`/`androidOpen` run every start, `mobile.deviceSetup`/`androidDeviceSetup` install a prebuilt client, `mobile.androidAppId`, `null` switches a command off (`mobile.pods`), the ping uses curl, wget or node, the evidence names the device used. Still open: the sandbox findings of TASK-199 (worktree outside the repository, gh config reads, notion-upload, push credentials), lcov coverage, reviewers running tests.
+-   Done-when run: not yet.
+
 ## Spike: reaching each task's API at the same time (2026-11-24, OrbStack)
 
 Two stacks, `rnd-spike-a` and `rnd-spike-b`, each a Node API on container port 1337, no published ports, plus a host proxy (Node, 127.0.0.1 only): port 41001 to stack a, 41002 to stack b, and port 41000 routed by host name (`a.localhost`, `b.localhost`).

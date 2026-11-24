@@ -9,6 +9,9 @@ DIR="$(cd "$(dirname "$0")/.." && pwd)"
 REPO="$(df_repo)"; [ -n "$REPO" ] || { echo "dev-factory: run this from inside a git repository (or set DF_REPO)" >&2; exit 1; }
 STATE="$(df_state_dir)"; LOG="$(df_log_file tick)"
 mkdir -p "$STATE" "$(dirname "$LOG")"
+# every repository has a state folder of its own, so a pass here never waits on a pass in another repository; the session and every
+# script it starts read the same folder
+df_ensure_state_dir "$STATE"; export DF_STATE_DIR="$STATE"
 df_load_env
 # the pause switch (dev-factory scheduler off): scheduled passes stop here, manual runs go on
 if [ "${DF_SCHEDULED:-}" = 1 ] && df_job_paused "$REPO" tick; then

@@ -652,22 +652,39 @@ test('install --isolate outside a repository is a usage error, and writes nothin
 	assert.equal(fs.existsSync(path.join(f.home, 'state')), false);
 });
 
-test('install without --isolate keeps every job on the machine state folder', () => {
+test('install without --isolate gives the repository a state folder of its own all the same', () => {
 	const f = fixture();
+	const own = path.join(f.home, 'state', slugOf(f));
 	assert.equal(installSh(f, '--apply').status, 0);
-	assert.match(plistOf(f, 'tick'), new RegExp(`<key>DF_STATE_DIR</key><string>${path.join(f.home, 'state')}</string>`));
-	assert.equal(fs.existsSync(path.join(f.home, 'state', slugOf(f))), false);
+	assert.match(plistOf(f, 'tick'), new RegExp(`<key>DF_STATE_DIR</key><string>${own}</string>`));
+	assert.equal(fs.realpathSync(path.join(own, '.env.local')), fs.realpathSync(path.join(f.home, 'state', '.env.local')));
 });
 
-test('the pause switch follows the repository to its own state folder', () => {
+test('the pause switch is kept in the machine folder, and one an older install left in the repository folder is still read', () => {
 	const f = fixture();
 	const slug = f.install();
 	const env = { ...f.env };
 	delete env.DF_STATE_DIR;
-	const own = path.join(f.home, '.dev-factory', slug);
-	fs.mkdirSync(own, { recursive: true });
+	const machine = path.join(f.home, '.dev-factory');
+	const own = path.join(machine, slug);
 	const off = spawnSync('bash', [SCRIPT, 'off'], { encoding: 'utf8', env, cwd: f.repo });
 	assert.equal(off.status, 0, off.stderr);
-	assert.ok(fs.existsSync(path.join(own, `paused.${slug}.tick`)), 'the scheduled pass reads its own folder, so the switch is set there');
-	assert.equal(fs.existsSync(path.join(f.home, '.dev-factory', `paused.${slug}.tick`)), false);
+	assert.ok(fs.existsSync(path.join(machine, `paused.${slug}.tick`)), 'the switch does not move with the state folder');
+	assert.equal(fs.existsSync(path.join(own, `paused.${slug}.tick`)), false);
+	const paused = (job) =>
+		spawnSync('bash', ['-c', `DIR="${ROOT}"; . "${ROOT}/scripts/runtime.sh"; df_job_paused "${f.repo}" ${job} && echo yes || echo no`], {
+			encoding: 'utf8',
+			env,
+			cwd: f.repo,
+		}).stdout.trim();
+	assert.equal(paused('tick'), 'yes');
+	assert.equal(spawnSync('bash', [SCRIPT, 'on'], { encoding: 'utf8', env, cwd: f.repo }).status, 0);
+	assert.equal(paused('tick'), 'no');
+	// an older install kept an isolated repository's switch in its own folder: it still pauses, and `on` clears it
+	fs.mkdirSync(own, { recursive: true });
+	fs.writeFileSync(path.join(own, `paused.${slug}.improve`), '');
+	assert.equal(paused('improve'), 'yes');
+	assert.equal(paused('tick'), 'no', 'a switch for one job pauses only that job');
+	assert.equal(spawnSync('bash', [SCRIPT, 'on', 'improve'], { encoding: 'utf8', env, cwd: f.repo }).status, 0);
+	assert.equal(paused('improve'), 'no');
 });

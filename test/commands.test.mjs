@@ -270,22 +270,32 @@ test('no document claims a mention element always notifies', () => {
 	);
 });
 
-// Direct ports publish nothing and take no machine-wide lock, so they are what lets web tickets overlap; a failed direct start must not fall back to
-// canonical, because that would take the lock the direct mode exists to avoid.
-test('the tick asks for direct ports only for a web ticket when more than one task may run, and never falls back to canonical', () => {
+// Direct ports publish nothing and take no machine-wide lock, so they are what lets tasks overlap, in this repository and across repositories;
+// a failed direct start must not fall back to canonical, because that would take the lock the direct mode exists to avoid. The choice is
+// scripts/ports-mode.mjs's, the same for the pass, /dev-factory:build and /dev-factory:quick.
+test('the tick asks ports-mode.mjs for the ports of every task, web or device, and never falls back to canonical', () => {
 	const step = read('tick.md')
 		.split('\n')
 		.find((l) => l.startsWith('3. Environment:'));
 	assert.ok(step, 'the Environment step');
-	assert.ok(step.includes('--ports direct'), 'names --ports direct');
-	assert.ok(step.includes('caps.maxConcurrent'), 'ties the choice to caps.maxConcurrent');
-	assert.match(step, /--ports canonical/, 'canonical stays for the maxConcurrent 1 case');
+	assert.match(step, /--ports <mode>/);
+	assert.match(step, /scripts\/ports-mode\.mjs/, 'the mode comes from the script');
 	assert.match(step, /--device/, 'mobile keeps --device');
 	assert.match(step, /no fallback/, 'a failed direct start has no fallback');
-	assert.match(step, /above 1 and `environment\.webBaseUrl` is set/, 'direct only when there is an address to swap the host of');
-	assert.match(step, /`--ports none`, as there is no host address to open/, 'otherwise the default');
 	assert.match(step, /exit 1, for example because the address did not answer/, 'the cause is worded neutrally');
 	assert.match(step, /Environments section of `docs\/reference\.md`/, 'points at what is not settled');
+	for (const f of ['build.md', 'quick.md']) assert.match(read(f), /scripts\/ports-mode\.mjs/, `${f} asks the same script`);
+});
+
+test('the pass fills every slot with any startable task and waits for all of them at once', () => {
+	const tick = read('tick.md');
+	assert.match(tick, /Fill every free slot/);
+	assert.match(tick, /Tasks need not be related to be built together, and two tasks may touch the same files/);
+	assert.match(tick, /scripts\/handoff\.mjs" wait --for <worktree A>=<phase A> --for <worktree B>=<phase B>/);
+	assert.match(tick, /its slot is free: go back to section 2 and claim the next startable task/);
+	assert.doesNotMatch(tick, /sequentially when `DF_MAX_CONCURRENT` is 1/);
+	assert.doesNotMatch(tick, /Dispatch into one worktree at a time\./);
+	assert.doesNotMatch(tick, /`ls ~\/\.dev-factory\/ports\.lock` exists \(every ticket/, 'a held ports lock no longer stops every claim');
 });
 
 // A factory agent is dispatched by a session whose hook events carry the scheduler's directory, so the hook learns which run an agent

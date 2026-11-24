@@ -127,6 +127,14 @@ test('a run recorded as none or direct frees neither the web address port nor th
 		assert.deepEqual(ports(recordedPorts), before, `${JSON.stringify(recordedPorts)}: as without a record`);
 });
 
+test("Metro is the run's own recorded port: one of several tasks at once never frees another task's Metro", () => {
+	const dir = tmp();
+	const cfg = merge(load(), { mobile: { appDir: 'app', metroPort: 8081 } });
+	const run = () => ({ status: 0, stderr: '', stdout: '' });
+	assert.deepEqual(portsFor({ cfg, worktree: dir, run, recordedPorts: 'direct', recordedMetro: 8083 }), [8083]);
+	assert.deepEqual(portsFor({ cfg, worktree: dir, run, recordedPorts: 'direct' }), [8081], 'no record: mobile.metroPort');
+});
+
 test('a run recorded as direct stops nothing on the compose-file ports under takeover; recorded as canonical it does', async () => {
 	const setup = (ports) => {
 		const wt = tmp();

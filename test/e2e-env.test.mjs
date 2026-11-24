@@ -738,7 +738,28 @@ test('the host probe never uses the pingUrl: neither its query nor DF_PING_URL r
 	assert.doesNotMatch(text, /SECRET|health/, text);
 	assert.doesNotMatch(r.stdout + r.stderr, /SECRET/);
 	assert.doesNotMatch(f.curlLog(), /SECRET|health/, 'the probe from this machine is the web address, not the ping URL');
-	assert.match(f.log(), /curl -ksf -o \/dev\/null http:\/\/localhost:3000\/health\?token=ENVSECRET/, 'the ping inside the service still runs');
+	assert.match(f.log(), /sh -c .* ping http:\/\/localhost:3000\/health\?token=ENVSECRET/, 'the ping inside the service still runs');
+});
+
+// An image without curl (node:22-alpine) never became ready: the ping uses curl, else wget, else node's fetch, whichever the image has,
+// and the address is an argument of the shell, never part of its script.
+test('the ping inside the service works with curl, wget or node, and passes the address as an argument', () => {
+	const sh = fs.readFileSync(path.join(ROOT, 'scripts/e2e-env.sh'), 'utf8');
+	const script = /^PING_SH='(.*)'$/m.exec(sh)?.[1];
+	assert.ok(script, 'PING_SH');
+	const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'df-ping-'));
+	const run = (tools) => {
+		for (const t of ['curl', 'wget', 'node']) fs.rmSync(path.join(bin, t), { force: true });
+		for (const t of tools) fs.writeFileSync(path.join(bin, t), `#!/bin/sh\necho "${t} $*"\n`, { mode: 0o755 });
+		return spawnSync('/bin/sh', ['-c', script, 'ping', 'http://h:1/x?a=1;touch /tmp/no'], {
+			encoding: 'utf8',
+			env: { PATH: bin },
+		}).stdout;
+	};
+	assert.match(run(['curl', 'wget', 'node']), /^curl -ksf -o \/dev\/null http:\/\/h:1\/x\?a=1;touch \/tmp\/no$/m);
+	assert.match(run(['wget', 'node']), /^wget -q -O \/dev\/null http:\/\/h:1\/x/m);
+	assert.match(run(['node']), /^node -e .*fetch.* http:\/\/h:1\/x/m);
+	assert.doesNotMatch(sh, /curl -ksf -o \/dev\/null "\$PING_URL"/, 'no ping calls curl directly any more');
 });
 
 test('the host probe counts any answer below 500 as reachable', () => {

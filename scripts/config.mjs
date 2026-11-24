@@ -521,10 +521,23 @@ export function validate(config) {
 	const ignoreAuthors = dig(config, 'tasks.ignoreCommentAuthors');
 	if (ignoreAuthors !== undefined && !(Array.isArray(ignoreAuthors) && ignoreAuthors.every((a) => typeof a === 'string' && a.trim())))
 		problems.push('tasks.ignoreCommentAuthors must be a list of comment author ids or names');
+	const portsSetting = dig(config, 'environment.ports');
+	if (portsSetting !== undefined && !['auto', 'canonical', 'direct', 'none'].includes(portsSetting))
+		problems.push('environment.ports must be auto, canonical, direct or none');
 	const platform = dig(config, 'mobile.platform');
 	if (platform !== undefined && !['ios', 'android'].includes(platform))
 		problems.push('mobile.platform must be ios or android (leave it unset to infer it from the ticket)');
-	for (const k of ['mobile.androidAvd', 'mobile.iosAutofillOff', 'mobile.androidBuild', 'mobile.appId']) {
+	for (const k of [
+		'mobile.androidAvd',
+		'mobile.iosAutofillOff',
+		'mobile.androidBuild',
+		'mobile.appId',
+		'mobile.androidAppId',
+		'mobile.deviceSetup',
+		'mobile.androidDeviceSetup',
+		'mobile.open',
+		'mobile.androidOpen',
+	]) {
 		const v = dig(config, k);
 		if (v != null && (typeof v !== 'string' || !v)) problems.push(`${k} must be a non-empty string or null`);
 	}

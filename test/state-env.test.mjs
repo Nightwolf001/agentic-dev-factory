@@ -222,7 +222,7 @@ test('import-env skips the lines of a multi-line value, and a name written twice
 	assert.equal(fs.existsSync(pwned), false);
 });
 
-test('the command line runs a repository with a state folder of its own on that folder', async () => {
+test('the command line runs every repository on a state folder of its own', async () => {
 	const ROOT = new URL('../', import.meta.url).pathname.replace(/\/$/, '');
 	const { stateDirFor } = await import('../scripts/cli.mjs');
 	const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'df-cli-')));
@@ -230,8 +230,7 @@ test('the command line runs a repository with a state folder of its own on that 
 	fs.mkdirSync(repo);
 	const slug = spawnSync('bash', ['-c', `DIR="${ROOT}"; . "${ROOT}/scripts/runtime.sh"; df_slug "${repo}"`], { encoding: 'utf8' }).stdout.trim();
 	const env = { PATH: process.env.PATH, HOME: home, DF_REPO: repo };
-	assert.equal(stateDirFor(env), null, 'nothing to change while the repository has no folder of its own');
-	fs.mkdirSync(path.join(home, '.dev-factory', slug), { recursive: true });
+	// every repository has a folder of its own, whether or not it exists yet: the pass creates it
 	assert.equal(stateDirFor(env), path.join(home, '.dev-factory', slug));
 	assert.equal(stateDirFor({ ...env, DF_STATE_DIR: '/s' }), null, 'an explicit folder is left alone');
 });

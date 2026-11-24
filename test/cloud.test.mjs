@@ -199,7 +199,8 @@ test('the runtime is detected from the environment and can be forced', () => {
 });
 
 test('state, log and repository locations follow the runtime and the overrides', () => {
-	assert.equal(sh('df_state_dir').stdout, '/home/u/.dev-factory');
+	// run from inside a repository (this one): its own folder under the machine folder
+	assert.match(sh('df_state_dir').stdout, /^\/home\/u\/\.dev-factory\/[A-Za-z0-9-]+-\d+$/);
 	assert.equal(sh('df_state_dir', { DF_STATE_DIR: '/s' }).stdout, '/s');
 	assert.equal(sh('df_log_file tick', { DF_LOG: '/l.log' }).stdout, '/l.log');
 	assert.equal(sh('df_log_file tick', { DF_RUNTIME: 'cloud', DF_STATE_DIR: '/s' }).stdout, '/s/logs/tick.log', 'no macOS log folder in the cloud');
@@ -254,21 +255,21 @@ test('cloud init refuses a settings file it cannot read instead of overwriting i
 	assert.match(fs.readFileSync(file, 'utf8'), /a comment makes this invalid JSON/, 'the file is as it was');
 });
 
-test('a repository with a state folder of its own uses it, unless DF_STATE_DIR says otherwise', () => {
+test('every repository uses a state folder of its own, unless DF_STATE_DIR says otherwise', () => {
 	const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'df-own-')));
 	const repo = path.join(home, 'repo');
 	fs.mkdirSync(repo);
 	const slug = sh(`df_slug "${repo}"`).stdout;
 	const env = { HOME: home, DF_REPO: repo };
-	assert.equal(sh('df_state_dir', env).stdout, `${home}/.dev-factory`, 'no folder of its own yet');
-	assert.equal(sh('df_machine_dir', env).stdout, `${home}/.dev-factory`);
-	fs.mkdirSync(path.join(home, '.dev-factory', slug), { recursive: true });
-	assert.equal(sh('df_state_dir', env).stdout, `${home}/.dev-factory/${slug}`, 'the folder install --isolate made');
+	assert.equal(sh('df_state_dir', env).stdout, `${home}/.dev-factory/${slug}`, 'whether or not the folder exists yet');
 	assert.equal(sh('df_machine_dir', env).stdout, `${home}/.dev-factory`, 'the machine folder does not move');
-	assert.equal(sh('df_state_dir', { ...env, DF_STATE_DIR: '/s' }).stdout, '/s', 'an explicit folder wins');
 	assert.equal(
-		sh('df_state_dir', { HOME: home, DF_REPO: path.join(home, 'other') }).stdout,
+		sh('df_machine_dir', { ...env, DF_STATE_DIR: `${home}/.dev-factory/${slug}` }).stdout,
 		`${home}/.dev-factory`,
-		'another repository is not affected',
+		'nor when a pass exports its folder',
 	);
+	assert.equal(sh('df_state_dir', { ...env, DF_STATE_DIR: '/s' }).stdout, '/s', 'an explicit folder wins');
+	const other = sh('df_state_dir', { HOME: home, DF_REPO: path.join(home, 'other') }).stdout;
+	assert.notEqual(other, `${home}/.dev-factory/${slug}`, 'another repository has another folder');
+	assert.equal(path.dirname(other), `${home}/.dev-factory`);
 });
