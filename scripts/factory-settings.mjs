@@ -56,6 +56,12 @@ export function build({
 		...out.sandbox.filesystem,
 		allowWrite: [...new Set([...(out.sandbox.filesystem?.allowWrite ?? []), state, ...worktrees])],
 	};
+	// and the session treats them as its own working directories, so a command that writes there is not a prompt (a pass has no one
+	// to answer one: it would be refused)
+	out.permissions = {
+		...out.permissions,
+		additionalDirectories: [...new Set([...(out.permissions?.additionalDirectories ?? []), ...worktrees])],
+	};
 	// takeover: stopping a process or a session outside the sandbox needs those commands to run outside it (the guard still refuses the protected targets)
 	if (takeoverOn({ env })) out.sandbox.excludedCommands = [...new Set([...(out.sandbox.excludedCommands ?? []), ...TAKEOVER_EXCLUDED])];
 	out.sandbox.excludedCommands = withQuotedForms(out.sandbox.excludedCommands ?? []);

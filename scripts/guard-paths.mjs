@@ -96,12 +96,25 @@ export const hasGlob = (w) => /[*?[]/.test(w);
 
 // `{a,b}` lists, as the shell expands them before anything else. `${...}` is left alone. Nested lists expand too. The groups of a
 // word are found in one pass with a stack, so a word made of thousands of braces costs a pass, not a pass per brace.
+// Braces inside quotes are text, as in the shell: a quoted JSON argument (`--findings '[{"a":1},{"b":2}]'`) is one word, not a
+// list, and expanding it made a review record unjudgeable.
 function braceGroups(w) {
 	const stack = [];
 	const groups = [];
+	let q = null;
 	for (let i = 0; i < w.length; i++) {
 		const c = w[i];
-		if (c === '{') stack.push({ open: i, dollar: w[i - 1] === '$', commas: [] });
+		if (q) {
+			if (c === q) q = null;
+			else if (q === '"' && c === '\\') i++;
+			continue;
+		}
+		if (c === '\\') {
+			i++;
+			continue;
+		}
+		if (c === "'" || c === '"') q = c;
+		else if (c === '{') stack.push({ open: i, dollar: w[i - 1] === '$', commas: [] });
 		else if (c === ',' && stack.length && !stack[stack.length - 1].dollar) stack[stack.length - 1].commas.push(i);
 		else if (c === '}' && stack.length) {
 			const g = stack.pop();
@@ -129,22 +142,25 @@ export function braceExpand(word, limit = LIMITS.expansions) {
 	return out;
 }
 
-// The word the shell would pass on: quotes and backslashes removed, $'...' decoded. Variables stay as they are.
-export function unquote(word) {
+// The word the shell would pass on: quotes and backslashes removed, $'...' decoded. Variables stay as they are. With `literal`, a
+// glob character that was quoted or escaped becomes QUOTED_GLOB, so it is never read as a pattern: the shell does not glob it.
+export const QUOTED_GLOB = '\u0001';
+export function unquote(word, { literal = false } = {}) {
+	const lit = (ch) => (literal && /[*?[]/.test(ch) ? QUOTED_GLOB : ch);
 	let out = '';
 	for (let i = 0; i < word.length; i++) {
 		const c = word[i];
 		if (c === '\\') {
-			if (i + 1 < word.length) out += word[++i];
+			if (i + 1 < word.length) out += lit(word[++i]);
 		} else if (c === "'") {
 			const end = word.indexOf("'", i + 1);
-			out += word.slice(i + 1, end < 0 ? undefined : end);
+			out += [...word.slice(i + 1, end < 0 ? undefined : end)].map(lit).join('');
 			if (end < 0) break;
 			i = end;
 		} else if (c === '"') {
 			for (i++; i < word.length && word[i] !== '"'; i++) {
 				if (word[i] === '\\' && i + 1 < word.length && '"\\$`'.includes(word[i + 1])) i++;
-				out += word[i];
+				out += lit(word[i]);
 			}
 		} else if (c === '$' && word[i + 1] === "'") {
 			let j = i + 2;
@@ -198,6 +214,31 @@ export function expandVars(word, vars) {
 	return out;
 }
 
+// The pieces of a token between the characters in `chars`, split only where the shell would see them: a `(` or `>` inside quotes
+// is text, and a piece cut out of a quoted string would lose its opening quote and be judged as bare words.
+export function splitOutsideQuotes(token, chars) {
+	const out = [];
+	let cur = '';
+	let q = null;
+	for (let i = 0; i < token.length; i++) {
+		const c = token[i];
+		if (q) {
+			cur += c;
+			if (c === q) q = null;
+			else if (q === '"' && c === '\\' && i + 1 < token.length) cur += token[++i];
+		} else if (c === '\\' && i + 1 < token.length) cur += c + token[++i];
+		else if (c === "'" || c === '"') {
+			q = c;
+			cur += c;
+		} else if (chars.includes(c)) {
+			if (cur) out.push(cur);
+			cur = '';
+		} else cur += c;
+	}
+	if (cur) out.push(cur);
+	return out;
+}
+
 // Every path a token might name: the token, the value after `=` (--file=x, VAR=x), an option with its value attached (-ox),
 // and the file of a redirection (>x, 2>>x). Each is brace-expanded, unquoted and variable-expanded.
 export function candidates(token, vars) {
@@ -206,13 +247,13 @@ export function candidates(token, vars) {
 	if (eq > -1) raw.add(token.slice(eq + 1));
 	const short = /^-[A-Za-z]([/~$.].*)$/.exec(token);
 	if (short) raw.add(short[1]);
-	for (const piece of token.split(/[<>|()]+/)) if (piece) raw.add(piece);
+	for (const piece of splitOutsideQuotes(token, '<>|()')) if (piece) raw.add(piece);
 	raw.add(token.replace(/[)}]+$/, ''));
 	const out = new Set();
 	for (const r of raw)
 		for (const b of braceExpand(r))
 			for (const part of [b, ...b.split(/[:,=]/)]) {
-				const u = expandVars(unquote(part), vars);
+				const u = expandVars(unquote(part, { literal: true }), vars);
 				if (u) out.add(u);
 			}
 	return [...out];

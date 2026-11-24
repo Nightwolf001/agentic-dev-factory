@@ -58,6 +58,8 @@ fi
 alert clear >> "$LOG" 2>&1 || true
 
 # the settings this pass runs with: the base file plus the domains and MCP servers this repository enabled
+# the worktree folder must exist before the settings name it, or the sandbox has no folder to allow writes in
+mkdir -p "$(node "$DIR/scripts/worktree.mjs" root 2>/dev/null || echo "$REPO/../.worktrees")" 2>/dev/null || true
 node "$DIR/scripts/factory-settings.mjs" "$STATE/settings.json" || { echo "$(date -u +%FT%TZ) could not build settings" >> "$LOG"; exit 1; }
 # the MCP servers this pass starts from: the generated .devfactory/mcp.json, with the flags write-config chose
 df_mcp_args "$REPO" "$LOG"

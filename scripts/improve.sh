@@ -40,6 +40,8 @@ bash "$DIR/scripts/doctor.sh" --ci >> "$LOG" 2>&1 || {
 # a dry run changes nothing, so it does not fetch
 [ "$DF_DRY_RUN" = 1 ] || git fetch origin "$(node "$DIR/scripts/worktree.mjs" default-branch)" --quiet >> "$LOG" 2>&1 || true
 
+# the worktree folder must exist before the settings name it, or the sandbox has no folder to allow writes in
+mkdir -p "$(node "$DIR/scripts/worktree.mjs" root 2>/dev/null || echo "$REPO/../.worktrees")" 2>/dev/null || true
 node "$DIR/scripts/factory-settings.mjs" "$STATE/settings.json" || {
   echo "$(date -u +%FT%TZ) could not build settings" >> "$LOG"
   [ "$DF_DRY_RUN" = 1 ] && echo "improve: dry run stopped: could not build the settings (log: $LOG)" >&2

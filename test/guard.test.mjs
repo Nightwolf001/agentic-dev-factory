@@ -1627,3 +1627,57 @@ test('a factory agent runs run-context.mjs in no form at all; the scheduler runs
 	for (const role of ['builder', 'improver'])
 		assert.equal(evaluate('node --test test/run-context.test.mjs', { role, branch: 'task/APP-1-x', key: 'APP-1' }).deny, false, role);
 });
+
+// ---- quoted text is text: the false refusals of a pass that built two tasks at once ----
+
+test('a review record whose findings are JSON with braces, brackets, globs and backticks in quotes is judged as one record', () => {
+	const findings = JSON.stringify([
+		{ severity: 'Low', file: 'app/a.ts', line: 9, note: 'type Props = { get?: () => Promise<string> }; run `npx expo lint`' },
+		{
+			severity: 'Low',
+			file: 'app/b.ts',
+			line: 1,
+			note: 'the third test [empty] repeats the second, so it could be dropped' + ' and merged'.repeat(30),
+		},
+	]);
+	const cmd = `cd /w/TASK-1 && node dev-factory/bin/qa.mjs review record --worktree /w/TASK-1 --axis standards --head abc --summary "API <version> {a,b} *.ts" --findings '${findings}'`;
+	for (const role of ['reviewer', 'builder']) assert.equal(evaluate(cmd, { role, branch: 'task/APP-12-fix-thing' }).deny, false, role);
+});
+
+test('substitutions and env files are still found where the shell would see them', () => {
+	const r = (c, role = 'reviewer') => evaluate(c, { role, branch: 'task/APP-12-fix-thing' });
+	// in single quotes a backtick is text; in double quotes it runs
+	assert.equal(r(`grep -n 'run \`rm -rf x\`' notes.md`).deny, false);
+	assert.equal(r(`grep -n "run \`rm -rf x\`" notes.md`).deny, true);
+	assert.equal(r(`echo "$(cat .env)"`, 'builder').deny, true);
+	// a glob in quotes names no file, a quoted .env still names one
+	assert.equal(
+		evaluate(`sed -i '' "1s/.*/import { a, b } from '..\\/api';/" src/a.test.ts`, { role: 'builder', branch: 'task/APP-12-fix-thing' }).deny,
+		false,
+	);
+	assert.equal(r(`cat ".env"`, 'builder').deny, true);
+	assert.equal(r(`cat .env*`, 'builder').deny, true);
+	assert.equal(r(`cat '.env.loca?'`, 'builder').deny, true);
+});
+
+test('a push of the ticket branch with its output redirected is the ticket branch, not a push of "2>&1"', () => {
+	const b = (c) => evaluate(c, { role: 'builder', branch: 'feature/APP-1-x' }).deny;
+	assert.equal(b('git -C /w/APP-1 push --no-verify -u origin feature/APP-1-x 2>&1 | tail -5'), false);
+	assert.equal(b('git push -u origin feature/APP-1-x >/dev/null 2>&1'), false);
+	assert.equal(b('git push -u origin main 2>&1'), true, 'another branch is still refused');
+	assert.equal(b('git push -u origin feature/APP-1-x:main 2>&1'), true);
+});
+
+test("a reviewer may run the repository's tests and type check, never with snapshot updates, and nothing else new", () => {
+	const r = (c) => evaluate(c, { role: 'reviewer', branch: 'task/APP-12-fix-thing' }).deny;
+	for (const ok of [
+		'cd /w/APP-12/app && npx jest --ci 2>&1 | tail -30',
+		'cd /w/APP-12/api && npm test',
+		'cd /w/APP-12/app && npx tsc --noEmit',
+		'node --test test/a.test.js',
+		'docker compose -f /w/APP-12/compose.yml -p df-app-12 exec -T api npm test',
+	])
+		assert.equal(r(ok), false, ok);
+	for (const bad of ['npx jest -u', 'npx jest --updateSnapshot', 'npm install', 'npx prettier --write .', 'npm run build', 'npx tsc'])
+		assert.equal(r(bad), true, bad);
+});
