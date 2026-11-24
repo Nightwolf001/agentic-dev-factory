@@ -44,10 +44,17 @@ export function build({
 		if (site) domains.add(site);
 	}
 	for (const d of get('sandbox.extraDomains', { config: cfg }) ?? []) domains.add(d);
+	// a direct stack is reached at its own address ({service}.{project}.orb.local by default): QA probes and tests call it from the sandbox
+	const directHost = String(get('environment.directHost', { config: cfg }) ?? '');
+	const suffix = /\.([a-z0-9-]+(\.[a-z0-9-]+)*)$/i.exec(directHost.replace(/\{[^}]*\}/g, 'x'))?.[1];
+	if (get('environment.type', { config: cfg }) === 'compose' && suffix && suffix.includes('.'))
+		domains.add(`*.${suffix.split('.').slice(-2).join('.')}`);
 	// null leaves the base file's choice; a cloud environment that supplies its own sandbox can switch ours off
 	const sandboxOn = get('sandbox.enabled', { config: cfg });
 	if (typeof sandboxOn === 'boolean') out.sandbox.enabled = sandboxOn;
 	out.sandbox.network.allowedDomains = [...domains];
+	// the repository's tests start servers on this machine's loopback (node --test, jest with supertest): a reviewer runs them here
+	out.sandbox.network.allowLocalBinding = true;
 	// the pass keeps its locks, live-stack records and agent bindings (`agents/`) in the state folder, and e2e-env.sh (run outside the sandbox) writes there too
 	// and every agent writes in its task's worktree, which lives outside the repository (git.worktreeRoot): without it a builder's
 	// test file or a hand-off written from the shell failed, and the agent's retry with the sandbox off was refused

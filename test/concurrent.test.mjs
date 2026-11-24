@@ -206,3 +206,14 @@ test("the pass may write in its tasks' worktrees, which live outside the reposit
 		.filesystem.allowWrite;
 	for (const p of ['/s', '/r/.worktrees/app', '/r/.worktrees/TASK-1']) assert.ok(allow.includes(p), p);
 });
+
+test("the pass's sandbox reaches the direct stacks' own addresses and lets tests open a local port", async () => {
+	const { build } = await import('../scripts/factory-settings.mjs');
+	const { load, merge } = await import('../scripts/config.mjs');
+	const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'df-sb-')), '.mcp.json');
+	const sb = (environment) => build({ cfg: merge(load(), { environment }), mcpFile: file, want: [], worktreeFolders: [] }).sandbox.network;
+	assert.ok(sb({ type: 'compose' }).allowedDomains.includes('*.orb.local'), 'the default {service}.{project}.orb.local');
+	assert.ok(sb({ type: 'compose', directHost: 'web.{project}.dev.test' }).allowedDomains.includes('*.dev.test'));
+	assert.equal(sb({ type: 'none' }).allowedDomains.includes('*.orb.local'), false, 'no stack, no stack address');
+	assert.equal(sb({ type: 'compose' }).allowLocalBinding, true);
+});
