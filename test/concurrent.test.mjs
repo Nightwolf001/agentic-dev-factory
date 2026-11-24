@@ -181,3 +181,19 @@ test('the proxy forwards only to a plain host and port', () => {
 	const r = spawnSync('node', [path.join(ROOT, 'scripts/port-proxy.mjs'), '--to', 'x'], { encoding: 'utf8' });
 	assert.equal(r.status, 3);
 });
+
+// ---- the sandbox lets the scheduler's own scripts out when their path is quoted ----
+
+test('every script the sandbox lets out is let out by its quoted path too, the form the commands use', async () => {
+	const { withQuotedForms, build } = await import('../scripts/factory-settings.mjs');
+	assert.deepEqual(withQuotedForms(['node *open-prs.mjs*', 'git *']), [
+		'node *open-prs.mjs*',
+		'git *',
+		'node "*open-prs.mjs"',
+		'node "*open-prs.mjs" *',
+	]);
+	const { load } = await import('../scripts/config.mjs');
+	const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'df-sb-')), '.mcp.json');
+	const ex = build({ cfg: load(), mcpFile: file, want: [] }).sandbox.excludedCommands;
+	for (const p of ['node "*open-prs.mjs"', 'node "*automerge.mjs" *', 'bash "*e2e-env.sh" *']) assert.ok(ex.includes(p), p);
+});

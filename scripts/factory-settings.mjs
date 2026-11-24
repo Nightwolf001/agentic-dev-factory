@@ -50,8 +50,21 @@ export function build({
 	out.sandbox.filesystem = { ...out.sandbox.filesystem, allowWrite: [...new Set([...(out.sandbox.filesystem?.allowWrite ?? []), state])] };
 	// takeover: stopping a process or a session outside the sandbox needs those commands to run outside it (the guard still refuses the protected targets)
 	if (takeoverOn({ env })) out.sandbox.excludedCommands = [...new Set([...(out.sandbox.excludedCommands ?? []), ...TAKEOVER_EXCLUDED])];
+	out.sandbox.excludedCommands = withQuotedForms(out.sandbox.excludedCommands ?? []);
 	out.permissions.allow = [...new Set([...out.permissions.allow, ...allowRules(mcpFile, [...wanted, ...external])])];
 	return out;
+}
+
+// The commands name a script by its quoted path (`node "${CLAUDE_PLUGIN_ROOT}/scripts/open-prs.mjs"`), and the sandbox's pattern
+// `node *open-prs.mjs*` does not match a quoted word, so the script ran inside the sandbox, where its own network calls fail ("fetch
+// failed": the open-PR count was unknown and the pass claimed nothing). Each `<program> *<script>*` pattern also gets its quoted forms.
+export function withQuotedForms(patterns) {
+	const out = [...patterns];
+	for (const p of patterns) {
+		const m = /^(\S+) \*([^*\s"]+)\*$/.exec(p);
+		if (m) out.push(`${m[1]} "*${m[2]}"`, `${m[1]} "*${m[2]}" *`);
+	}
+	return [...new Set(out)];
 }
 
 if (isMain(import.meta.url)) {
